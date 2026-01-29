@@ -64,7 +64,7 @@ on_err() {
 }
 trap on_err ERR
 
-# Builds a clang + libstdc++ static dependency stack (Release+Debug) into:
+# Builds a clang static dependency stack (Release+Debug) into:
 #   - Release prefix: /Users/s02299/MOS
 #   - Debug prefix:   /Users/s02299/MOSd
 #
@@ -75,13 +75,25 @@ trap on_err ERR
 # - Provide a reproducible “static prefix” suitable for building OpenImageIO
 #
 # Notes:
-# - This script intentionally strips "-stdlib=libc++" from flags.
+# - On Linux/WSL, this script intentionally strips "-stdlib=libc++" from flags.
+# - On macOS, it uses Apple Clang + libc++ and avoids lld-specific linker flags.
 # - Most projects are configured with tests OFF, but tools/examples are often ON
 #   when they are useful for quick smoke checks.
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 
-SRC_ROOT="${SRC_ROOT:-/mnt/e/GH}"
+OS_NAME="$(uname -s)"
+IS_MACOS=0
+if [[ "${OS_NAME}" == "Darwin" ]]; then
+  IS_MACOS=1
+fi
+
+if [[ "${IS_MACOS}" -eq 1 ]]; then
+  DEFAULT_SRC_ROOT="${HOME}/GH"
+else
+  DEFAULT_SRC_ROOT="/mnt/e/GH"
+fi
+SRC_ROOT="${SRC_ROOT:-${DEFAULT_SRC_ROOT}}"
 BUILD_ROOT="${BUILD_ROOT:-${SRC_ROOT}/_build_UBG}"
 
 PREFIX_RELEASE="${PREFIX_RELEASE:-/Users/s02299/MOS}"
@@ -91,19 +103,42 @@ LOG_FILE_DEFAULT="${BUILD_ROOT}/logs/ubg_stack_$(date +%Y%m%d_%H%M%S).log"
 # Set LOG_FILE="" to disable logging.
 LOG_FILE="${LOG_FILE:-${LOG_FILE_DEFAULT}}"
 
-CC_BIN="${CC_BIN:-clang-20}"
-CXX_BIN="${CXX_BIN:-clang++-20}"
-LD_BIN="${LD_BIN:-ld.lld-20}"
-AR_BIN="${AR_BIN:-llvm-ar-20}"
-RANLIB_BIN="${RANLIB_BIN:-llvm-ranlib-20}"
+if [[ "${IS_MACOS}" -eq 1 ]]; then
+  CC_BIN="${CC_BIN:-clang}"
+  CXX_BIN="${CXX_BIN:-clang++}"
+  LD_BIN="${LD_BIN:-ld}"
+  AR_BIN="${AR_BIN:-ar}"
+  RANLIB_BIN="${RANLIB_BIN:-ranlib}"
+else
+  CC_BIN="${CC_BIN:-clang-20}"
+  CXX_BIN="${CXX_BIN:-clang++-20}"
+  LD_BIN="${LD_BIN:-ld.lld-20}"
+  AR_BIN="${AR_BIN:-llvm-ar-20}"
+  RANLIB_BIN="${RANLIB_BIN:-llvm-ranlib-20}"
+fi
 
-JOBS="${JOBS:-$(nproc)}"
+default_jobs() {
+  if command -v nproc >/dev/null 2>&1; then
+    nproc
+  elif command -v sysctl >/dev/null 2>&1; then
+    sysctl -n hw.ncpu 2>/dev/null || echo 4
+  else
+    echo 4
+  fi
+}
+JOBS="${JOBS:-$(default_jobs)}"
 
 # Enable/disable larger groups.
 BUILD_GL_STACK="${BUILD_GL_STACK:-ON}"        # glfw/freeglut/glew
 BUILD_EXR_STACK="${BUILD_EXR_STACK:-ON}"      # Imath/openjph/OpenEXR
 BUILD_IMAGEIO_STACK="${BUILD_IMAGEIO_STACK:-ON}"  # png/jpeg/tiff/openjpeg/jasper/gif
 BUILD_GTEST="${BUILD_GTEST:-OFF}"            # googletest (only needed for libjxl tests)
+if [[ "${IS_MACOS}" -eq 1 ]]; then
+  DEFAULT_OPENJPEG_BUILD_CODEC="OFF"
+else
+  DEFAULT_OPENJPEG_BUILD_CODEC="ON"
+fi
+OPENJPEG_BUILD_CODEC="${OPENJPEG_BUILD_CODEC:-${DEFAULT_OPENJPEG_BUILD_CODEC}}"
 
 # Prefer CMake-based builds when available.
 XZ_USE_AUTOTOOLS="${XZ_USE_AUTOTOOLS:-OFF}"
@@ -111,8 +146,19 @@ LCMS2_USE_AUTOTOOLS="${LCMS2_USE_AUTOTOOLS:-OFF}"
 
 strip_libcxx_flag() {
   local s="${1:-}"
+  if [[ "${IS_MACOS}" -eq 1 ]]; then
+    echo "${s}" | tr -s ' '
+    return 0
+  fi
   s="${s//-stdlib=libc++/}"
   echo "${s}" | tr -s ' '
+}
+
+find_xcrun_tool() {
+  local name="$1"
+  if command -v xcrun >/dev/null 2>&1; then
+    xcrun --find "${name}" 2>/dev/null || true
+  fi
 }
 
 resolve_prog() {
@@ -131,11 +177,42 @@ resolve_prog() {
   return 1
 }
 
-CC_BIN="$(resolve_prog "${CC_BIN}" || resolve_prog clang-20 || resolve_prog clang)"
-CXX_BIN="$(resolve_prog "${CXX_BIN}" || resolve_prog clang++-20 || resolve_prog clang++)"
-LD_BIN="$(resolve_prog "${LD_BIN}" || resolve_prog /usr/bin/ld.lld-20 || resolve_prog ld.lld)"
-AR_BIN="$(resolve_prog "${AR_BIN}" || resolve_prog llvm-ar-20 || resolve_prog llvm-ar || resolve_prog ar)"
-RANLIB_BIN="$(resolve_prog "${RANLIB_BIN}" || resolve_prog llvm-ranlib-20 || resolve_prog llvm-ranlib || resolve_prog ranlib)"
+patch_glew_cmake_macos() {
+  local src="$1"
+  if [[ "${IS_MACOS}" -ne 1 ]]; then
+    return 0
+  fi
+  local cmake_lists="${src}/CMakeLists.txt"
+  if [[ ! -f "${cmake_lists}" ]]; then
+    return 0
+  fi
+  if grep -q "AGL_LIBRARY AGL REQUIRED" "${cmake_lists}"; then
+    log "Patching glew-cmake to make AGL optional on macOS"
+    run perl -0pi -e 's/find_library\(AGL_LIBRARY AGL REQUIRED\)\s*\n\s*list\(APPEND LIBRARIES \\\$\{AGL_LIBRARY\}\)/find_library(AGL_LIBRARY AGL)\n  if(AGL_LIBRARY)\n    list(APPEND LIBRARIES ${AGL_LIBRARY})\n  endif()/s' "${cmake_lists}"
+  fi
+}
+
+if [[ "${IS_MACOS}" -eq 1 ]]; then
+  CC_BIN="$(resolve_prog "${CC_BIN}" || resolve_prog "$(find_xcrun_tool clang)" || resolve_prog clang)"
+  CXX_BIN="$(resolve_prog "${CXX_BIN}" || resolve_prog "$(find_xcrun_tool clang++)" || resolve_prog clang++)"
+  LD_BIN="$(resolve_prog "${LD_BIN}" || resolve_prog "$(find_xcrun_tool ld)" || resolve_prog ld)"
+  AR_BIN="$(resolve_prog "${AR_BIN}" || resolve_prog "$(find_xcrun_tool ar)" || resolve_prog ar)"
+  RANLIB_BIN="$(resolve_prog "${RANLIB_BIN}" || resolve_prog "$(find_xcrun_tool ranlib)" || resolve_prog ranlib)"
+else
+  CC_BIN="$(resolve_prog "${CC_BIN}" || resolve_prog clang-20 || resolve_prog clang)"
+  CXX_BIN="$(resolve_prog "${CXX_BIN}" || resolve_prog clang++-20 || resolve_prog clang++)"
+  LD_BIN="$(resolve_prog "${LD_BIN}" || resolve_prog /usr/bin/ld.lld-20 || resolve_prog ld.lld)"
+  AR_BIN="$(resolve_prog "${AR_BIN}" || resolve_prog llvm-ar-20 || resolve_prog llvm-ar || resolve_prog ar)"
+  RANLIB_BIN="$(resolve_prog "${RANLIB_BIN}" || resolve_prog llvm-ranlib-20 || resolve_prog llvm-ranlib || resolve_prog ranlib)"
+fi
+
+if [[ "${IS_MACOS}" -eq 1 ]]; then
+  CXX_STDLIB_FLAG="-stdlib=libc++"
+  LINKER_FLAGS_INIT=""
+else
+  CXX_STDLIB_FLAG=""
+  LINKER_FLAGS_INIT="-fuse-ld=lld"
+fi
 
 find_src_dir() {
   local label="$1"; shift
@@ -179,7 +256,10 @@ cmake_build_install() {
   local src="$1"; shift
   local cfg="$1"; shift
   local prefix="$1"; shift
-  local -a extra_args=("$@")
+  local -a extra_args=()
+  if (( $# )); then
+    extra_args=("$@")
+  fi
 
   CURRENT_PKG="${name}"
   CURRENT_PHASE="configure"
@@ -204,7 +284,7 @@ cmake_build_install() {
   local cflags
   cflags="$(strip_libcxx_flag "$(base_flags_for "${cfg}")")"
   local cxxflags
-  cxxflags="$(strip_libcxx_flag "$(base_flags_for "${cfg}")")"
+  cxxflags="$(strip_libcxx_flag "$(base_flags_for "${cfg}") ${CXX_STDLIB_FLAG}")"
 
   export PKG_CONFIG_PATH="${prefix}/lib/pkgconfig:${prefix}/share/pkgconfig:${PKG_CONFIG_PATH:-}"
 
@@ -226,18 +306,26 @@ cmake_build_install() {
     -DCMAKE_CXX_EXTENSIONS=OFF
     -DCMAKE_C_FLAGS_INIT="${cflags}"
     -DCMAKE_CXX_FLAGS_INIT="${cxxflags}"
-    -DCMAKE_EXE_LINKER_FLAGS_INIT="-fuse-ld=lld"
-    -DCMAKE_SHARED_LINKER_FLAGS_INIT="-fuse-ld=lld"
-    -DCMAKE_MODULE_LINKER_FLAGS_INIT="-fuse-ld=lld"
     -DPKG_CONFIG_USE_STATIC_LIBS=ON
   )
+  if [[ -n "${LINKER_FLAGS_INIT}" ]]; then
+    common+=(
+      -DCMAKE_EXE_LINKER_FLAGS_INIT="${LINKER_FLAGS_INIT}"
+      -DCMAKE_SHARED_LINKER_FLAGS_INIT="${LINKER_FLAGS_INIT}"
+      -DCMAKE_MODULE_LINKER_FLAGS_INIT="${LINKER_FLAGS_INIT}"
+    )
+  fi
 
   banner_phase "Configure" "${name} (${cfg})"
   log "Configuring ${name}"
   log "  src=${src}"
   log "  bld=${bld}"
   log "  prefix=${prefix}"
-  run cmake -S "${src}" -B "${bld}" "${common[@]}" "${extra_args[@]}"
+  if (( ${#extra_args[@]} )); then
+    run cmake -S "${src}" -B "${bld}" "${common[@]}" "${extra_args[@]}"
+  else
+    run cmake -S "${src}" -B "${bld}" "${common[@]}"
+  fi
 
   CURRENT_PHASE="build"
   banner "${name} (${cfg})"
@@ -255,7 +343,10 @@ autotools_build_install() {
   local src="$1"; shift
   local cfg="$1"; shift
   local prefix="$1"; shift
-  local -a extra_args=("$@")
+  local -a extra_args=()
+  if (( $# )); then
+    extra_args=("$@")
+  fi
 
   CURRENT_PKG="${name}"
   CURRENT_PHASE="bootstrap"
@@ -323,7 +414,7 @@ autotools_build_install() {
   local cflags
   cflags="$(strip_libcxx_flag "$(base_flags_for "${cfg}")")"
   local cxxflags
-  cxxflags="$(strip_libcxx_flag "$(base_flags_for "${cfg}")")"
+  cxxflags="$(strip_libcxx_flag "$(base_flags_for "${cfg}") ${CXX_STDLIB_FLAG}")"
 
   CURRENT_PHASE="configure"
   banner_phase "Configure" "${name} (${cfg})"
@@ -334,7 +425,7 @@ autotools_build_install() {
   (
     cd "${bld}"
     CC="${CC_BIN}" CXX="${CXX_BIN}" AR="${AR_BIN}" RANLIB="${RANLIB_BIN}" \
-      CFLAGS="${cflags}" CXXFLAGS="${cxxflags}" LDFLAGS="-fuse-ld=lld" \
+      CFLAGS="${cflags}" CXXFLAGS="${cxxflags}" LDFLAGS="${LINKER_FLAGS_INIT}" \
       run sh "${src}/configure" --prefix="${prefix}" --disable-shared --enable-static \
       "${extra_args[@]}"
 
@@ -567,8 +658,16 @@ build_for_cfg() {
       -DFREEGLUT_BUILD_SHARED_LIBS=OFF \
       -DFREEGLUT_BUILD_DEMOS=ON
 
-    cmake_build_install glew "${glew_src}" "${cfg}" "${prefix}" \
-      -DBUILD_UTILS=ON
+    patch_glew_cmake_macos "${glew_src}"
+    if [[ "${IS_MACOS}" -eq 1 ]]; then
+      cmake_build_install glew "${glew_src}" "${cfg}" "${prefix}" \
+        -Dglew-cmake_BUILD_SHARED=OFF \
+        -Dglew-cmake_BUILD_STATIC=ON \
+        -DONLY_LIBS=ON
+    else
+      cmake_build_install glew "${glew_src}" "${cfg}" "${prefix}" \
+        -DBUILD_UTILS=ON
+    fi
   fi
 
   # ---- Image IO libs (typical OIIO / toolchain) ----
@@ -588,8 +687,18 @@ build_for_cfg() {
       -DJPEG_SUPPORT=ON -DJPEG_DUAL_MODE_8_12=ON
     ensure_file "${prefix}/lib/libtiff.a"
 
+    local -a openjpeg_args=(
+      -DBUILD_CODEC="${OPENJPEG_BUILD_CODEC}"
+    )
+    if [[ "${IS_MACOS}" -eq 1 && "${OPENJPEG_BUILD_CODEC}" == "ON" ]]; then
+      openjpeg_args+=(
+        -DCMAKE_EXE_LINKER_FLAGS_INIT="-L${prefix}/lib"
+        -DCMAKE_SHARED_LINKER_FLAGS_INIT="-L${prefix}/lib"
+        -DCMAKE_MODULE_LINKER_FLAGS_INIT="-L${prefix}/lib"
+      )
+    fi
     cmake_build_install openjpeg "${openjpeg_src}" "${cfg}" "${prefix}" \
-      -DBUILD_CODEC=ON
+      "${openjpeg_args[@]}"
 
     cmake_build_install jasper "${jasper_src}" "${cfg}" "${prefix}" \
       -DBUILD_TESTING=OFF \
