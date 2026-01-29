@@ -136,6 +136,14 @@ BUILD_GTEST="${BUILD_GTEST:-OFF}"            # googletest (only needed for libjx
 BUILD_LIBJXL="${BUILD_LIBJXL:-ON}"
 BUILD_LIBUHDR="${BUILD_LIBUHDR:-ON}"
 BUILD_OCIO="${BUILD_OCIO:-ON}"
+BUILD_LIBRAW="${BUILD_LIBRAW:-ON}"
+BUILD_LIBHEIF="${BUILD_LIBHEIF:-ON}"
+BUILD_AOM="${BUILD_AOM:-ON}"
+BUILD_LIBDE265="${BUILD_LIBDE265:-ON}"
+BUILD_X265="${BUILD_X265:-ON}"
+BUILD_KVAZAAR="${BUILD_KVAZAAR:-ON}"
+BUILD_WEBP="${BUILD_WEBP:-ON}"
+BUILD_PTEX="${BUILD_PTEX:-ON}"
 if [[ "${IS_MACOS}" -eq 1 ]]; then
   DEFAULT_OPENJPEG_BUILD_CODEC="OFF"
 else
@@ -144,6 +152,8 @@ fi
 OPENJPEG_BUILD_CODEC="${OPENJPEG_BUILD_CODEC:-${DEFAULT_OPENJPEG_BUILD_CODEC}}"
 LIBJXL_ENABLE_TOOLS="${LIBJXL_ENABLE_TOOLS:-ON}"
 OCIO_BUILD_APPS="${OCIO_BUILD_APPS:-OFF}"
+LIBRAW_ENABLE_OPENMP="${LIBRAW_ENABLE_OPENMP:-OFF}"
+LIBRAW_ENABLE_EXAMPLES="${LIBRAW_ENABLE_EXAMPLES:-ON}"
 
 # Prefer CMake-based builds when available.
 XZ_USE_AUTOTOOLS="${XZ_USE_AUTOTOOLS:-OFF}"
@@ -613,6 +623,31 @@ build_for_cfg() {
     local ocio_src="${OCIO_SRC:-$(find_src_dir "OpenColorIO" "OpenColorIO" "OpenColorIO-*")}"
     local minizip_ng_src="${MINIZIP_NG_SRC:-$(find_src_dir "minizip-ng" "minizip-ng" "minizip-ng-*")}"
   fi
+  if [[ "${BUILD_WEBP}" == "ON" ]]; then
+    local webp_src="${WEBP_SRC:-$(find_src_dir "libwebp" "libwebp" "libwebp-*")}"
+  fi
+  if [[ "${BUILD_PTEX}" == "ON" ]]; then
+    local ptex_src="${PTEX_SRC:-$(find_src_dir "ptex" "ptex" "Ptex" "Ptex-*")}"
+  fi
+  if [[ "${BUILD_LIBRAW}" == "ON" ]]; then
+    local libraw_src="${LIBRAW_SRC:-$(find_src_dir "LibRaw" "LibRaw" "LibRaw-*")}"
+    local libraw_cmake_src="${LIBRAW_CMAKE_SRC:-$(find_src_dir "LibRaw-cmake" "LibRaw-cmake" "LibRaw-cmake-*")}"
+  fi
+  if [[ "${BUILD_LIBHEIF}" == "ON" ]]; then
+    local libheif_src="${LIBHEIF_SRC:-$(find_src_dir "libheif" "libheif" "libheif-*")}"
+  fi
+  if [[ "${BUILD_AOM}" == "ON" ]]; then
+    local aom_src="${AOM_SRC:-$(find_src_dir "aom" "aom" "aom-*")}"
+  fi
+  if [[ "${BUILD_LIBDE265}" == "ON" ]]; then
+    local libde265_src="${LIBDE265_SRC:-$(find_src_dir "libde265" "libde265" "libde265-*")}"
+  fi
+  if [[ "${BUILD_X265}" == "ON" ]]; then
+    local x265_src="${X265_SRC:-$(find_src_dir "x265" "x265_git" "x265-*")}"
+  fi
+  if [[ "${BUILD_KVAZAAR}" == "ON" ]]; then
+    local kvazaar_src="${KVAZAAR_SRC:-$(find_src_dir "kvazaar" "kvazaar" "kvazaar-*")}"
+  fi
 
   log "Resolved sources:"
   log "  zlib-ng=${zlib_ng_src}"
@@ -633,6 +668,31 @@ build_for_cfg() {
   if [[ "${BUILD_OCIO}" == "ON" ]]; then
     log "  OpenColorIO=${ocio_src}"
     log "  minizip-ng=${minizip_ng_src}"
+  fi
+  if [[ "${BUILD_WEBP}" == "ON" ]]; then
+    log "  libwebp=${webp_src}"
+  fi
+  if [[ "${BUILD_PTEX}" == "ON" ]]; then
+    log "  ptex=${ptex_src}"
+  fi
+  if [[ "${BUILD_LIBRAW}" == "ON" ]]; then
+    log "  LibRaw=${libraw_src}"
+    log "  LibRaw-cmake=${libraw_cmake_src}"
+  fi
+  if [[ "${BUILD_LIBHEIF}" == "ON" ]]; then
+    log "  libheif=${libheif_src}"
+  fi
+  if [[ "${BUILD_AOM}" == "ON" ]]; then
+    log "  aom=${aom_src}"
+  fi
+  if [[ "${BUILD_LIBDE265}" == "ON" ]]; then
+    log "  libde265=${libde265_src}"
+  fi
+  if [[ "${BUILD_X265}" == "ON" ]]; then
+    log "  x265=${x265_src}"
+  fi
+  if [[ "${BUILD_KVAZAAR}" == "ON" ]]; then
+    log "  kvazaar=${kvazaar_src}"
   fi
 
   # Fail fast if mandatory sources are missing.
@@ -677,6 +737,31 @@ build_for_cfg() {
   if [[ "${BUILD_OCIO}" == "ON" ]]; then
     require_dir "${ocio_src}" "OpenColorIO"
     require_dir "${minizip_ng_src}" "minizip-ng"
+  fi
+  if [[ "${BUILD_WEBP}" == "ON" ]]; then
+    require_dir "${webp_src}" "libwebp"
+  fi
+  if [[ "${BUILD_PTEX}" == "ON" ]]; then
+    require_dir "${ptex_src}" "ptex"
+  fi
+  if [[ "${BUILD_LIBRAW}" == "ON" ]]; then
+    require_dir "${libraw_src}" "LibRaw"
+    require_dir "${libraw_cmake_src}" "LibRaw-cmake"
+  fi
+  if [[ "${BUILD_LIBHEIF}" == "ON" ]]; then
+    require_dir "${libheif_src}" "libheif"
+  fi
+  if [[ "${BUILD_AOM}" == "ON" ]]; then
+    require_dir "${aom_src}" "aom"
+  fi
+  if [[ "${BUILD_LIBDE265}" == "ON" ]]; then
+    require_dir "${libde265_src}" "libde265"
+  fi
+  if [[ "${BUILD_X265}" == "ON" ]]; then
+    require_dir "${x265_src}" "x265"
+  fi
+  if [[ "${BUILD_KVAZAAR}" == "ON" ]]; then
+    require_dir "${kvazaar_src}" "kvazaar"
   fi
 
   # ---- Base compression / containers (mandatory for your workflow) ----
@@ -803,6 +888,78 @@ build_for_cfg() {
 
     giflib_build_install giflib "${giflib_src}" "${cfg}" "${prefix}"
     ensure_file "${prefix}/lib/libgif.a"
+
+    if [[ "${BUILD_WEBP}" == "ON" ]]; then
+      cmake_build_install libwebp "${webp_src}" "${cfg}" "${prefix}" \
+        -DWEBP_BUILD_ANIM_UTILS=OFF \
+        -DWEBP_BUILD_CWEBP=OFF \
+        -DWEBP_BUILD_DWEBP=OFF \
+        -DWEBP_BUILD_GIF2WEBP=OFF \
+        -DWEBP_BUILD_IMG2WEBP=OFF \
+        -DWEBP_BUILD_VWEBP=OFF \
+        -DWEBP_BUILD_WEBPINFO=OFF \
+        -DWEBP_BUILD_WEBPMUX=OFF \
+        -DWEBP_BUILD_EXTRAS=OFF \
+        -DWEBP_BUILD_FUZZTEST=OFF \
+        -DWEBP_BUILD_LIBWEBPMUX=ON
+    fi
+
+    if [[ "${BUILD_PTEX}" == "ON" ]]; then
+      cmake_build_install ptex "${ptex_src}" "${cfg}" "${prefix}" \
+        -DPTEX_BUILD_STATIC_LIBS=ON \
+        -DPTEX_BUILD_SHARED_LIBS=OFF \
+        -DPTEX_BUILD_DOCS=OFF
+    fi
+
+    if [[ "${BUILD_LIBRAW}" == "ON" ]]; then
+      cmake_build_install libraw "${libraw_cmake_src}" "${cfg}" "${prefix}" \
+        -DLIBRAW_PATH="${libraw_src}" \
+        -DENABLE_EXAMPLES="${LIBRAW_ENABLE_EXAMPLES}" \
+        -DENABLE_RAWSPEED=OFF \
+        -DENABLE_OPENMP="${LIBRAW_ENABLE_OPENMP}" \
+        -DENABLE_LCMS=ON \
+        -DENABLE_JASPER=ON
+    fi
+
+    if [[ "${BUILD_AOM}" == "ON" ]]; then
+      cmake_build_install aom "${aom_src}" "${cfg}" "${prefix}" \
+        -DENABLE_TESTS=OFF \
+        -DENABLE_EXAMPLES=OFF \
+        -DENABLE_TOOLS=OFF \
+        -DENABLE_DOCS=OFF \
+        -DENABLE_SHARED=OFF
+    fi
+
+    if [[ "${BUILD_LIBDE265}" == "ON" ]]; then
+      cmake_build_install libde265 "${libde265_src}" "${cfg}" "${prefix}" \
+        -DENABLE_SDL=OFF \
+        -DENABLE_DECODER=ON \
+        -DENABLE_ENCODER=OFF
+    fi
+
+    if [[ "${BUILD_X265}" == "ON" ]]; then
+      cmake_build_install x265 "${x265_src}/source" "${cfg}" "${prefix}" \
+        -DENABLE_SHARED=OFF \
+        -DENABLE_CLI=OFF \
+        -DENABLE_TESTS=OFF
+    fi
+
+    if [[ "${BUILD_KVAZAAR}" == "ON" ]]; then
+      cmake_build_install kvazaar "${kvazaar_src}" "${cfg}" "${prefix}" \
+        -DBUILD_SHARED_LIBS=OFF \
+        -DBUILD_TESTS=OFF
+    fi
+
+    if [[ "${BUILD_LIBHEIF}" == "ON" ]]; then
+      cmake_build_install libheif "${libheif_src}" "${cfg}" "${prefix}" \
+        -DENABLE_PLUGIN_LOADING=OFF \
+        -DWITH_LIBDE265=ON -DWITH_LIBDE265_PLUGIN=OFF \
+        -DWITH_X265=ON -DWITH_X265_PLUGIN=OFF \
+        -DWITH_KVAZAAR=ON -DWITH_KVAZAAR_PLUGIN=OFF \
+        -DWITH_AOM_DECODER=ON -DWITH_AOM_DECODER_PLUGIN=OFF \
+        -DWITH_AOM_ENCODER=ON -DWITH_AOM_ENCODER_PLUGIN=OFF \
+        -DWITH_DAV1D=OFF -DWITH_RAV1E=OFF
+    fi
   fi
 
   # ---- libjxl core deps ----
@@ -813,7 +970,7 @@ build_for_cfg() {
   cmake_build_install highway "${highway_src}" "${cfg}" "${prefix}" \
     -DHWY_ENABLE_TESTS=OFF \
     -DHWY_ENABLE_EXAMPLES=OFF \
-    -DHWY_ENABLE_CONTRIB=OFF \
+    -DHWY_ENABLE_CONTRIB=ON \
     -DHWY_FORCE_STATIC_LIBS=ON \
     -DHWY_SYSTEM_GTEST=ON \
     -DHWY_ENABLE_INSTALL=ON
