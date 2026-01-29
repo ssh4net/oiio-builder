@@ -133,12 +133,17 @@ BUILD_GL_STACK="${BUILD_GL_STACK:-ON}"        # glfw/freeglut/glew
 BUILD_EXR_STACK="${BUILD_EXR_STACK:-ON}"      # Imath/openjph/OpenEXR
 BUILD_IMAGEIO_STACK="${BUILD_IMAGEIO_STACK:-ON}"  # png/jpeg/tiff/openjpeg/jasper/gif
 BUILD_GTEST="${BUILD_GTEST:-OFF}"            # googletest (only needed for libjxl tests)
+BUILD_LIBJXL="${BUILD_LIBJXL:-ON}"
+BUILD_LIBUHDR="${BUILD_LIBUHDR:-ON}"
+BUILD_OCIO="${BUILD_OCIO:-ON}"
 if [[ "${IS_MACOS}" -eq 1 ]]; then
   DEFAULT_OPENJPEG_BUILD_CODEC="OFF"
 else
   DEFAULT_OPENJPEG_BUILD_CODEC="ON"
 fi
 OPENJPEG_BUILD_CODEC="${OPENJPEG_BUILD_CODEC:-${DEFAULT_OPENJPEG_BUILD_CODEC}}"
+LIBJXL_ENABLE_TOOLS="${LIBJXL_ENABLE_TOOLS:-ON}"
+OCIO_BUILD_APPS="${OCIO_BUILD_APPS:-OFF}"
 
 # Prefer CMake-based builds when available.
 XZ_USE_AUTOTOOLS="${XZ_USE_AUTOTOOLS:-OFF}"
@@ -192,6 +197,20 @@ patch_glew_cmake_macos() {
   fi
 }
 
+patch_libjxl_openexr_static() {
+  local src="$1"
+  local cmake_file="${src}/lib/jxl_extras.cmake"
+  if [[ ! -f "${cmake_file}" ]]; then
+    return 0
+  fi
+  if rg -q "JXL_OPENEXR_STATIC_PATCH" "${cmake_file}"; then
+    return 0
+  fi
+  log "Patching libjxl to use OpenEXR static libs when available"
+  run perl -0pi -e 's/list\\(APPEND JXL_EXTRAS_CODEC_INTERNAL_LIBRARIES PkgConfig::OpenEXR\\)/# JXL_OPENEXR_STATIC_PATCH\\n    list(APPEND JXL_EXTRAS_CODEC_INTERNAL_LIBRARIES PkgConfig::OpenEXR ${OpenEXR_STATIC_LIBRARIES})/s' "${cmake_file}"
+  run perl -0pi -e 's/(if\\s*\\(\\s*OpenEXR_FOUND\\s*\\)\\s*\\n)/$1  # JXL_OPENEXR_STATIC_PATCH\\n  if (OpenEXR_STATIC_LIBRARIES AND TARGET PkgConfig::OpenEXR)\\n    set_property(TARGET PkgConfig::OpenEXR APPEND PROPERTY INTERFACE_LINK_LIBRARIES \"${OpenEXR_STATIC_LIBRARIES}\")\\n  endif()\\n  if (OpenEXR_LIBRARY_DIRS AND TARGET PkgConfig::OpenEXR)\\n    set_property(TARGET PkgConfig::OpenEXR APPEND PROPERTY INTERFACE_LINK_DIRECTORIES \"${OpenEXR_LIBRARY_DIRS}\")\\n  endif()\\n/s' "${cmake_file}"
+}
+
 if [[ "${IS_MACOS}" -eq 1 ]]; then
   CC_BIN="$(resolve_prog "${CC_BIN}" || resolve_prog "$(find_xcrun_tool clang)" || resolve_prog clang)"
   CXX_BIN="$(resolve_prog "${CXX_BIN}" || resolve_prog "$(find_xcrun_tool clang++)" || resolve_prog clang++)"
@@ -211,8 +230,38 @@ if [[ "${IS_MACOS}" -eq 1 ]]; then
   LINKER_FLAGS_INIT=""
 else
   CXX_STDLIB_FLAG=""
-  LINKER_FLAGS_INIT="-fuse-ld=lld"
+LINKER_FLAGS_INIT="-fuse-ld=lld"
 fi
+
+PKG_CONFIG_OVERRIDE_ROOT="${PKG_CONFIG_OVERRIDE_ROOT:-${BUILD_ROOT}/pkgconfig_override}"
+
+make_openexr_pc_override() {
+  local prefix="$1"
+  local cfg="$2"
+  local src="${prefix}/lib/pkgconfig/OpenEXR.pc"
+  if [[ ! -f "${src}" ]]; then
+    return 0
+  fi
+  local openjph_lib="openjph"
+  if [[ "${cfg}" == "Debug" && -f "${prefix}/lib/libopenjph_d.a" ]]; then
+    openjph_lib="openjph_d"
+  fi
+  local override_dir="${PKG_CONFIG_OVERRIDE_ROOT}/${cfg}"
+  local dst="${override_dir}/OpenEXR.pc"
+  mkdir -p "${override_dir}"
+  # If already patched, keep as-is.
+  if [[ -f "${dst}" ]] && rg -q "openjph" "${dst}"; then
+    return 0
+  fi
+  awk -v ojph="${openjph_lib}" '
+    /^Libs:/ {
+      if ($0 ~ /openjph/ || $0 ~ /deflate/) { print; next }
+      print $0 " -ldeflate -l" ojph
+      next
+    }
+    { print }
+  ' "${src}" > "${dst}"
+}
 
 find_src_dir() {
   local label="$1"; shift
@@ -286,7 +335,12 @@ cmake_build_install() {
   local cxxflags
   cxxflags="$(strip_libcxx_flag "$(base_flags_for "${cfg}") ${CXX_STDLIB_FLAG}")"
 
-  export PKG_CONFIG_PATH="${prefix}/lib/pkgconfig:${prefix}/share/pkgconfig:${PKG_CONFIG_PATH:-}"
+  local override_dir="${PKG_CONFIG_OVERRIDE_ROOT}/${cfg}"
+  if [[ -d "${override_dir}" ]]; then
+    export PKG_CONFIG_PATH="${override_dir}:${prefix}/lib/pkgconfig:${prefix}/share/pkgconfig:${PKG_CONFIG_PATH:-}"
+  else
+    export PKG_CONFIG_PATH="${prefix}/lib/pkgconfig:${prefix}/share/pkgconfig:${PKG_CONFIG_PATH:-}"
+  fi
 
   local -a common=(
     -G Ninja
@@ -539,13 +593,25 @@ build_for_cfg() {
     local giflib_src="${GIFLIB_SRC:-$(find_src_dir "giflib" "giflib" "giflib-*" "gif*")}"
   fi
 
-  if [[ "${BUILD_EXR_STACK}" == "ON" ]]; then
+  if [[ "${BUILD_EXR_STACK}" == "ON" || "${BUILD_OCIO}" == "ON" ]]; then
     local imath_src="${IMATH_SRC:-$(find_src_dir "Imath" "Imath" "Imath-*")}"
+  fi
+  if [[ "${BUILD_EXR_STACK}" == "ON" ]]; then
     local openexr_src="${OPENEXR_SRC:-$(find_src_dir "OpenEXR" "openexr" "openexr-*" "OpenEXR" "OpenEXR-*")}"
     local openjph_src="${OPENJPH_SRC:-$(find_src_dir "openjph" "openjph" "openjph-*" "OpenJPH" "OpenJPH-*")}"
   fi
   if [[ "${BUILD_GTEST}" == "ON" ]]; then
     local gtest_src="${GTEST_SRC:-$(find_src_dir "googletest" "googletest" "googletest-*" "gtest" "gtest-*")}"
+  fi
+  if [[ "${BUILD_LIBJXL}" == "ON" ]]; then
+    local libjxl_src="${LIBJXL_SRC:-$(find_src_dir "libjxl" "libjxl" "libjxl-*")}"
+  fi
+  if [[ "${BUILD_LIBUHDR}" == "ON" ]]; then
+    local libultrahdr_src="${LIBUHDR_SRC:-$(find_src_dir "libultrahdr" "libultrahdr" "libultrahdr-*")}"
+  fi
+  if [[ "${BUILD_OCIO}" == "ON" ]]; then
+    local ocio_src="${OCIO_SRC:-$(find_src_dir "OpenColorIO" "OpenColorIO" "OpenColorIO-*")}"
+    local minizip_ng_src="${MINIZIP_NG_SRC:-$(find_src_dir "minizip-ng" "minizip-ng" "minizip-ng-*")}"
   fi
 
   log "Resolved sources:"
@@ -558,6 +624,16 @@ build_for_cfg() {
   log "  brotli=${brotli_src}"
   log "  highway=${highway_src}"
   log "  lcms2=${lcms2_src}"
+  if [[ "${BUILD_LIBJXL}" == "ON" ]]; then
+    log "  libjxl=${libjxl_src}"
+  fi
+  if [[ "${BUILD_LIBUHDR}" == "ON" ]]; then
+    log "  libultrahdr=${libultrahdr_src}"
+  fi
+  if [[ "${BUILD_OCIO}" == "ON" ]]; then
+    log "  OpenColorIO=${ocio_src}"
+    log "  minizip-ng=${minizip_ng_src}"
+  fi
 
   # Fail fast if mandatory sources are missing.
   require_dir "${zlib_ng_src}" "zlib-ng"
@@ -586,8 +662,21 @@ build_for_cfg() {
     require_dir "${openexr_src}" "OpenEXR"
     require_dir "${openjph_src}" "openjph"
   fi
+  if [[ "${BUILD_OCIO}" == "ON" && "${BUILD_EXR_STACK}" != "ON" ]]; then
+    require_dir "${imath_src}" "Imath"
+  fi
   if [[ "${BUILD_GTEST}" == "ON" ]]; then
     require_dir "${gtest_src}" "googletest"
+  fi
+  if [[ "${BUILD_LIBJXL}" == "ON" ]]; then
+    require_dir "${libjxl_src}" "libjxl"
+  fi
+  if [[ "${BUILD_LIBUHDR}" == "ON" ]]; then
+    require_dir "${libultrahdr_src}" "libultrahdr"
+  fi
+  if [[ "${BUILD_OCIO}" == "ON" ]]; then
+    require_dir "${ocio_src}" "OpenColorIO"
+    require_dir "${minizip_ng_src}" "minizip-ng"
   fi
 
   # ---- Base compression / containers (mandatory for your workflow) ----
@@ -767,17 +856,94 @@ build_for_cfg() {
       -DOPENEXR_FORCE_INTERNAL_IMATH=OFF \
       -DOPENEXR_FORCE_INTERNAL_DEFLATE=OFF \
       -DOPENEXR_FORCE_INTERNAL_OPENJPH=OFF
+    make_openexr_pc_override "${prefix}" "${cfg}"
 
     if [[ -d "${SRC_ROOT}/expat/expat" ]]; then
       cmake_build_install expat "${SRC_ROOT}/expat/expat" "${cfg}" "${prefix}" \
         -DEXPAT_BUILD_TESTS=OFF -DEXPAT_BUILD_EXAMPLES=ON
+    elif [[ -d "${SRC_ROOT}/libexpat/expat" ]]; then
+      cmake_build_install expat "${SRC_ROOT}/libexpat/expat" "${cfg}" "${prefix}" \
+        -DEXPAT_BUILD_TESTS=OFF -DEXPAT_BUILD_EXAMPLES=ON
     elif [[ -d "${SRC_ROOT}/expat" ]]; then
       cmake_build_install expat "${SRC_ROOT}/expat" "${cfg}" "${prefix}" \
+        -DEXPAT_BUILD_TESTS=OFF -DEXPAT_BUILD_EXAMPLES=ON
+    elif [[ -d "${SRC_ROOT}/libexpat" ]]; then
+      cmake_build_install expat "${SRC_ROOT}/libexpat" "${cfg}" "${prefix}" \
+        -DEXPAT_BUILD_TESTS=OFF -DEXPAT_BUILD_EXAMPLES=ON
+    fi
+  fi
+  if [[ "${BUILD_OCIO}" == "ON" && "${BUILD_EXR_STACK}" != "ON" ]]; then
+    cmake_build_install imath "${imath_src}" "${cfg}" "${prefix}" \
+      -DIMATH_BUILD_TESTS=OFF \
+      -DIMATH_BUILD_SHARED_LIBS=OFF
+  fi
+
+  # ---- libjxl (uses brotli/highway/lcms2 + optional image codecs) ----
+  if [[ "${BUILD_LIBJXL}" == "ON" ]]; then
+    local jxl_enable_openexr="ON"
+    if [[ "${BUILD_EXR_STACK}" != "ON" ]]; then
+      jxl_enable_openexr="OFF"
+    fi
+    patch_libjxl_openexr_static "${libjxl_src}"
+    cmake_build_install libjxl "${libjxl_src}" "${cfg}" "${prefix}" \
+      -DBUILD_TESTING=OFF \
+      -DJPEGXL_ENABLE_TOOLS="${LIBJXL_ENABLE_TOOLS}" \
+      -DJPEGXL_ENABLE_OPENEXR="${jxl_enable_openexr}" \
+      -DJPEGXL_ENABLE_BENCHMARK=OFF \
+      -DJPEGXL_ENABLE_DEVTOOLS=OFF \
+      -DJPEGXL_ENABLE_EXAMPLES=OFF \
+      -DJPEGXL_ENABLE_DOXYGEN=OFF \
+      -DJPEGXL_ENABLE_MANPAGES=OFF \
+      -DJPEGXL_ENABLE_VIEWERS=OFF \
+      -DJPEGXL_ENABLE_JNI=OFF \
+      -DJPEGXL_ENABLE_PLUGINS=OFF \
+      -DJPEGXL_ENABLE_SKCMS=OFF \
+      -DJPEGXL_ENABLE_SJPEG=OFF \
+      -DJPEGXL_FORCE_SYSTEM_BROTLI=ON \
+      -DJPEGXL_FORCE_SYSTEM_LCMS2=ON \
+      -DJPEGXL_FORCE_SYSTEM_HWY=ON \
+      -DJPEGXL_FORCE_SYSTEM_GTEST=ON \
+      -DJPEGXL_BUNDLE_LIBPNG=OFF
+  fi
+
+  # ---- libuhdr (libultrahdr) ----
+  if [[ "${BUILD_LIBUHDR}" == "ON" ]]; then
+    cmake_build_install libultrahdr "${libultrahdr_src}" "${cfg}" "${prefix}" \
+      -DUHDR_BUILD_DEPS=OFF \
+      -DUHDR_BUILD_TESTS=OFF \
+      -DUHDR_BUILD_BENCHMARK=OFF
+  fi
+
+  # ---- Misc small deps used by OIIO stacks ----
+  if [[ "${BUILD_OCIO}" == "ON" && ! -f "${prefix}/lib/libexpat.a" ]]; then
+    if [[ -d "${SRC_ROOT}/expat/expat" ]]; then
+      cmake_build_install expat "${SRC_ROOT}/expat/expat" "${cfg}" "${prefix}" \
+        -DEXPAT_BUILD_TESTS=OFF -DEXPAT_BUILD_EXAMPLES=ON
+    elif [[ -d "${SRC_ROOT}/libexpat/expat" ]]; then
+      cmake_build_install expat "${SRC_ROOT}/libexpat/expat" "${cfg}" "${prefix}" \
+        -DEXPAT_BUILD_TESTS=OFF -DEXPAT_BUILD_EXAMPLES=ON
+    elif [[ -d "${SRC_ROOT}/expat" ]]; then
+      cmake_build_install expat "${SRC_ROOT}/expat" "${cfg}" "${prefix}" \
+        -DEXPAT_BUILD_TESTS=OFF -DEXPAT_BUILD_EXAMPLES=ON
+    elif [[ -d "${SRC_ROOT}/libexpat" ]]; then
+      cmake_build_install expat "${SRC_ROOT}/libexpat" "${cfg}" "${prefix}" \
         -DEXPAT_BUILD_TESTS=OFF -DEXPAT_BUILD_EXAMPLES=ON
     fi
   fi
 
-  # ---- Misc small deps used by OIIO stacks ----
+  if [[ "${BUILD_OCIO}" == "ON" ]]; then
+    cmake_build_install minizip-ng "${minizip_ng_src}" "${cfg}" "${prefix}" \
+      -DMZ_COMPAT=OFF \
+      -DMZ_BUILD_TESTS=OFF \
+      -DMZ_FORCE_FETCH_LIBS=OFF \
+      -DMZ_ZLIB=ON \
+      -DMZ_BZIP2=OFF \
+      -DMZ_LZMA=OFF \
+      -DMZ_ZSTD=OFF \
+      -DMZ_LIBCOMP=OFF \
+      -DMZ_OPENSSL=OFF
+  fi
+
   if [[ -d "${SRC_ROOT}/yaml-cpp" ]]; then
     cmake_build_install yaml-cpp "${SRC_ROOT}/yaml-cpp" "${cfg}" "${prefix}" \
       -DYAML_BUILD_SHARED_LIBS=OFF \
@@ -788,6 +954,19 @@ build_for_cfg() {
     cmake_build_install pystring "${SRC_ROOT}/pystring" "${cfg}" "${prefix}"
   fi
 
+  if [[ "${BUILD_OCIO}" == "ON" ]]; then
+    cmake_build_install OpenColorIO "${ocio_src}" "${cfg}" "${prefix}" \
+      -DOCIO_INSTALL_EXT_PACKAGES=NONE \
+      -DOCIO_BUILD_APPS="${OCIO_BUILD_APPS}" \
+      -DOCIO_BUILD_OPENFX=OFF \
+      -DOCIO_BUILD_NUKE=OFF \
+      -DOCIO_BUILD_TESTS=OFF \
+      -DOCIO_BUILD_GPU_TESTS=OFF \
+      -DOCIO_BUILD_PYTHON=OFF \
+      -DOCIO_BUILD_JAVA=OFF \
+      -DOCIO_BUILD_DOCS=OFF
+  fi
+
   if [[ "${BUILD_GTEST}" == "ON" ]]; then
     cmake_build_install googletest "${gtest_src}" "${cfg}" "${prefix}" \
       -DINSTALL_GTEST=ON \
@@ -796,8 +975,9 @@ build_for_cfg() {
       -Dgtest_build_samples=OFF
   fi
 
-  # Note: this script only builds the dependency prefix. Build libjxl/JXLGPU
-  # from your repo separately, pointing CMake at PREFIX_DEBUG/PREFIX_RELEASE.
+  # Note: this script builds the dependency prefix and optional libs (libjxl,
+  # libuhdr, OpenColorIO). Build your app/repo separately, pointing CMake at
+  # PREFIX_DEBUG/PREFIX_RELEASE.
 }
 
 mkdir -p "${BUILD_ROOT}" "${PREFIX_RELEASE}" "${PREFIX_DEBUG}"
