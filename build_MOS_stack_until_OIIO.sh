@@ -244,6 +244,202 @@ LINKER_FLAGS_INIT="-fuse-ld=lld"
 fi
 
 PKG_CONFIG_OVERRIDE_ROOT="${PKG_CONFIG_OVERRIDE_ROOT:-${BUILD_ROOT}/pkgconfig_override}"
+STAMP_ROOT="${STAMP_ROOT:-${BUILD_ROOT}/.stamp}"
+STAMP_MODE="${STAMP_MODE:-ON}"
+FORCE_REBUILD="${FORCE_REBUILD:-OFF}"
+FORCE_REBUILD_PKGS="${FORCE_REBUILD_PKGS:-}"
+
+hash_cmd_detect() {
+  if command -v shasum >/dev/null 2>&1; then
+    echo "shasum -a 256"
+    return 0
+  fi
+  if command -v sha256sum >/dev/null 2>&1; then
+    echo "sha256sum"
+    return 0
+  fi
+  if command -v openssl >/dev/null 2>&1; then
+    echo "openssl dgst -sha256"
+    return 0
+  fi
+  echo ""
+}
+
+HASH_CMD="$(hash_cmd_detect)"
+
+hash_stream() {
+  if [[ -z "${HASH_CMD}" ]]; then
+    echo "nohash"
+    return 0
+  fi
+  local out
+  out="$(eval "${HASH_CMD}" | awk '{print $NF}')"
+  echo "${out:-nohash}"
+}
+
+hash_file() {
+  local f="$1"
+  if [[ -z "${HASH_CMD}" || ! -f "${f}" ]]; then
+    echo "nohash"
+    return 0
+  fi
+  local out
+  out="$(eval "${HASH_CMD} \"${f}\"" | awk '{print $NF}')"
+  echo "${out:-nohash}"
+}
+
+dir_state_hash() {
+  local dir="$1"
+  if [[ -d "${dir}/.git" ]] && command -v git >/dev/null 2>&1; then
+    local head dirty
+    head="$(git -C "${dir}" rev-parse HEAD 2>/dev/null || echo "nogit")"
+    dirty="$(git -C "${dir}" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
+    printf 'git:%s:dirty=%s' "${head}" "${dirty}"
+    return 0
+  fi
+  if [[ -z "${HASH_CMD}" ]]; then
+    echo "nogit"
+    return 0
+  fi
+  local stat_fmt
+  if stat -f "%m %z %N" / >/dev/null 2>&1; then
+    stat_fmt="stat -f \"%m %z %N\""
+  else
+    stat_fmt="stat -c \"%Y %s %n\""
+  fi
+  (
+    cd "${dir}" || exit 0
+    find . -type f -not -path "./.git/*" -print | LC_ALL=C sort | while read -r f; do
+      eval "${stat_fmt} \"${f#./}\"" || true
+    done
+  ) | hash_stream
+}
+
+toolchain_fingerprint() {
+  local cc_ver="" cxx_ver="" ld_ver="" ar_ver="" ranlib_ver=""
+  cc_ver="$("${CC_BIN}" --version 2>/dev/null | head -n1 || true)"
+  cxx_ver="$("${CXX_BIN}" --version 2>/dev/null | head -n1 || true)"
+  ld_ver="$("${LD_BIN}" --version 2>/dev/null | head -n1 || true)"
+  ar_ver="$("${AR_BIN}" --version 2>/dev/null | head -n1 || true)"
+  ranlib_ver="$("${RANLIB_BIN}" --version 2>/dev/null | head -n1 || true)"
+  printf 'cc=%s|cxx=%s|ld=%s|ar=%s|ranlib=%s' "${cc_ver}" "${cxx_ver}" "${ld_ver}" "${ar_ver}" "${ranlib_ver}"
+}
+
+TOOLCHAIN_FP="$(toolchain_fingerprint)"
+
+pkg_deps() {
+  case "$1" in
+    libpng) echo "zlib-ng" ;;
+    libtiff) echo "zlib-ng libjpeg-turbo libdeflate zstd" ;;
+    openjpeg) echo "libpng libtiff lcms2 zlib-ng libjpeg-turbo" ;;
+    libxml2) echo "xz" ;;
+    openexr) echo "imath libdeflate openjph zlib-ng" ;;
+    openjph) echo "libtiff" ;;
+    libjxl) echo "brotli highway lcms2 libpng libjpeg-turbo giflib openexr zlib-ng" ;;
+    libultrahdr) echo "libjpeg-turbo" ;;
+    minizip-ng) echo "zlib-ng" ;;
+    OpenColorIO) echo "expat yaml-cpp pystring minizip-ng zlib-ng imath lcms2" ;;
+    ptex) echo "libdeflate" ;;
+    libraw) echo "libjpeg-turbo lcms2 zlib-ng jasper libxml2" ;;
+    libheif) echo "libde265 x265 kvazaar aom libjpeg-turbo libpng zlib-ng brotli libwebp" ;;
+    *) echo "" ;;
+  esac
+}
+
+stamp_path() {
+  local cfg="$1"
+  local name="$2"
+  echo "${STAMP_ROOT}/${cfg}/${name}.stamp"
+}
+
+deps_stamp_key() {
+  local cfg="$1"; shift
+  local deps=("$@")
+  local out=""
+  local dep dep_stamp
+  for dep in "${deps[@]}"; do
+    dep_stamp="$(stamp_path "${cfg}" "${dep}")"
+    if [[ -f "${dep_stamp}" ]]; then
+      out+="${dep}=$(hash_file "${dep_stamp}") "
+    else
+      out+="${dep}=missing "
+    fi
+  done
+  echo "${out}"
+}
+
+should_rebuild_pkg() {
+  local name="$1"; shift
+  local cfg="$1"; shift
+  local src="$1"; shift
+  local prefix="$1"; shift
+  local args_key="$1"; shift
+  local cflags="$1"; shift
+  local cxxflags="$1"; shift
+  local deps_str
+  deps_str="$(pkg_deps "${name}")"
+  local -a deps=()
+  if [[ -n "${deps_str}" ]]; then
+    # shellcheck disable=SC2206
+    deps=( ${deps_str} )
+  fi
+  if [[ "${STAMP_MODE}" != "ON" ]]; then
+    return 0
+  fi
+  if [[ "${FORCE_REBUILD}" == "ON" ]]; then
+    return 0
+  fi
+  if [[ -n "${FORCE_REBUILD_PKGS}" ]]; then
+    if [[ " ${FORCE_REBUILD_PKGS} " == *" ${name} "* ]]; then
+      return 0
+    fi
+  fi
+  local src_hash
+  src_hash="$(dir_state_hash "${src}")"
+  local dep_key
+  dep_key="$(deps_stamp_key "${cfg}" "${deps[@]}")"
+  local key
+  key="$(printf 'pkg=%s\ncfg=%s\nsrc=%s\ntoolchain=%s\nprefix=%s\ncflags=%s\ncxxflags=%s\nargs=%s\ndeps=%s\n' \
+    "${name}" "${cfg}" "${src_hash}" "${TOOLCHAIN_FP}" "${prefix}" "${cflags}" "${cxxflags}" "${args_key}" "${dep_key}")"
+  local stamp
+  stamp="$(stamp_path "${cfg}" "${name}")"
+  if [[ -f "${stamp}" ]]; then
+    local existing
+    existing="$(cat "${stamp}")"
+    if [[ "${existing}" == "${key}" ]]; then
+      return 1
+    fi
+  fi
+  return 0
+}
+
+write_stamp() {
+  local name="$1"; shift
+  local cfg="$1"; shift
+  local src="$1"; shift
+  local prefix="$1"; shift
+  local args_key="$1"; shift
+  local cflags="$1"; shift
+  local cxxflags="$1"; shift
+  local deps_str
+  deps_str="$(pkg_deps "${name}")"
+  local -a deps=()
+  if [[ -n "${deps_str}" ]]; then
+    # shellcheck disable=SC2206
+    deps=( ${deps_str} )
+  fi
+  local src_hash
+  src_hash="$(dir_state_hash "${src}")"
+  local dep_key
+  dep_key="$(deps_stamp_key "${cfg}" "${deps[@]}")"
+  local key
+  key="$(printf 'pkg=%s\ncfg=%s\nsrc=%s\ntoolchain=%s\nprefix=%s\ncflags=%s\ncxxflags=%s\nargs=%s\ndeps=%s\n' \
+    "${name}" "${cfg}" "${src_hash}" "${TOOLCHAIN_FP}" "${prefix}" "${cflags}" "${cxxflags}" "${args_key}" "${dep_key}")"
+  local stamp
+  stamp="$(stamp_path "${cfg}" "${name}")"
+  mkdir -p "$(dirname -- "${stamp}")"
+  printf '%s' "${key}" > "${stamp}"
+}
 
 make_openexr_pc_override() {
   local prefix="$1"
@@ -344,6 +540,13 @@ cmake_build_install() {
   cflags="$(strip_libcxx_flag "$(base_flags_for "${cfg}")")"
   local cxxflags
   cxxflags="$(strip_libcxx_flag "$(base_flags_for "${cfg}") ${CXX_STDLIB_FLAG}")"
+  local args_key
+  args_key="$(print_cmd "${extra_args[@]}")"
+
+  if ! should_rebuild_pkg "${name}" "${cfg}" "${src}" "${prefix}" "${args_key}" "${cflags}" "${cxxflags}"; then
+    log "Skipping ${name} (${cfg}) - up to date"
+    return 0
+  fi
 
   local override_dir="${PKG_CONFIG_OVERRIDE_ROOT}/${cfg}"
   if [[ -d "${override_dir}" ]]; then
@@ -400,6 +603,7 @@ cmake_build_install() {
   banner_phase "Install" "${name} (${cfg})"
   log "Installing ${name}"
   run cmake --install "${bld}"
+  write_stamp "${name}" "${cfg}" "${src}" "${prefix}" "${args_key}" "${cflags}" "${cxxflags}"
 }
 
 autotools_build_install() {
@@ -471,14 +675,20 @@ autotools_build_install() {
   fi
   fix_crlf_in_place "${src}/configure"
 
-  local bld="${BUILD_ROOT}/${cfg}/${name}"
-  rm -rf "${bld}"
-  mkdir -p "${bld}" "${prefix}"
-
   local cflags
   cflags="$(strip_libcxx_flag "$(base_flags_for "${cfg}")")"
   local cxxflags
   cxxflags="$(strip_libcxx_flag "$(base_flags_for "${cfg}") ${CXX_STDLIB_FLAG}")"
+  local args_key
+  args_key="$(print_cmd "${extra_args[@]}")"
+
+  if ! should_rebuild_pkg "${name}" "${cfg}" "${src}" "${prefix}" "${args_key}" "${cflags}" "${cxxflags}"; then
+    log "Skipping ${name} (${cfg}) - up to date"
+    return 0
+  fi
+  local bld="${BUILD_ROOT}/${cfg}/${name}"
+  rm -rf "${bld}"
+  mkdir -p "${bld}" "${prefix}"
 
   CURRENT_PHASE="configure"
   banner_phase "Configure" "${name} (${cfg})"
@@ -503,6 +713,7 @@ autotools_build_install() {
     log "Installing ${name}"
     run make install
   )
+  write_stamp "${name}" "${cfg}" "${src}" "${prefix}" "${args_key}" "${cflags}" "${cxxflags}"
 }
 
 giflib_build_install() {
@@ -517,6 +728,12 @@ giflib_build_install() {
   local cflags
   cflags="$(strip_libcxx_flag "$(base_flags_for "${cfg}")")"
   cflags="${cflags} -std=gnu99 -Wall -Wno-format-truncation"
+  local args_key="manual"
+
+  if ! should_rebuild_pkg "${name}" "${cfg}" "${src}" "${prefix}" "${args_key}" "${cflags}" "${cflags}"; then
+    log "Skipping ${name} (${cfg}) - up to date"
+    return 0
+  fi
 
   log "Building/Installing ${name}"
   log "  src=${src}"
@@ -540,6 +757,7 @@ giflib_build_install() {
     run install -m 644 libgif.a "${prefix}/lib/libgif.a"
     run install -m 644 libutil.a "${prefix}/lib/libutil.a"
   )
+  write_stamp "${name}" "${cfg}" "${src}" "${prefix}" "${args_key}" "${cflags}" "${cflags}"
 }
 
 ensure_file() {
