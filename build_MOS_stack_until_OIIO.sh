@@ -354,7 +354,12 @@ stamp_path() {
 
 deps_stamp_key() {
   local cfg="$1"; shift
-  local deps=("$@")
+  if (( $# == 0 )); then
+    echo ""
+    return 0
+  fi
+  local -a deps=()
+  deps=("$@")
   local out=""
   local dep dep_stamp
   for dep in "${deps[@]}"; do
@@ -397,7 +402,11 @@ should_rebuild_pkg() {
   local src_hash
   src_hash="$(dir_state_hash "${src}")"
   local dep_key
-  dep_key="$(deps_stamp_key "${cfg}" "${deps[@]}")"
+  if (( ${#deps[@]} )); then
+    dep_key="$(deps_stamp_key "${cfg}" "${deps[@]}")"
+  else
+    dep_key="$(deps_stamp_key "${cfg}")"
+  fi
   local key
   key="$(printf 'pkg=%s\ncfg=%s\nsrc=%s\ntoolchain=%s\nprefix=%s\ncflags=%s\ncxxflags=%s\nargs=%s\ndeps=%s\n' \
     "${name}" "${cfg}" "${src_hash}" "${TOOLCHAIN_FP}" "${prefix}" "${cflags}" "${cxxflags}" "${args_key}" "${dep_key}")"
@@ -431,7 +440,11 @@ write_stamp() {
   local src_hash
   src_hash="$(dir_state_hash "${src}")"
   local dep_key
-  dep_key="$(deps_stamp_key "${cfg}" "${deps[@]}")"
+  if (( ${#deps[@]} )); then
+    dep_key="$(deps_stamp_key "${cfg}" "${deps[@]}")"
+  else
+    dep_key="$(deps_stamp_key "${cfg}")"
+  fi
   local key
   key="$(printf 'pkg=%s\ncfg=%s\nsrc=%s\ntoolchain=%s\nprefix=%s\ncflags=%s\ncxxflags=%s\nargs=%s\ndeps=%s\n' \
     "${name}" "${cfg}" "${src_hash}" "${TOOLCHAIN_FP}" "${prefix}" "${cflags}" "${cxxflags}" "${args_key}" "${dep_key}")"
@@ -511,7 +524,8 @@ cmake_build_install() {
   local src="$1"; shift
   local cfg="$1"; shift
   local prefix="$1"; shift
-  local -a extra_args=()
+  local -a extra_args
+  extra_args=()
   if (( $# )); then
     extra_args=("$@")
   fi
@@ -540,8 +554,10 @@ cmake_build_install() {
   cflags="$(strip_libcxx_flag "$(base_flags_for "${cfg}")")"
   local cxxflags
   cxxflags="$(strip_libcxx_flag "$(base_flags_for "${cfg}") ${CXX_STDLIB_FLAG}")"
-  local args_key
-  args_key="$(print_cmd "${extra_args[@]}")"
+  local args_key=""
+  if (( ${#extra_args[@]} )); then
+    args_key="$(print_cmd "${extra_args[@]}")"
+  fi
 
   if ! should_rebuild_pkg "${name}" "${cfg}" "${src}" "${prefix}" "${args_key}" "${cflags}" "${cxxflags}"; then
     log "Skipping ${name} (${cfg}) - up to date"
@@ -611,7 +627,8 @@ autotools_build_install() {
   local src="$1"; shift
   local cfg="$1"; shift
   local prefix="$1"; shift
-  local -a extra_args=()
+  local -a extra_args
+  extra_args=()
   if (( $# )); then
     extra_args=("$@")
   fi
@@ -679,8 +696,10 @@ autotools_build_install() {
   cflags="$(strip_libcxx_flag "$(base_flags_for "${cfg}")")"
   local cxxflags
   cxxflags="$(strip_libcxx_flag "$(base_flags_for "${cfg}") ${CXX_STDLIB_FLAG}")"
-  local args_key
-  args_key="$(print_cmd "${extra_args[@]}")"
+  local args_key=""
+  if (( ${#extra_args[@]} )); then
+    args_key="$(print_cmd "${extra_args[@]}")"
+  fi
 
   if ! should_rebuild_pkg "${name}" "${cfg}" "${src}" "${prefix}" "${args_key}" "${cflags}" "${cxxflags}"; then
     log "Skipping ${name} (${cfg}) - up to date"
@@ -1076,6 +1095,7 @@ build_for_cfg() {
     cmake_build_install libtiff "${libtiff_src}" "${cfg}" "${prefix}" \
       -Dtiff-tests=OFF -Dtiff-tools=ON -Dtiff-docs=OFF -Dtiff-contrib=OFF \
       -Dtiff-opengl=OFF \
+      -Dwebp=OFF \
       -DJPEG_SUPPORT=ON -DJPEG_DUAL_MODE_8_12=ON
     ensure_file "${prefix}/lib/libtiff.a"
 
