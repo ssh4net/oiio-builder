@@ -1,0 +1,320 @@
+[global]
+src_root = ".."
+build_root = "../_build_py"
+# Optional base prefix for Unix. If unset, defaults to ./_install/UBS under repo.
+prefix_base = "../_install/UBS"
+# Build types can be narrowed via --build-types Debug,Release
+build_types = ["Debug", "Release", "ASAN"]
+# Global language and toolchain policy
+cxx_standard = 20
+cxx_extensions = false
+use_libcxx = true
+use_lld = true
+static_default = true
+pic = true
+# jobs = 0 means auto
+jobs = 0
+# Unix suffixes for Debug/ASAN prefixes
+debug_suffix = "d"
+asan_suffix = "asn"
+
+# Group toggles (match shell script defaults)
+build_gl_stack = true
+build_imageio_stack = true
+build_exr_stack = true
+build_gtest = false
+build_libjxl = true
+build_libuhdr = true
+build_ocio = true
+build_libraw = true
+build_libheif = true
+build_aom = true
+build_libde265 = true
+build_x265 = true
+build_kvazaar = true
+build_webp = true
+build_ptex = true
+
+# Repo-specific switches (match shell script defaults)
+openjpeg_build_codec = ""
+ocio_build_apps = "OFF"
+libjxl_enable_tools = "ON"
+libraw_enable_examples = "ON"
+libraw_enable_openmp = "ON"
+xz_use_autotools = false
+lcms2_use_autotools = false
+
+# Optional toolchain overrides
+# cc = "clang"
+# cxx = "clang++"
+# ld = "ld.lld"
+# ar = "llvm-ar"
+# ranlib = "llvm-ranlib"
+
+# Extra env vars passed to all build commands
+[global.env]
+# Example: OpenMP_ROOT = "/opt/homebrew/opt/libomp"
+
+[windows]
+# generator: msvc, ninja-msvc, msvc-clang-cl, ninja-clang-cl
+# generator = "ninja-clang-cl"
+# install_prefix = "E:\\DVS"
+# asan_prefix = "E:\\DVS_ASAN"
+# debug_postfix = "d"
+
+[[repos]]
+name = "zlib-ng"
+dir = "zlib-ng"
+url = "https://github.com/zlib-ng/zlib-ng.git"
+build_system = "cmake"
+
+[[repos]]
+name = "xz"
+dir = "xz"
+url = "https://github.com/tukaani-project/xz.git"
+build_system = "cmake"
+
+[[repos]]
+name = "libdeflate"
+dir = "libdeflate"
+url = "https://github.com/ebiggers/libdeflate.git"
+build_system = "cmake"
+
+[[repos]]
+name = "zstd"
+dir = "zstd"
+url = "https://github.com/facebook/zstd.git"
+build_system = "cmake"
+source_subdir = "build/cmake"
+
+[[repos]]
+name = "libiconv"
+dir = "libiconv"
+url = ""
+build_system = "cmake"
+optional = true
+
+[[repos]]
+name = "libxml2"
+dir = "libxml2"
+url = ""
+build_system = "cmake"
+optional = true
+deps = ["xz"]
+
+[[repos]]
+name = "glfw"
+dir = "glfw"
+url = "https://github.com/glfw/glfw.git"
+build_system = "cmake"
+
+[[repos]]
+name = "freeglut"
+dir = "freeglut"
+url = "https://github.com/freeglut/freeglut.git"
+build_system = "cmake"
+
+[[repos]]
+name = "glew"
+dir = "glew-cmake"
+url = "https://github.com/Perlmint/glew-cmake.git"
+build_system = "cmake"
+
+[[repos]]
+name = "libjpeg-turbo"
+dir = "libjpeg-turbo"
+url = "https://github.com/libjpeg-turbo/libjpeg-turbo"
+build_system = "cmake"
+
+[[repos]]
+name = "libpng"
+dir = "libpng"
+url = "https://github.com/pnggroup/libpng.git"
+build_system = "cmake"
+deps = ["zlib-ng"]
+
+[[repos]]
+name = "libtiff"
+dir = "libtiff"
+url = "https://gitlab.com/libtiff/libtiff.git"
+build_system = "cmake"
+deps = ["zlib-ng", "libjpeg-turbo", "libdeflate", "zstd"]
+
+[[repos]]
+name = "openjpeg"
+dir = "openjpeg"
+url = "https://github.com/uclouvain/openjpeg.git"
+build_system = "cmake"
+deps = ["libpng", "libtiff", "lcms2", "zlib-ng", "libjpeg-turbo"]
+
+[[repos]]
+name = "jasper"
+dir = "jasper"
+url = "https://github.com/jasper-software/jasper.git"
+build_system = "cmake"
+
+[[repos]]
+name = "pugixml"
+dir = "pugixml"
+url = ""
+build_system = "cmake"
+optional = true
+
+[[repos]]
+name = "giflib"
+dir = "gif"
+dir_candidates = ["giflib", "giflib-*", "gif*"]
+url = "https://github.com/ssh4net/gif.git"
+build_system = "giflib"
+
+[[repos]]
+name = "libwebp"
+dir = "libwebp"
+url = "https://chromium.googlesource.com/webm/libwebp"
+build_system = "cmake"
+
+[[repos]]
+name = "ptex"
+dir = "ptex"
+url = "https://github.com/wdas/ptex.git"
+build_system = "cmake"
+deps = ["libdeflate"]
+
+[[repos]]
+name = "LibRaw"
+dir = "LibRaw"
+url = "https://github.com/LibRaw/LibRaw.git"
+
+[[repos]]
+name = "libraw"
+dir = "LibRaw-cmake"
+url = "https://github.com/ssh4net/LibRaw-cmake.git"
+build_system = "cmake"
+deps = ["libjpeg-turbo", "lcms2", "zlib-ng", "jasper", "libxml2", "LibRaw"]
+
+[[repos]]
+name = "aom"
+dir = "aom"
+url = "https://aomedia.googlesource.com/aom"
+build_system = "cmake"
+
+[[repos]]
+name = "libde265"
+dir = "libde265"
+url = "https://github.com/strukturag/libde265.git"
+build_system = "cmake"
+
+[[repos]]
+name = "x265"
+dir = "x265_git"
+url = "https://bitbucket.org/multicoreware/x265_git.git"
+build_system = "cmake"
+source_subdir = "source"
+
+[[repos]]
+name = "kvazaar"
+dir = "kvazaar"
+url = "https://github.com/ultravideo/kvazaar.git"
+build_system = "cmake"
+
+[[repos]]
+name = "libheif"
+dir = "libheif"
+url = "https://github.com/strukturag/libheif.git"
+build_system = "cmake"
+deps = ["libde265", "x265", "kvazaar", "aom", "libjpeg-turbo", "libpng", "zlib-ng", "brotli", "libwebp"]
+
+[[repos]]
+name = "brotli"
+dir = "brotli"
+url = "https://github.com/google/brotli.git"
+build_system = "cmake"
+
+[[repos]]
+name = "highway"
+dir = "highway"
+url = "https://github.com/google/highway.git"
+build_system = "cmake"
+
+[[repos]]
+name = "lcms2"
+dir = "Little-CMS"
+dir_candidates = ["Little-CMS", "Little-CMS-*", "lcms2", "lcms2-*"]
+url = "https://github.com/ssh4net/Little-CMS.git"
+build_system = "cmake"
+
+[[repos]]
+name = "imath"
+dir = "Imath"
+url = "https://github.com/AcademySoftwareFoundation/Imath.git"
+build_system = "cmake"
+
+[[repos]]
+name = "openjph"
+dir = "openjph"
+url = "https://github.com/ssh4net/OpenJPH.git"
+build_system = "cmake"
+deps = ["libtiff"]
+
+[[repos]]
+name = "openexr"
+dir = "openexr"
+url = "https://github.com/AcademySoftwareFoundation/openexr.git"
+build_system = "cmake"
+deps = ["imath", "libdeflate", "openjph", "zlib-ng"]
+
+[[repos]]
+name = "expat"
+dir = "expat"
+dir_candidates = ["expat/expat", "libexpat/expat", "expat", "libexpat"]
+url = ""
+build_system = "cmake"
+optional = true
+
+[[repos]]
+name = "libjxl"
+dir = "libjxl"
+url = "https://github.com/libjxl/libjxl.git"
+build_system = "cmake"
+deps = ["brotli", "highway", "lcms2", "libpng", "libjpeg-turbo", "giflib", "openexr", "zlib-ng"]
+
+[[repos]]
+name = "libultrahdr"
+dir = "libultrahdr"
+url = "https://github.com/google/libultrahdr.git"
+build_system = "cmake"
+deps = ["libjpeg-turbo"]
+
+[[repos]]
+name = "minizip-ng"
+dir = "minizip-ng"
+url = "https://github.com/zlib-ng/minizip-ng.git"
+build_system = "cmake"
+deps = ["zlib-ng"]
+
+[[repos]]
+name = "yaml-cpp"
+dir = "yaml-cpp"
+url = ""
+build_system = "cmake"
+optional = true
+
+[[repos]]
+name = "pystring"
+dir = "pystring"
+url = ""
+build_system = "cmake"
+optional = true
+
+[[repos]]
+name = "OpenColorIO"
+dir = "OpenColorIO"
+url = "https://github.com/AcademySoftwareFoundation/OpenColorIO.git"
+build_system = "cmake"
+deps = ["expat", "yaml-cpp", "pystring", "minizip-ng", "zlib-ng", "imath", "lcms2"]
+
+[[repos]]
+name = "googletest"
+dir = "googletest"
+url = "https://github.com/google/googletest.git"
+build_system = "cmake"
