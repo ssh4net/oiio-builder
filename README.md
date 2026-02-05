@@ -34,6 +34,7 @@ Key options:
 - `windows.generator`: choose one of `msvc`, `ninja-msvc`, `msvc-clang-cl`, `ninja-clang-cl`.
 - `windows.install_prefix`: single prefix for Debug+Release on Windows.
 - `windows.asan_prefix`: optional separate prefix for ASAN.
+- `windows.env`: tool overrides for Windows (e.g. `PKG_CONFIG_EXECUTABLE`, `DOXYGEN_EXECUTABLE`).
 
 ## Prefix Rules
 
@@ -91,6 +92,13 @@ uv run build.py --config build.toml --build-types Debug,Release
 :: Visual Studio solution + clang-cl
 :: (set windows.generator = \"msvc-clang-cl\" in build.toml)
 uv run build.py --build-types Debug,Release
+```
+
+### Tool overrides (Windows)
+```toml
+[windows.env]
+PKG_CONFIG_EXECUTABLE = "C:\\msys64\\usr\\bin\\pkg-config.exe"
+DOXYGEN_EXECUTABLE = "C:\\Program Files\\doxygen\\bin\\doxygen.exe"
 ```
 
 ## Troubleshooting

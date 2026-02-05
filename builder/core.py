@@ -255,6 +255,8 @@ class Builder:
 
     def _env_for_build(self, build_type: str, prefix: Path) -> dict[str, str]:
         env = dict(self.config.global_cfg.env)
+        if self.platform.os == "windows":
+            env.update(self.config.global_cfg.windows_env)
         if self.platform.os == "macos":
             sdkroot = self.toolchain.get("sdkroot")
             if sdkroot and not env.get("SDKROOT"):
@@ -524,7 +526,7 @@ class Builder:
             args += [
                 "-DIMATH_BUILD_TESTS=OFF",
                 "-DIMATH_BUILD_SHARED_LIBS=OFF",
-                "-DPYTHON=ON",
+                "-DPYTHON=OFF",
             ]
         elif name == "openjph":
             args += [
@@ -819,6 +821,18 @@ endif()
             f"-DCMAKE_CXX_EXTENSIONS={'ON' if cfg.cxx_extensions else 'OFF'}",
             "-DPKG_CONFIG_USE_STATIC_LIBS=ON",
         ]
+
+        pkg_cfg = cfg.env.get("PKG_CONFIG_EXECUTABLE") or cfg.env.get("PKG_CONFIG")
+        if self.platform.os == "windows":
+            pkg_cfg = cfg.windows_env.get("PKG_CONFIG_EXECUTABLE") or cfg.windows_env.get("PKG_CONFIG") or pkg_cfg
+        if pkg_cfg:
+            args.append(f"-DPKG_CONFIG_EXECUTABLE={pkg_cfg}")
+
+        doxygen = cfg.env.get("DOXYGEN_EXECUTABLE")
+        if self.platform.os == "windows":
+            doxygen = cfg.windows_env.get("DOXYGEN_EXECUTABLE") or doxygen
+        if doxygen:
+            args.append(f"-DDOXYGEN_EXECUTABLE={doxygen}")
 
         if cfg.pic:
             args.append("-DCMAKE_POSITION_INDEPENDENT_CODE=ON")

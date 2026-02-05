@@ -47,6 +47,7 @@ class GlobalConfig:
     skip: set[str] = field(default_factory=set)
     no_update: bool = True
     windows: dict[str, Any] = field(default_factory=dict)
+    windows_env: dict[str, str] = field(default_factory=dict)
     # Build group toggles
     build_gl_stack: bool = True
     build_imageio_stack: bool = True
@@ -143,6 +144,8 @@ def load_config(path: Path) -> Config:
     if isinstance(openjpeg_build_codec, str) and not openjpeg_build_codec.strip():
         openjpeg_build_codec = None
 
+    windows_section = data.get("windows", {})
+    windows_env = {str(k): str(v) for k, v in windows_section.get("env", {}).items()}
     global_cfg = GlobalConfig(
         repo_root=repo_root,
         src_root=src_root,
@@ -159,7 +162,8 @@ def load_config(path: Path) -> Config:
         debug_suffix=str(global_data.get("debug_suffix", "d")),
         asan_suffix=str(global_data.get("asan_suffix", "a")),
         env={str(k): str(v) for k, v in global_data.get("env", {}).items()},
-        windows={str(k): v for k, v in data.get("windows", {}).items()},
+        windows={str(k): v for k, v in windows_section.items()},
+        windows_env=windows_env,
         no_update=bool(global_data.get("no_update", True)),
         build_gl_stack=bool(global_data.get("build_gl_stack", True)),
         build_imageio_stack=bool(global_data.get("build_imageio_stack", True)),

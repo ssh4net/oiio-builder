@@ -25,13 +25,15 @@ def _find_any(candidates: list[str]) -> tuple[str | None, str]:
     return None, ""
 
 
-def _tool_checks(platform: PlatformInfo) -> list[ToolCheck]:
+def _tool_checks(platform: PlatformInfo, env: dict[str, str]) -> list[ToolCheck]:
+    doxygen_override = env.get("DOXYGEN_EXECUTABLE")
+    pkg_override = env.get("PKG_CONFIG_EXECUTABLE") or env.get("PKG_CONFIG")
     checks = [
         ToolCheck("git", ["git"], True),
         ToolCheck("cmake", ["cmake"], True),
         ToolCheck("ninja", ["ninja"], True),
-        ToolCheck("pkg-config", ["pkg-config", "pkgconf"], True),
-        ToolCheck("doxygen", ["doxygen"], True),
+        ToolCheck("pkg-config", [pkg_override] if pkg_override else ["pkg-config", "pkgconf"], True),
+        ToolCheck("doxygen", [doxygen_override] if doxygen_override else ["doxygen"], True),
         ToolCheck("sphinx-build", ["sphinx-build", "sphinx-build-3"], True),
     ]
     if platform.os in {"macos", "linux"}:
@@ -49,6 +51,9 @@ def _tool_checks(platform: PlatformInfo) -> list[ToolCheck]:
 
 def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> int:
     builder = Builder(config, platform, dry_run=True, no_update=no_update, force=False)
+    env = dict(config.global_cfg.env)
+    if platform.os == "windows":
+        env.update(config.global_cfg.windows_env)
     missing_tools = 0
     missing_repos = 0
 
@@ -71,7 +76,7 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
             if value:
                 lines.append(f"  {key}: {value}")
     lines.append("Tools:")
-    for check in _tool_checks(platform):
+    for check in _tool_checks(platform, env):
         path, resolved = _find_any(check.candidates)
         if path:
             note = f" ({resolved})" if resolved and resolved != check.name else ""
