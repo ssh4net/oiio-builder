@@ -11,6 +11,12 @@ uv run build.py --list-repos
 uv run build.py --print-prefixes
 ```
 
+### Preflight (no args)
+```bash
+# No arguments runs a tool/repo preflight and exits
+uv run build.py
+```
+
 ### Run a small build
 ```bash
 uv run build.py --build-types Debug,Release --only zlib-ng,libpng
@@ -40,6 +46,9 @@ Key options:
 ## Common Commands
 
 ```bash
+# Preflight checks (tools + repos)
+uv run build.py --preflight
+
 # List repos to build
 uv run build.py --list-repos
 
@@ -90,6 +99,7 @@ uv run build.py --build-types Debug,Release
 - **Missing optional repos**: `yaml-cpp`, `pystring`, `expat`, `pugixml`, `libiconv`, `libxml2` are skipped if not present.
 - **OpenMP not found (macOS/Linux)**: set `OpenMP_ROOT` in `build.toml` or environment.
 - **ASAN failures on Windows**: prefer clang-cl and ensure the MSVC AddressSanitizer component is installed.
+- **Preflight only**: run `uv run build.py` (no args) to see tool/repo readiness without building.
 
 ## Notes
 

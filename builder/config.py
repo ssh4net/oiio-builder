@@ -14,7 +14,7 @@ class RepoConfig:
     dir_candidates: list[str] = field(default_factory=list)
     url: str | None = None
     enabled: bool = True
-    build_system: str | None = None  # cmake, autotools
+    build_system: str | None = None  # cmake, autotools, giflib, ffmpeg
     ref: str | None = None
     ref_type: str = "branch"  # branch, tag, commit
     deps: list[str] = field(default_factory=list)
@@ -64,6 +64,7 @@ class GlobalConfig:
     build_webp: bool = True
     build_ptex: bool = True
     build_pybind11: bool = True
+    build_ffmpeg: bool = True
     build_oiio: bool = True
     openimageio_patch_png_include: bool = True
     # Repo-specific feature toggles
@@ -176,6 +177,7 @@ def load_config(path: Path) -> Config:
         build_webp=bool(global_data.get("build_webp", True)),
         build_ptex=bool(global_data.get("build_ptex", True)),
         build_pybind11=bool(global_data.get("build_pybind11", True)),
+        build_ffmpeg=bool(global_data.get("build_ffmpeg", True)),
         build_oiio=bool(global_data.get("build_oiio", True)),
         openimageio_patch_png_include=bool(global_data.get("openimageio_patch_png_include", True)),
         openjpeg_build_codec=openjpeg_build_codec,

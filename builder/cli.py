@@ -1,10 +1,12 @@
 import argparse
 import os
+import sys
 from pathlib import Path
 
 from .config import load_config
 from .core import Builder
 from .platform import detect_platform
+from .preflight import run_preflight
 
 
 def _parse_build_types(value: str) -> list[str]:
@@ -26,6 +28,7 @@ def main() -> int:
     parser.add_argument("--update", action="store_true", help="Force git fetch/pull (overrides config)")
     parser.add_argument("--dry-run", action="store_true", help="Print commands only")
     parser.add_argument("--force", action="store_true", help="Force rebuild, ignore stamps")
+    parser.add_argument("--preflight", action="store_true", help="Run tool/repo checks and exit")
     parser.add_argument("--list-repos", action="store_true", help="List configured repos")
     parser.add_argument("--print-prefixes", action="store_true", help="Print install prefixes and exit")
 
@@ -46,6 +49,10 @@ def main() -> int:
         no_update = False
     else:
         no_update = args.no_update or config.global_cfg.no_update
+
+    if args.preflight or len(sys.argv) == 1:
+        return run_preflight(config, platform_info, no_update=no_update)
+
     builder = Builder(config, platform_info, dry_run=args.dry_run, no_update=no_update, force=args.force)
 
     if args.list_repos:
@@ -61,5 +68,19 @@ def main() -> int:
             if value:
                 print(f"{key}: {value}")
         return 0
+
+    build_requested = any(
+        [
+            args.build_types,
+            args.only,
+            args.skip,
+            args.force,
+            args.update,
+            args.no_update,
+            args.dry_run,
+        ]
+    )
+    if not build_requested:
+        return run_preflight(config, platform_info, no_update=no_update)
 
     return builder.run()

@@ -86,6 +86,7 @@ class Builder:
             "kvazaar",
             "libheif",
             "pybind11",
+            "ffmpeg",
             "OpenImageIO",
         }
         exr_repos = {"imath", "openjph", "openexr"}
@@ -123,6 +124,8 @@ class Builder:
             if repo.name == "ptex" and not cfg.build_ptex:
                 return False
             if repo.name == "pybind11" and not cfg.build_pybind11:
+                return False
+            if repo.name == "ffmpeg" and not cfg.build_ffmpeg:
                 return False
             if repo.name == "OpenImageIO" and not cfg.build_oiio:
                 return False
@@ -272,6 +275,32 @@ class Builder:
         if cfg.pic:
             flags += " -fPIC"
         return flags
+
+    def _macos_sysroot_flag(self) -> str:
+        if self.platform.os != "macos":
+            return ""
+        sdkroot = self.toolchain.get("sdkroot")
+        if not sdkroot:
+            return ""
+        return f" -isysroot {sdkroot}"
+
+    def _non_cmake_flags(self, build_type: str) -> tuple[str, str, str]:
+        cfg = self.config.global_cfg
+        cflags = self._base_flags(build_type)
+        cxxflags = self._base_flags(build_type)
+        if self.platform.os in {"macos", "linux"} and cfg.use_libcxx:
+            cxxflags += " -stdlib=libc++"
+        if build_type == "ASAN":
+            cflags += " -fsanitize=address -fno-omit-frame-pointer"
+            cxxflags += " -fsanitize=address -fno-omit-frame-pointer"
+        sysroot_flag = self._macos_sysroot_flag()
+        if sysroot_flag:
+            cflags += sysroot_flag
+            cxxflags += sysroot_flag
+        ldflags = sysroot_flag
+        if self.platform.os in {"macos", "linux"} and cfg.use_libcxx:
+            ldflags += " -stdlib=libc++"
+        return cflags, cxxflags, ldflags
 
     def _linker_flags_init(self) -> str:
         cfg = self.config.global_cfg
@@ -587,6 +616,7 @@ class Builder:
             "OIIO_BUILD_DOCS",
             "USE_PYTHON",
             "USE_JXL",
+            "USE_FFMPEG",
             "USE_QT",
             "USE_LIBCPLUSPLUS",
             "USE_EXTERNAL_PUGIXML",
@@ -614,6 +644,9 @@ class Builder:
         }
         for key, value in defaults.items():
             values.setdefault(key, value)
+
+        if cfg.build_ffmpeg:
+            values.setdefault("USE_FFMPEG", "ON")
 
         # Python is mandatory for OIIO in this setup.
         values["USE_PYTHON"] = "ON"
@@ -660,6 +693,7 @@ endif()
         return str(include_path)
 
     def _oiio_extra_static_libs(self, prefix: Path) -> list[str]:
+        prefix = prefix.resolve()
         libs: list[str] = []
         libdir = prefix / "lib"
 
@@ -684,6 +718,13 @@ endif()
         add_lib("libx265.a")
         add_lib("libkvazaar.a")
 
+        # FFmpeg deps
+        add_lib("libavformat.a")
+        add_lib("libavcodec.a")
+        add_lib("libswresample.a")
+        add_lib("libswscale.a")
+        add_lib("libavutil.a")
+
         # OpenMP (libomp)
         omp_root = self.config.global_cfg.env.get("OpenMP_ROOT") or os.environ.get("OpenMP_ROOT")
         if omp_root:
@@ -703,6 +744,16 @@ endif()
         # macOS Security framework (minizip-ng uses SecRandomCopyBytes)
         if self.platform.os == "macos":
             libs.append("-Wl,-framework,Security")
+            if self.config.global_cfg.build_ffmpeg:
+                libs.extend(
+                    [
+                        "-Wl,-framework,AudioToolbox",
+                        "-Wl,-framework,VideoToolbox",
+                        "-Wl,-framework,CoreMedia",
+                        "-Wl,-framework,CoreVideo",
+                        "-Wl,-framework,CoreFoundation",
+                    ]
+                )
 
         return libs
 
@@ -712,6 +763,45 @@ endif()
         if repo.name == "lcms2":
             return ["--without-fastfloat", "--without-threaded"]
         return []
+
+    def _ffmpeg_configure_args(self, ctx: BuildContext) -> list[str]:
+        cfg = self.config.global_cfg
+        args = [
+            f"--prefix={ctx.install_prefix}",
+            "--disable-shared",
+            "--enable-static",
+            "--enable-pic",
+            "--disable-doc",
+            "--pkg-config-flags=--static",
+        ]
+        if ctx.build_type == "Release":
+            args.append("--disable-debug")
+        else:
+            args.append("--enable-debug=3")
+
+        if "cc" in self.toolchain:
+            args.append(f"--cc={self.toolchain['cc']}")
+        if "cxx" in self.toolchain:
+            args.append(f"--cxx={self.toolchain['cxx']}")
+        if "ar" in self.toolchain:
+            args.append(f"--ar={self.toolchain['ar']}")
+        if "ranlib" in self.toolchain:
+            args.append(f"--ranlib={self.toolchain['ranlib']}")
+        if self.platform.os == "macos":
+            sdkroot = self.toolchain.get("sdkroot")
+            if sdkroot:
+                args.append(f"--sysroot={sdkroot}")
+
+        cflags, cxxflags, ldflags = self._non_cmake_flags(ctx.build_type)
+        include_dir = ctx.install_prefix / "include"
+        lib_dir = ctx.install_prefix / "lib"
+        cflags = f"{cflags} -I{include_dir}"
+        cxxflags = f"{cxxflags} -I{include_dir}"
+        ldflags = f"{ldflags} -L{lib_dir}"
+        args.append(f"--extra-cflags={cflags}")
+        args.append(f"--extra-cxxflags={cxxflags}")
+        args.append(f"--extra-ldflags={ldflags}")
+        return args
 
     def _cmake_common_args(self, repo: RepoConfig, ctx: BuildContext) -> list[str]:
         cfg = self.config.global_cfg
@@ -1008,8 +1098,28 @@ endif()
             configure = src_dir / "configure"
             if not configure.exists():
                 raise RuntimeError(f"Missing configure script for {repo.name}: {configure}")
+            cflags, cxxflags, ldflags = self._non_cmake_flags(build_type)
+            include_dir = install_prefix / "include"
+            lib_dir = install_prefix / "lib"
+            env = {
+                **env,
+                "CFLAGS": f"{cflags} -I{include_dir}",
+                "CXXFLAGS": f"{cxxflags} -I{include_dir}",
+                "LDFLAGS": f"{ldflags} -L{lib_dir}",
+                "CPPFLAGS": f"-I{include_dir}",
+            }
             cmd = [str(configure), f"--prefix={install_prefix}", "--disable-shared", "--enable-static"]
             cmd.extend(self._autotools_args(repo))
+            run(cmd, cwd=str(build_dir), env=env, dry_run=self.dry_run)
+            run(["make", f"-j{self._jobs()}"], cwd=str(build_dir), env=env, dry_run=self.dry_run)
+            run(["make", "install"], cwd=str(build_dir), env=env, dry_run=self.dry_run)
+        elif repo.build_system == "ffmpeg":
+            build_dir.mkdir(parents=True, exist_ok=True)
+            configure = src_dir / "configure"
+            if not configure.exists():
+                raise RuntimeError(f"Missing configure script for {repo.name}: {configure}")
+            cmd = [str(configure)]
+            cmd.extend(self._ffmpeg_configure_args(ctx))
             run(cmd, cwd=str(build_dir), env=env, dry_run=self.dry_run)
             run(["make", f"-j{self._jobs()}"], cwd=str(build_dir), env=env, dry_run=self.dry_run)
             run(["make", "install"], cwd=str(build_dir), env=env, dry_run=self.dry_run)
@@ -1017,6 +1127,7 @@ endif()
             build_dir.mkdir(parents=True, exist_ok=True)
             make_env = env.copy()
             make_env["CC"] = self.toolchain.get("cc", make_env.get("CC", "cc"))
+            cflags, _cxxflags, _ldflags = self._non_cmake_flags(build_type)
             make_env["CFLAGS"] = f"{cflags} -std=gnu99 -Wall -Wno-format-truncation"
             getversion = src_dir / "getversion"
             if getversion.exists() and not os.access(getversion, os.X_OK):
