@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import shutil
+import os
 
 from .config import Config
 from .core import Builder
@@ -25,9 +26,18 @@ def _find_any(candidates: list[str]) -> tuple[str | None, str]:
     return None, ""
 
 
+def _normalize_override(value: str | None) -> str | None:
+    if not value:
+        return None
+    trimmed = value.strip()
+    if len(trimmed) >= 2 and trimmed[0] == trimmed[-1] and trimmed[0] in {"\"", "'"}:
+        trimmed = trimmed[1:-1]
+    return trimmed or None
+
+
 def _tool_checks(platform: PlatformInfo, env: dict[str, str]) -> list[ToolCheck]:
-    doxygen_override = env.get("DOXYGEN_EXECUTABLE")
-    pkg_override = env.get("PKG_CONFIG_EXECUTABLE") or env.get("PKG_CONFIG")
+    doxygen_override = _normalize_override(env.get("DOXYGEN_EXECUTABLE"))
+    pkg_override = _normalize_override(env.get("PKG_CONFIG_EXECUTABLE") or env.get("PKG_CONFIG"))
     checks = [
         ToolCheck("git", ["git"], True),
         ToolCheck("cmake", ["cmake"], True),
@@ -51,7 +61,8 @@ def _tool_checks(platform: PlatformInfo, env: dict[str, str]) -> list[ToolCheck]
 
 def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> int:
     builder = Builder(config, platform, dry_run=True, no_update=no_update, force=False)
-    env = dict(config.global_cfg.env)
+    env = dict(os.environ)
+    env.update(config.global_cfg.env)
     if platform.os == "windows":
         env.update(config.global_cfg.windows_env)
     missing_tools = 0

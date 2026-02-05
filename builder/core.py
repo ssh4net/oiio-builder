@@ -822,15 +822,29 @@ endif()
             "-DPKG_CONFIG_USE_STATIC_LIBS=ON",
         ]
 
-        pkg_cfg = cfg.env.get("PKG_CONFIG_EXECUTABLE") or cfg.env.get("PKG_CONFIG")
+        def _normalize_override(value: str | None) -> str | None:
+            if not value:
+                return None
+            trimmed = value.strip()
+            if len(trimmed) >= 2 and trimmed[0] == trimmed[-1] and trimmed[0] in {"\"", "'"}:
+                trimmed = trimmed[1:-1]
+            return trimmed or None
+
+        pkg_cfg = _normalize_override(cfg.env.get("PKG_CONFIG_EXECUTABLE") or cfg.env.get("PKG_CONFIG"))
         if self.platform.os == "windows":
-            pkg_cfg = cfg.windows_env.get("PKG_CONFIG_EXECUTABLE") or cfg.windows_env.get("PKG_CONFIG") or pkg_cfg
+            pkg_cfg = _normalize_override(
+                cfg.windows_env.get("PKG_CONFIG_EXECUTABLE") or cfg.windows_env.get("PKG_CONFIG") or os.environ.get("PKG_CONFIG_EXECUTABLE") or os.environ.get("PKG_CONFIG")
+            ) or pkg_cfg
+        else:
+            pkg_cfg = _normalize_override(os.environ.get("PKG_CONFIG_EXECUTABLE") or os.environ.get("PKG_CONFIG")) or pkg_cfg
         if pkg_cfg:
             args.append(f"-DPKG_CONFIG_EXECUTABLE={pkg_cfg}")
 
-        doxygen = cfg.env.get("DOXYGEN_EXECUTABLE")
+        doxygen = _normalize_override(cfg.env.get("DOXYGEN_EXECUTABLE"))
         if self.platform.os == "windows":
-            doxygen = cfg.windows_env.get("DOXYGEN_EXECUTABLE") or doxygen
+            doxygen = _normalize_override(cfg.windows_env.get("DOXYGEN_EXECUTABLE") or os.environ.get("DOXYGEN_EXECUTABLE")) or doxygen
+        else:
+            doxygen = _normalize_override(os.environ.get("DOXYGEN_EXECUTABLE")) or doxygen
         if doxygen:
             args.append(f"-DDOXYGEN_EXECUTABLE={doxygen}")
 
