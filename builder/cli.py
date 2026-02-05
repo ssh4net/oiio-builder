@@ -15,7 +15,19 @@ def _parse_build_types(value: str) -> list[str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Cross-platform build orchestrator")
+    parser = argparse.ArgumentParser(
+        description="Cross-platform build orchestrator",
+        formatter_class=argparse.RawTextHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  uv run build.py --preflight\n"
+            "  uv run build.py --build-types Debug,Release\n"
+            "  uv run build.py --build-types Debug,ASAN\n"
+            "  uv run build.py --build-types Debug --only OpenImageIO\n"
+            "  uv run build.py --build-types Debug --force\n"
+            "  uv run build.py --skip libheif,libwebp\n"
+        ),
+    )
     parser.add_argument(
         "--config",
         default=str(Path(__file__).resolve().parents[1] / "build.toml"),

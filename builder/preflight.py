@@ -117,5 +117,7 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
     lines.append("Summary:")
     lines.append(f"  missing tools: {missing_tools}")
     lines.append(f"  missing repos: {missing_repos}")
+    lines.append("Example build:")
+    lines.append("  uv run build.py --build-types Debug,Release")
     print("\n".join(lines))
     return 0
