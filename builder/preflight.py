@@ -54,6 +54,15 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
 
     lines = ["", "=== Preflight Report ==="]
     lines.append(f"Platform: {platform.os} {platform.arch}")
+    lines.append("Paths:")
+    lines.append(f"  repo_root: {config.global_cfg.repo_root}")
+    lines.append(f"  src_root: {config.global_cfg.src_root}")
+    lines.append(f"  build_root: {config.global_cfg.build_root}")
+    lines.append(f"  prefix_base: {config.global_cfg.prefix_base or '(default)'}")
+    for key in ("Release", "Debug", "ASAN"):
+        prefix = builder.prefixes.get(key)
+        if prefix:
+            lines.append(f"  install_prefix[{key}]: {prefix}")
 
     if builder.toolchain:
         lines.append("Toolchain:")

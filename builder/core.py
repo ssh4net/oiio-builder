@@ -24,9 +24,10 @@ class BuildContext:
 
 
 class BuildReport:
-    def __init__(self, build_types: list[str], order: list[str]) -> None:
+    def __init__(self, build_types: list[str], order: list[str], prefixes: dict[str, Path]) -> None:
         self.build_types = build_types
         self.order = order
+        self.prefixes = prefixes
         self.entries: dict[tuple[str, str], tuple[str, str]] = {}
 
     def record(self, build_type: str, repo: str, status: str, detail: str = "") -> None:
@@ -43,6 +44,9 @@ class BuildReport:
                 status, detail = entry
                 suffix = f" ({detail})" if detail else ""
                 lines.append(f"  {repo}: {status}{suffix}")
+            prefix = self.prefixes.get(build_type)
+            if prefix:
+                lines.append(f"  install_prefix: {prefix}")
         return "\n".join(lines)
 
     def print(self) -> None:
@@ -1191,7 +1195,7 @@ endif()
         order = topo_sort([r.name for r in self.repos], deps_map)
         repos_by_name = {repo.name: repo for repo in self.repos}
         build_types = self._build_type_order()
-        report = BuildReport(build_types, order)
+        report = BuildReport(build_types, order, self.prefixes)
 
         # Resolve paths and clone/update repos.
         for repo_name in order:
