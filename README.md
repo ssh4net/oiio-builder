@@ -56,6 +56,41 @@ uv run build.py --only libjpeg-turbo,libpng,openjpeg
 uv run build.py --skip libwebp,libheif
 ```
 
+## Platform Examples
+
+### macOS (Apple Clang + libc++)
+```bash
+# Example: set base prefix and OpenMP (Homebrew)
+export OpenMP_ROOT=/opt/homebrew/opt/libomp
+uv run build.py --build-types Debug,Release
+```
+
+### Linux (clang + libc++, or libstdc++)
+```bash
+# libc++ (default)
+uv run build.py --build-types Debug,Release
+
+# libstdc++ (set in build.toml: use_libcxx = false)
+uv run build.py --build-types Debug,Release
+```
+
+### Windows (Visual Studio + clang-cl or MSVC)
+```bat
+:: Ninja + clang-cl
+uv run build.py --config build.toml --build-types Debug,Release
+
+:: Visual Studio solution + clang-cl
+:: (set windows.generator = \"msvc-clang-cl\" in build.toml)
+uv run build.py --build-types Debug,Release
+```
+
+## Troubleshooting
+
+- **Rebuild not triggered after local edits**: stamps track git commits only. Use `--force` or delete `../_build_py/.stamps`.
+- **Missing optional repos**: `yaml-cpp`, `pystring`, `expat`, `pugixml`, `libiconv`, `libxml2` are skipped if not present.
+- **OpenMP not found (macOS/Linux)**: set `OpenMP_ROOT` in `build.toml` or environment.
+- **ASAN failures on Windows**: prefer clang-cl and ensure the MSVC AddressSanitizer component is installed.
+
 ## Notes
 
 - The builder uses stamps in `../_build_py/.stamps` to skip rebuilds when

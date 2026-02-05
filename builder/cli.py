@@ -22,7 +22,8 @@ def main() -> int:
     parser.add_argument("--build-types", help="Comma-separated: Debug,Release,ASAN")
     parser.add_argument("--only", help="Comma-separated repo names")
     parser.add_argument("--skip", help="Comma-separated repo names")
-    parser.add_argument("--no-update", action="store_true", help="Skip git fetch/pull")
+    parser.add_argument("--no-update", action="store_true", help="Skip git fetch/pull (overrides config)")
+    parser.add_argument("--update", action="store_true", help="Force git fetch/pull (overrides config)")
     parser.add_argument("--dry-run", action="store_true", help="Print commands only")
     parser.add_argument("--force", action="store_true", help="Force rebuild, ignore stamps")
     parser.add_argument("--list-repos", action="store_true", help="List configured repos")
@@ -41,7 +42,11 @@ def main() -> int:
         config.skip = {name.strip() for name in args.skip.split(",") if name.strip()}
 
     platform_info = detect_platform()
-    builder = Builder(config, platform_info, dry_run=args.dry_run, no_update=args.no_update, force=args.force)
+    if args.update:
+        no_update = False
+    else:
+        no_update = args.no_update or config.global_cfg.no_update
+    builder = Builder(config, platform_info, dry_run=args.dry_run, no_update=no_update, force=args.force)
 
     if args.list_repos:
         for repo in builder.repos:

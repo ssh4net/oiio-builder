@@ -45,6 +45,7 @@ class GlobalConfig:
     env: dict[str, str] = field(default_factory=dict)
     only: set[str] = field(default_factory=set)
     skip: set[str] = field(default_factory=set)
+    no_update: bool = True
     windows: dict[str, Any] = field(default_factory=dict)
     # Build group toggles
     build_gl_stack: bool = True
@@ -62,6 +63,9 @@ class GlobalConfig:
     build_kvazaar: bool = True
     build_webp: bool = True
     build_ptex: bool = True
+    build_pybind11: bool = True
+    build_oiio: bool = True
+    openimageio_patch_png_include: bool = True
     # Repo-specific feature toggles
     openjpeg_build_codec: str | None = None
     ocio_build_apps: str = "OFF"
@@ -155,6 +159,7 @@ def load_config(path: Path) -> Config:
         asan_suffix=str(global_data.get("asan_suffix", "a")),
         env={str(k): str(v) for k, v in global_data.get("env", {}).items()},
         windows={str(k): v for k, v in data.get("windows", {}).items()},
+        no_update=bool(global_data.get("no_update", True)),
         build_gl_stack=bool(global_data.get("build_gl_stack", True)),
         build_imageio_stack=bool(global_data.get("build_imageio_stack", True)),
         build_exr_stack=bool(global_data.get("build_exr_stack", True)),
@@ -170,6 +175,9 @@ def load_config(path: Path) -> Config:
         build_kvazaar=bool(global_data.get("build_kvazaar", True)),
         build_webp=bool(global_data.get("build_webp", True)),
         build_ptex=bool(global_data.get("build_ptex", True)),
+        build_pybind11=bool(global_data.get("build_pybind11", True)),
+        build_oiio=bool(global_data.get("build_oiio", True)),
+        openimageio_patch_png_include=bool(global_data.get("openimageio_patch_png_include", True)),
         openjpeg_build_codec=openjpeg_build_codec,
         ocio_build_apps=str(global_data.get("ocio_build_apps", "OFF")),
         libjxl_enable_tools=str(global_data.get("libjxl_enable_tools", "ON")),

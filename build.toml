@@ -34,6 +34,9 @@ build_x265 = true
 build_kvazaar = true
 build_webp = true
 build_ptex = true
+build_pybind11 = true
+build_oiio = true
+openimageio_patch_png_include = true
 
 # Repo-specific switches (match shell script defaults)
 openjpeg_build_codec = ""
@@ -43,6 +46,7 @@ libraw_enable_examples = "ON"
 libraw_enable_openmp = "ON"
 xz_use_autotools = false
 lcms2_use_autotools = false
+no_update = true
 
 # Optional toolchain overrides
 # cc = "clang"
@@ -158,7 +162,7 @@ name = "pugixml"
 dir = "pugixml"
 url = ""
 build_system = "cmake"
-optional = true
+#optional = true
 
 [[repos]]
 name = "giflib"
@@ -261,7 +265,7 @@ name = "openexr"
 dir = "openexr"
 url = "https://github.com/AcademySoftwareFoundation/openexr.git"
 build_system = "cmake"
-deps = ["imath", "libdeflate", "openjph", "zlib-ng"]
+deps = ["imath", "libdeflate", "openjph", "zlib-ng", "pybind11"]
 
 [[repos]]
 name = "expat"
@@ -269,7 +273,7 @@ dir = "expat"
 dir_candidates = ["expat/expat", "libexpat/expat", "expat", "libexpat"]
 url = ""
 build_system = "cmake"
-optional = true
+#optional = true
 
 [[repos]]
 name = "libjxl"
@@ -297,24 +301,57 @@ name = "yaml-cpp"
 dir = "yaml-cpp"
 url = ""
 build_system = "cmake"
-optional = true
+#optional = true
 
 [[repos]]
 name = "pystring"
 dir = "pystring"
 url = ""
 build_system = "cmake"
-optional = true
+#optional = true
+
+[[repos]]
+name = "pybind11"
+dir = "pybind11"
+url = "https://github.com/pybind/pybind11.git"
+build_system = "cmake"
 
 [[repos]]
 name = "OpenColorIO"
 dir = "OpenColorIO"
 url = "https://github.com/AcademySoftwareFoundation/OpenColorIO.git"
 build_system = "cmake"
-deps = ["expat", "yaml-cpp", "pystring", "minizip-ng", "zlib-ng", "imath", "lcms2"]
+deps = ["expat", "yaml-cpp", "pystring", "minizip-ng", "zlib-ng", "imath", "lcms2", "pybind11"]
 
 [[repos]]
 name = "googletest"
 dir = "googletest"
 url = "https://github.com/google/googletest.git"
 build_system = "cmake"
+
+[[repos]]
+name = "OpenImageIO"
+dir = "OpenImageIO"
+url = "https://github.com/AcademySoftwareFoundation/OpenImageIO.git"
+build_system = "cmake"
+deps = [
+  "zlib-ng",
+  "libpng",
+  "libjpeg-turbo",
+  "libtiff",
+  "openjpeg",
+  "openexr",
+  "imath",
+  "libjxl",
+  "libraw",
+  "libheif",
+  "ptex",
+  "libwebp",
+  "giflib",
+  "lcms2",
+  "yaml-cpp",
+  "pystring",
+  "pugixml",
+  "libxml2",
+  "pybind11",
+]

@@ -23,6 +23,32 @@ class BuildContext:
     src_dir: Path
 
 
+class BuildReport:
+    def __init__(self, build_types: list[str], order: list[str]) -> None:
+        self.build_types = build_types
+        self.order = order
+        self.entries: dict[tuple[str, str], tuple[str, str]] = {}
+
+    def record(self, build_type: str, repo: str, status: str, detail: str = "") -> None:
+        self.entries[(build_type, repo)] = (status, detail)
+
+    def render(self) -> str:
+        lines = ["", "=== Build Report ==="]
+        for build_type in self.build_types:
+            lines.append(f"{build_type}:")
+            for repo in self.order:
+                entry = self.entries.get((build_type, repo))
+                if not entry:
+                    continue
+                status, detail = entry
+                suffix = f" ({detail})" if detail else ""
+                lines.append(f"  {repo}: {status}{suffix}")
+        return "\n".join(lines)
+
+    def print(self) -> None:
+        print(self.render())
+
+
 class Builder:
     def __init__(self, config: Config, platform: PlatformInfo, dry_run: bool, no_update: bool, force: bool) -> None:
         self.config = config
@@ -59,6 +85,8 @@ class Builder:
             "x265",
             "kvazaar",
             "libheif",
+            "pybind11",
+            "OpenImageIO",
         }
         exr_repos = {"imath", "openjph", "openexr"}
         ocio_repos = {"minizip-ng", "OpenColorIO"}
@@ -94,6 +122,10 @@ class Builder:
                 return False
             if repo.name == "ptex" and not cfg.build_ptex:
                 return False
+            if repo.name == "pybind11" and not cfg.build_pybind11:
+                return False
+            if repo.name == "OpenImageIO" and not cfg.build_oiio:
+                return False
             return True
 
         repos = [r for r in repos if enabled(r)]
@@ -126,9 +158,12 @@ class Builder:
         if not base:
             base = str(cfg.repo_root / "_install" / "UBS")
         base = os.path.expanduser(os.path.expandvars(base))
-        prefixes["Release"] = Path(base)
-        prefixes["Debug"] = Path(f"{base}{cfg.debug_suffix}")
-        prefixes["ASAN"] = Path(f"{base}{cfg.asan_suffix}")
+        base_path = Path(base)
+        if not base_path.is_absolute():
+            base_path = (cfg.repo_root / base_path).resolve()
+        prefixes["Release"] = base_path
+        prefixes["Debug"] = Path(f"{base_path}{cfg.debug_suffix}")
+        prefixes["ASAN"] = Path(f"{base_path}{cfg.asan_suffix}")
         return prefixes
 
     def _build_type_order(self) -> list[str]:
@@ -168,6 +203,13 @@ class Builder:
             return None
         return out or None
 
+    def _xcrun_sdk_path(self) -> str | None:
+        try:
+            out = subprocess.check_output(["xcrun", "--show-sdk-path"], text=True).strip()
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            return None
+        return out or None
+
     def _resolve_toolchain(self) -> dict[str, str]:
         cfg = self.config.global_cfg
         toolchain: dict[str, str] = {}
@@ -191,6 +233,9 @@ class Builder:
             toolchain.setdefault("ld", self._xcrun_find("ld") or self._which("ld") or "ld")
             toolchain.setdefault("ar", self._xcrun_find("ar") or self._which("ar") or "ar")
             toolchain.setdefault("ranlib", self._xcrun_find("ranlib") or self._which("ranlib") or "ranlib")
+            sdk = self._xcrun_sdk_path()
+            if sdk:
+                toolchain.setdefault("sdkroot", sdk)
         else:
             toolchain.setdefault("cc", self._which("clang-20") or self._which("clang") or "clang")
             toolchain.setdefault("cxx", self._which("clang++-20") or self._which("clang++") or "clang++")
@@ -203,6 +248,10 @@ class Builder:
 
     def _env_for_build(self, build_type: str, prefix: Path) -> dict[str, str]:
         env = dict(self.config.global_cfg.env)
+        if self.platform.os == "macos":
+            sdkroot = self.toolchain.get("sdkroot")
+            if sdkroot and not env.get("SDKROOT"):
+                env["SDKROOT"] = sdkroot
         override_dir = self.pkg_override_root / build_type
         pkg_paths = [
             str(override_dir),
@@ -439,7 +488,11 @@ class Builder:
         elif name == "lcms2":
             args += ["-DBUILD_TESTING=OFF", "-DBUILD_TESTS=OFF"]
         elif name == "imath":
-            args += ["-DIMATH_BUILD_TESTS=OFF", "-DIMATH_BUILD_SHARED_LIBS=OFF"]
+            args += [
+                "-DIMATH_BUILD_TESTS=OFF",
+                "-DIMATH_BUILD_SHARED_LIBS=OFF",
+                "-DPYTHON=ON",
+            ]
         elif name == "openjph":
             args += [
                 "-DOJPH_ENABLE_TIFF_SUPPORT=ON",
@@ -452,6 +505,8 @@ class Builder:
                 "-DOPENEXR_INSTALL_TOOLS=ON",
                 "-DOPENEXR_BUILD_EXAMPLES=ON",
                 "-DOPENEXR_BUILD_TESTS=OFF",
+                "-DOPENEXR_BUILD_PYTHON=ON",
+                "-DOPENEXR_TEST_PYTHON=OFF",
                 "-DBUILD_TESTING=OFF",
                 "-DOPENEXR_FORCE_INTERNAL_IMATH=OFF",
                 "-DOPENEXR_FORCE_INTERNAL_DEFLATE=OFF",
@@ -503,7 +558,7 @@ class Builder:
                 "-DOCIO_BUILD_NUKE=OFF",
                 "-DOCIO_BUILD_TESTS=OFF",
                 "-DOCIO_BUILD_GPU_TESTS=OFF",
-                "-DOCIO_BUILD_PYTHON=OFF",
+                "-DOCIO_BUILD_PYTHON=ON",
                 "-DOCIO_BUILD_JAVA=OFF",
                 "-DOCIO_BUILD_DOCS=OFF",
             ]
@@ -514,8 +569,142 @@ class Builder:
                 "-Dgtest_build_tests=OFF",
                 "-Dgtest_build_samples=OFF",
             ]
+        elif name == "pybind11":
+            args += ["-DPYBIND11_TEST=OFF", "-DPYBIND11_INSTALL=ON"]
+        elif name == "OpenImageIO":
+            args.extend(self._oiio_cache_args(ctx))
 
         return args
+
+    def _oiio_cache_args(self, ctx: BuildContext) -> list[str]:
+        cfg = self.config.global_cfg
+        args: list[str] = []
+        cache_path = cfg.src_root / "OpenImageIO" / "build" / "CMakeCache.txt"
+        allow = {
+            "BUILD_SHARED_LIBS",
+            "OIIO_BUILD_TOOLS",
+            "OIIO_BUILD_TESTS",
+            "OIIO_BUILD_DOCS",
+            "USE_PYTHON",
+            "USE_JXL",
+            "USE_QT",
+            "USE_LIBCPLUSPLUS",
+            "USE_EXTERNAL_PUGIXML",
+            "LINKSTATIC",
+        }
+        values: dict[str, str] = {}
+        if cache_path.exists():
+            for line in cache_path.read_text(encoding="utf-8").splitlines():
+                if not line or line.startswith("//"):
+                    continue
+                if ":" not in line or "=" not in line:
+                    continue
+                key = line.split(":", 1)[0]
+                if key in allow:
+                    values[key] = line.split("=", 1)[1]
+
+        # Defaults aligned with the shell script.
+        defaults = {
+            "BUILD_SHARED_LIBS": "OFF",
+            "OIIO_BUILD_TOOLS": "ON",
+            "OIIO_BUILD_TESTS": "OFF",
+            "OIIO_BUILD_DOCS": "OFF",
+            "USE_PYTHON": "ON",
+            "LINKSTATIC": "ON",
+        }
+        for key, value in defaults.items():
+            values.setdefault(key, value)
+
+        # Python is mandatory for OIIO in this setup.
+        values["USE_PYTHON"] = "ON"
+
+        # Ensure static dependency linking is propagated for static builds.
+        args.append(f"-DCMAKE_PROJECT_TOP_LEVEL_INCLUDES={self._oiio_linkstatic_include(ctx)}")
+
+        for key in sorted(values):
+            args.append(f"-D{key}={values[key]}")
+        return args
+
+    def _oiio_linkstatic_include(self, ctx: BuildContext) -> str:
+        include_path = ctx.build_dir / "oiio_linkstatic.cmake"
+        extra_libs = self._oiio_extra_static_libs(ctx.install_prefix)
+        extra_list = "\n  ".join(extra_libs) if extra_libs else ""
+        content = """\
+function(_oiio_linkstatic_fixup)
+  if (NOT TARGET OpenImageIO)
+    return()
+  endif()
+  if (BUILD_SHARED_LIBS)
+    return()
+  endif()
+  set(_oiio_extra_libs
+  __EXTRA_LIBS__
+  )
+  get_target_property(_oiio_private OpenImageIO LINK_LIBRARIES)
+  if (_oiio_private)
+    set_property(TARGET OpenImageIO APPEND PROPERTY INTERFACE_LINK_LIBRARIES "${_oiio_private}")
+  endif()
+  if (TARGET OpenImageIO_Util)
+    set_property(TARGET OpenImageIO_Util APPEND PROPERTY INTERFACE_LINK_LIBRARIES "${_oiio_extra_libs}")
+  endif()
+  set_property(TARGET OpenImageIO APPEND PROPERTY INTERFACE_LINK_LIBRARIES "${_oiio_extra_libs}")
+endfunction()
+
+if (CMAKE_VERSION VERSION_GREATER_EQUAL \"3.19\")
+  cmake_language(DEFER CALL _oiio_linkstatic_fixup)
+else()
+  _oiio_linkstatic_fixup()
+endif()
+"""
+        include_path.write_text(content.replace("__EXTRA_LIBS__", extra_list), encoding="utf-8")
+        return str(include_path)
+
+    def _oiio_extra_static_libs(self, prefix: Path) -> list[str]:
+        libs: list[str] = []
+        libdir = prefix / "lib"
+
+        def add_lib(name: str) -> None:
+            path = libdir / name
+            if path.exists():
+                libs.append(str(path))
+
+        # JXL deps
+        add_lib("libjxl_cms.a")
+        add_lib("libbrotlidec.a")
+        add_lib("libbrotlienc.a")
+        add_lib("libbrotlicommon.a")
+
+        # LibRaw deps
+        add_lib("liblcms2.a")
+        add_lib("libjasper.a")
+
+        # HEIF deps
+        add_lib("libaom.a")
+        add_lib("libde265.a")
+        add_lib("libx265.a")
+        add_lib("libkvazaar.a")
+
+        # OpenMP (libomp)
+        omp_root = self.config.global_cfg.env.get("OpenMP_ROOT") or os.environ.get("OpenMP_ROOT")
+        if omp_root:
+            for candidate in ("libomp.dylib", "libomp.a"):
+                path = Path(omp_root) / "lib" / candidate
+                if path.exists():
+                    libs.append(str(path))
+                    break
+
+        # iconv (system)
+        if (libdir / "libiconv.a").exists():
+            libs.append(str(libdir / "libiconv.a"))
+        else:
+            if self.platform.os == "macos":
+                libs.append("iconv")
+
+        # macOS Security framework (minizip-ng uses SecRandomCopyBytes)
+        if self.platform.os == "macos":
+            libs.append("-Wl,-framework,Security")
+
+        return libs
 
     def _autotools_args(self, repo: RepoConfig) -> list[str]:
         if repo.name == "xz":
@@ -667,6 +856,32 @@ class Builder:
             text = text.replace(marker, insert, 1)
         cmake_file.write_text(text, encoding="utf-8")
 
+    def _ensure_png16_include_alias(self, prefix: Path) -> None:
+        cfg = self.config.global_cfg
+        if not cfg.openimageio_patch_png_include:
+            return
+        include_dir = prefix / "include"
+        src = (include_dir / "png.h").resolve()
+        if not src.exists():
+            return
+        alias_dir = include_dir / "libpng16"
+        alias_dir.mkdir(parents=True, exist_ok=True)
+        dst = alias_dir / "png.h"
+        if dst.exists() or dst.is_symlink():
+            try:
+                if dst.is_symlink() and dst.resolve() == src:
+                    return
+            except OSError:
+                pass
+            try:
+                dst.unlink()
+            except OSError:
+                return
+        try:
+            dst.symlink_to(src)
+        except OSError:
+            dst.write_bytes(src.read_bytes())
+
     def _make_openexr_pc_override(self, prefix: Path, build_type: str) -> None:
         src = prefix / "lib" / "pkgconfig" / "OpenEXR.pc"
         if not src.exists():
@@ -689,17 +904,31 @@ class Builder:
                 lines.append(line)
         dst.write_text("\\n".join(lines) + "\\n", encoding="utf-8")
 
-    def _should_skip(self, repo: RepoConfig, ctx: BuildContext, deps_heads: dict[str, str | None], cflags: str, cxxflags: str) -> bool:
+    def _ensure_openjph_alias(self, prefix: Path) -> None:
+        libdir = prefix / "lib"
+        debug_lib = libdir / "libopenjph_d.a"
+        release_lib = libdir / "libopenjph.a"
+        if debug_lib.exists() and not release_lib.exists():
+            try:
+                release_lib.symlink_to(debug_lib.name)
+            except OSError:
+                release_lib.write_bytes(debug_lib.read_bytes())
+
+    def _stamp_state(
+        self, repo: RepoConfig, ctx: BuildContext, deps_heads: dict[str, str | None], cflags: str, cxxflags: str
+    ) -> tuple[str, bool, str]:
         if self.force:
-            return False
+            return "build", False, "forced"
         stamp_dir = self.config.global_cfg.build_root / ".stamps" / repo.name
         stamp_path = stamp_dir / f"{ctx.build_type}.json"
         existing = read_stamp(stamp_path)
         if not existing:
-            return False
+            return "build", False, "no-stamp"
         payload = self._stamp_payload(repo, ctx, deps_heads, cflags, cxxflags)
         current = compute_stamp(payload)
-        return existing.get("stamp") == current
+        if existing.get("stamp") == current:
+            return "skip", True, "up-to-date"
+        return "build", True, "stamp-changed"
 
     def _write_stamp(self, repo: RepoConfig, ctx: BuildContext, deps_heads: dict[str, str | None], cflags: str, cxxflags: str) -> None:
         stamp_dir = self.config.global_cfg.build_root / ".stamps" / repo.name
@@ -723,10 +952,9 @@ class Builder:
             "cxxflags": cxxflags,
         }
 
-    def _build_repo(self, repo: RepoConfig, build_type: str, deps_heads: dict[str, str | None]) -> None:
+    def _build_repo(self, repo: RepoConfig, build_type: str, deps_heads: dict[str, str | None]) -> tuple[str, str]:
         if not repo.build_system:
-            print(f"[skip] {repo.name}: build_system not set")
-            return
+            return "skipped", "no-build-system"
 
         install_prefix = self.prefixes[build_type]
         build_dir = self.config.global_cfg.build_root / build_type / repo.name
@@ -744,9 +972,10 @@ class Builder:
             cflags += " -fsanitize=address -fno-omit-frame-pointer"
             cxxflags += " -fsanitize=address -fno-omit-frame-pointer"
 
-        if self._should_skip(repo, ctx, deps_heads, cflags, cxxflags):
+        state, had_stamp, reason = self._stamp_state(repo, ctx, deps_heads, cflags, cxxflags)
+        if state == "skip":
             print(f"[skip] {repo.name} ({build_type}) up-to-date")
-            return
+            return "skipped", reason
 
         env = self._env_for_build(build_type, install_prefix)
 
@@ -754,6 +983,12 @@ class Builder:
             self._patch_glew_macos(src_dir)
         if repo.name == "libjxl":
             self._patch_libjxl_openexr_static(src_dir)
+            if build_type == "Debug":
+                self._ensure_openjph_alias(install_prefix)
+        if repo.name == "libpng":
+            self._ensure_png16_include_alias(install_prefix)
+        if repo.name == "OpenImageIO":
+            self._ensure_png16_include_alias(install_prefix)
 
         if repo.build_system == "cmake":
             build_dir.mkdir(parents=True, exist_ok=True)
@@ -783,6 +1018,10 @@ class Builder:
             make_env = env.copy()
             make_env["CC"] = self.toolchain.get("cc", make_env.get("CC", "cc"))
             make_env["CFLAGS"] = f"{cflags} -std=gnu99 -Wall -Wno-format-truncation"
+            getversion = src_dir / "getversion"
+            if getversion.exists() and not os.access(getversion, os.X_OK):
+                if not self.dry_run:
+                    getversion.chmod(getversion.stat().st_mode | 0o111)
             try:
                 run(["make", "clean"], cwd=str(src_dir), env=make_env, dry_run=self.dry_run)
             except subprocess.CalledProcessError:
@@ -824,9 +1063,13 @@ class Builder:
 
         if repo.name == "openexr":
             self._make_openexr_pc_override(install_prefix, build_type)
+        if repo.name == "openjph" and build_type == "Debug":
+            self._ensure_openjph_alias(install_prefix)
 
         if not self.dry_run:
             self._write_stamp(repo, ctx, deps_heads, cflags, cxxflags)
+
+        return ("rebuilt" if had_stamp else "built"), ""
 
     def _jobs(self) -> int:
         cfg = self.config.global_cfg
@@ -836,6 +1079,8 @@ class Builder:
         deps_map = {repo.name: repo.deps for repo in self.repos}
         order = topo_sort([r.name for r in self.repos], deps_map)
         repos_by_name = {repo.name: repo for repo in self.repos}
+        build_types = self._build_type_order()
+        report = BuildReport(build_types, order)
 
         # Resolve paths and clone/update repos.
         for repo_name in order:
@@ -846,12 +1091,12 @@ class Builder:
                 continue
             ensure_repo(repo_dir, repo.url, repo.ref, repo.ref_type, update=not self.no_update, dry_run=self.dry_run)
 
-        build_types = self._build_type_order()
         for build_type in build_types:
             for repo_name in order:
                 repo = repos_by_name[repo_name]
                 src_dir = self.repo_paths.get(repo.name, self._resolve_repo_dir(repo))
                 if self._maybe_skip_missing(repo, src_dir):
+                    report.record(build_type, repo.name, "missing", "not-found")
                     continue
                 deps_heads = {
                     dep: git_head(self.repo_paths[dep])
@@ -861,12 +1106,21 @@ class Builder:
                 # Decide build system for xz/lcms2 based on config and source layout.
                 if repo.name == "xz":
                     cmake_lists = src_dir / "CMakeLists.txt"
-                    repo.build_system = "autotools" if (self.config.global_cfg.xz_use_autotools or not cmake_lists.exists()) else "cmake"
+                    repo.build_system = (
+                        "autotools" if (self.config.global_cfg.xz_use_autotools or not cmake_lists.exists()) else "cmake"
+                    )
                 if repo.name == "lcms2":
                     cmake_lists = src_dir / "CMakeLists.txt"
                     repo.build_system = (
                         "autotools" if (self.config.global_cfg.lcms2_use_autotools or not cmake_lists.exists()) else "cmake"
                     )
-                self._build_repo(repo, build_type, deps_heads)
-
+                try:
+                    status, detail = self._build_repo(repo, build_type, deps_heads)
+                    report.record(build_type, repo.name, status, detail)
+                except Exception as exc:
+                    message = str(exc).splitlines()[0] if str(exc) else exc.__class__.__name__
+                    report.record(build_type, repo.name, "failed", message)
+                    report.print()
+                    raise
+        report.print()
         return 0
