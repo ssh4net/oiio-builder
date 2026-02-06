@@ -116,8 +116,6 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
     lines.append("Repos:")
     for repo in builder.repos:
         url = repo.url or _PREFLIGHT_REPO_URLS.get(repo.name, "")
-        show_url = repo.name in _PREFLIGHT_REPO_URLS and bool(url)
-        url_suffix = f", url={url}" if show_url else ""
         if repo.name == "libiconv" and platform.os == "windows":
             zip_path = builder._libiconv_export_zip()
             if zip_path.exists():
@@ -129,10 +127,13 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
             continue
         path = builder._resolve_repo_dir(repo)
         if path.exists():
-            lines.append(f"  {repo.name}: ok ({path}{url_suffix})")
+            lines.append(f"  {repo.name}: ok ({path})")
             continue
         if repo.optional and not repo.url:
-            lines.append(f"  {repo.name}: missing (optional{url_suffix})")
+            if url:
+                lines.append(f"  {repo.name}: missing (optional, url={url})")
+            else:
+                lines.append(f"  {repo.name}: missing (optional)")
         else:
             missing_repos += 1
             lines.append(f"  {repo.name}: missing (expected at {path}, url={url or 'no-url'})")
