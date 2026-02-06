@@ -67,6 +67,8 @@ class Builder:
         self.repo_paths: dict[str, Path] = {}
         self.pkg_override_root = self.config.global_cfg.build_root / "pkgconfig_override"
         self._ocio_python_note_printed = False
+        self._openexr_python_note_printed = False
+        self._windows_python_wrappers_forced_on_note_printed = False
 
     def _filter_repos(self) -> list[RepoConfig]:
         cfg = self.config.global_cfg
@@ -171,14 +173,21 @@ class Builder:
             base = win_cfg.get("install_prefix") or cfg.prefix_base
             if not base:
                 base = str(cfg.repo_root / "_install" / "WIN")
+            base = os.path.expanduser(os.path.expandvars(str(base)))
             base_path = Path(base)
+            if not base_path.is_absolute():
+                base_path = (cfg.repo_root / base_path).resolve()
             prefixes["Release"] = base_path
             prefixes["Debug"] = base_path
             if "ASAN" in cfg.build_types:
                 asan_base = win_cfg.get("asan_prefix")
                 if not asan_base:
                     asan_base = f"{base}_ASAN"
-                prefixes["ASAN"] = Path(asan_base)
+                asan_base = os.path.expanduser(os.path.expandvars(str(asan_base)))
+                asan_path = Path(asan_base)
+                if not asan_path.is_absolute():
+                    asan_path = (cfg.repo_root / asan_path).resolve()
+                prefixes["ASAN"] = asan_path
             return prefixes
 
         base = cfg.prefix_base
@@ -292,14 +301,45 @@ class Builder:
         env["PKG_CONFIG_PATH"] = ":".join([p for p in pkg_paths if p])
         return env
 
+    def _windows_runtime_mode(self) -> str:
+        mode = str(self.config.global_cfg.windows.get("msvc_runtime", "static")).strip().lower()
+        if mode in {"", "static", "mt", "multithreaded"}:
+            return "static"
+        if mode in {"dynamic", "md", "multithreadeddll"}:
+            return "dynamic"
+        return mode
+
+    def _windows_python_wrappers_mode(self) -> str:
+        mode = str(self.config.global_cfg.windows.get("python_wrappers", "auto")).strip().lower()
+        if mode in {"on", "off", "auto"}:
+            return mode
+        return "auto"
+
+    def _windows_python_wrappers_enabled(self) -> tuple[bool, str]:
+        if self.platform.os != "windows":
+            return True, "non-windows"
+        mode = self._windows_python_wrappers_mode()
+        if mode == "on":
+            if self._windows_runtime_mode() == "static" and not self._windows_python_wrappers_forced_on_note_printed:
+                print(
+                    "[note] windows.python_wrappers=on with static CRT may still fail for some projects. "
+                    "If wrappers fail, use windows.msvc_runtime=dynamic.",
+                    flush=True,
+                )
+                self._windows_python_wrappers_forced_on_note_printed = True
+            return True, "forced-on"
+        if mode == "off":
+            return False, "forced-off"
+        return self._windows_runtime_mode() == "dynamic", "auto"
+
     def _base_flags(self, build_type: str) -> str:
         cfg = self.config.global_cfg
         if self.platform.os == "windows":
-            runtime_mode = str(cfg.windows.get("msvc_runtime", "static")).strip().lower()
+            runtime_mode = self._windows_runtime_mode()
             runtime_flag = ""
-            if runtime_mode in {"", "static", "mt", "multithreaded"}:
+            if runtime_mode == "static":
                 runtime_flag = "/MTd" if build_type == "Debug" else "/MT"
-            elif runtime_mode in {"dynamic", "md", "multithreadeddll"}:
+            elif runtime_mode == "dynamic":
                 runtime_flag = "/MDd" if build_type == "Debug" else "/MD"
             if build_type == "Debug":
                 return f"/Od /Zi {runtime_flag}".strip()
@@ -478,8 +518,8 @@ class Builder:
             args += [f"-DBUILD_CODEC={self._resolve_openjpeg_build_codec()}"]
             if self.platform.os == "windows":
                 debug_postfix = str(cfg.windows.get("debug_postfix", "d"))
-                lib_dir = ctx.install_prefix / "lib"
-                include_dir = ctx.install_prefix / "include"
+                lib_dir = (ctx.install_prefix / "lib").resolve()
+                include_dir = (ctx.install_prefix / "include").resolve()
 
                 zlib_release = lib_dir / "zlibstatic.lib"
                 zlib_debug = lib_dir / f"zlibstatic{debug_postfix}.lib"
@@ -630,12 +670,26 @@ class Builder:
                 "-DBUILD_TESTING=OFF",
             ]
         elif name == "openexr":
+            openexr_build_python = "ON"
+            if self.platform.os == "windows":
+                wrappers_enabled, reason = self._windows_python_wrappers_enabled()
+                openexr_build_python = "ON" if wrappers_enabled else "OFF"
+                if openexr_build_python == "OFF" and not self._openexr_python_note_printed:
+                    if reason == "forced-off":
+                        print("[note] OpenEXR: OPENEXR_BUILD_PYTHON=OFF (windows.python_wrappers=off)", flush=True)
+                    else:
+                        print(
+                            "[note] OpenEXR: OPENEXR_BUILD_PYTHON=OFF (windows.python_wrappers=auto with static CRT). "
+                            "Set windows.python_wrappers=on (or windows.msvc_runtime=dynamic) to enable wrappers.",
+                            flush=True,
+                        )
+                    self._openexr_python_note_printed = True
             args += [
                 "-DOPENEXR_BUILD_TOOLS=ON",
                 "-DOPENEXR_INSTALL_TOOLS=ON",
                 "-DOPENEXR_BUILD_EXAMPLES=ON",
                 "-DOPENEXR_BUILD_TESTS=OFF",
-                "-DOPENEXR_BUILD_PYTHON=ON",
+                f"-DOPENEXR_BUILD_PYTHON={openexr_build_python}",
                 "-DOPENEXR_TEST_PYTHON=OFF",
                 "-DBUILD_TESTING=OFF",
                 "-DOPENEXR_FORCE_INTERNAL_IMATH=OFF",
@@ -690,16 +744,18 @@ class Builder:
         elif name == "OpenColorIO":
             ocio_build_python = "ON"
             if self.platform.os == "windows":
-                runtime_mode = str(cfg.windows.get("msvc_runtime", "static")).strip().lower()
-                if runtime_mode in {"", "static", "mt", "multithreaded"}:
-                    ocio_build_python = "OFF"
-                    if not self._ocio_python_note_printed:
+                wrappers_enabled, reason = self._windows_python_wrappers_enabled()
+                ocio_build_python = "ON" if wrappers_enabled else "OFF"
+                if ocio_build_python == "OFF" and not self._ocio_python_note_printed:
+                    if reason == "forced-off":
+                        print("[note] OpenColorIO: OCIO_BUILD_PYTHON=OFF (windows.python_wrappers=off)", flush=True)
+                    else:
                         print(
-                            "[note] OpenColorIO: forcing OCIO_BUILD_PYTHON=OFF for Windows static CRT (/MT,/MTd). "
-                            "Use windows.msvc_runtime=dynamic (or explicit repo cmake arg) to build PyOpenColorIO.",
+                            "[note] OpenColorIO: OCIO_BUILD_PYTHON=OFF (windows.python_wrappers=auto with static CRT). "
+                            "Set windows.python_wrappers=on (or windows.msvc_runtime=dynamic) to enable wrappers.",
                             flush=True,
                         )
-                        self._ocio_python_note_printed = True
+                    self._ocio_python_note_printed = True
             args += [
                 "-DOCIO_INSTALL_EXT_PACKAGES=NONE",
                 f"-DOCIO_BUILD_APPS={cfg.ocio_build_apps}",
@@ -990,10 +1046,10 @@ endif()
             debug_postfix = str(cfg.windows.get("debug_postfix", "d"))
             args.append(f"-DCMAKE_DEBUG_POSTFIX={debug_postfix}")
             args.append("-DCMAKE_POLICY_DEFAULT_CMP0091=NEW")
-            runtime_mode = str(cfg.windows.get("msvc_runtime", "static")).strip().lower()
-            if runtime_mode in {"", "static", "mt", "multithreaded"}:
+            runtime_mode = self._windows_runtime_mode()
+            if runtime_mode == "static":
                 runtime = "MultiThreaded$<$<CONFIG:Debug>:Debug>"
-            elif runtime_mode in {"dynamic", "md", "multithreadeddll"}:
+            elif runtime_mode == "dynamic":
                 runtime = "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
             else:
                 runtime = str(cfg.windows.get("msvc_runtime"))
@@ -1274,6 +1330,37 @@ endif()
                 jp2_text = jp2_text.replace(insert_after, f"{insert_after}\n\n{jp2_fix}", 1)
         jp2_cmake.write_text(jp2_text, encoding="utf-8")
 
+    def _patch_openexr_python_linking(self, src_dir: Path) -> None:
+        if self.platform.os != "windows":
+            return
+        cmake_file = src_dir / "src" / "wrappers" / "python" / "CMakeLists.txt"
+        if not cmake_file.exists():
+            return
+        text = cmake_file.read_text(encoding="utf-8")
+        begin = "# OIIO_BUILDER_PYOPENEXR_LINK_FIX_BEGIN"
+        end = "# OIIO_BUILDER_PYOPENEXR_LINK_FIX_END"
+        replacement = (
+            "# OIIO_BUILDER_PYOPENEXR_LINK_FIX_BEGIN\n"
+            "target_link_libraries (PyOpenEXR PRIVATE OpenEXR::OpenEXR pybind11::headers)\n"
+            "if(TARGET Python3::Module)\n"
+            "  target_link_libraries (PyOpenEXR PRIVATE Python3::Module)\n"
+            "elseif(TARGET Python3::Python)\n"
+            "  target_link_libraries (PyOpenEXR PRIVATE Python3::Python)\n"
+            "else()\n"
+            "  target_link_libraries (PyOpenEXR PRIVATE ${Python3_LIBRARIES})\n"
+            "endif()\n"
+            "# OIIO_BUILDER_PYOPENEXR_LINK_FIX_END"
+        )
+        if begin in text and end in text:
+            start = text.index(begin)
+            stop = text.index(end, start) + len(end)
+            text = text[:start] + replacement + text[stop:]
+        else:
+            pattern = r'target_link_libraries\s*\(\s*PyOpenEXR\s+PRIVATE\s+"?\$\{Python3_LIBRARIES\}"?\s+OpenEXR::OpenEXR\s+pybind11::headers\s*\)'
+            if re.search(pattern, text):
+                text = re.sub(pattern, replacement, text, count=1)
+        cmake_file.write_text(text, encoding="utf-8")
+
     def _ensure_png16_include_alias(self, prefix: Path) -> None:
         cfg = self.config.global_cfg
         if not cfg.openimageio_patch_png_include:
@@ -1419,6 +1506,8 @@ endif()
                 self._ensure_openjph_alias(install_prefix)
         if repo.name == "openjpeg":
             self._patch_openjpeg_windows_static_pkgconfig(src_dir)
+        if repo.name == "openexr":
+            self._patch_openexr_python_linking(src_dir)
         if repo.name == "libpng":
             self._ensure_png16_include_alias(install_prefix)
         if repo.name == "OpenImageIO":

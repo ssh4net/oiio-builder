@@ -68,6 +68,11 @@ no_update = true
 # debug_postfix = "d"
 # msvc_runtime: static|dynamic (default: static => /MT, /MTd)
 # msvc_runtime = "static"
+# python_wrappers: auto|on|off (default: auto)
+#   auto -> ON only when msvc_runtime=dynamic
+#   on   -> force ON for OpenColorIO/OpenEXR wrappers
+#   off  -> force OFF for OpenColorIO/OpenEXR wrappers
+# python_wrappers = "auto"
 
 [[repos]]
 name = "zlib-ng"

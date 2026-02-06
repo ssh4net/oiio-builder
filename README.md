@@ -35,7 +35,8 @@ Key options:
 - `windows.install_prefix`: single prefix for Debug+Release on Windows.
 - `windows.asan_prefix`: optional separate prefix for ASAN.
 - `windows.msvc_runtime`: `static` (default, `/MT`/`/MTd`) or `dynamic` (`/MD`/`/MDd`).
-- `OpenColorIO` on Windows: Python bindings are auto-disabled for `windows.msvc_runtime=static` to avoid CRT/Python debug ABI link conflicts.
+- `windows.python_wrappers`: `auto` (default), `on`, `off` for OpenColorIO/OpenEXR Python bindings.
+  `auto` enables wrappers only when `windows.msvc_runtime=dynamic`.
 - `windows.env`: tool overrides for Windows (e.g. `PKG_CONFIG_EXECUTABLE`, `DOXYGEN_EXECUTABLE`).
 
 ## Prefix Rules
@@ -121,7 +122,7 @@ DOXYGEN_EXECUTABLE = "C:\\Program Files\\doxygen\\bin\\doxygen.exe"
 - **Missing optional repos**: `yaml-cpp`, `pystring`, `expat`, `pugixml`, `libxml2` are skipped if not present. On Windows, `libiconv` is expected via `external/vcpkg-export-libiconv.zip`.
 - **OpenMP not found (macOS/Linux)**: set `OpenMP_ROOT` in `build.toml` or environment.
 - **ASAN failures on Windows**: prefer clang-cl and ensure the MSVC AddressSanitizer component is installed.
-- **PyOpenColorIO link errors on Windows** (`python311.lib` missing or `/MDd` vs `/MTd` mismatch): use `windows.msvc_runtime = "dynamic"` if you need OCIO Python bindings.
+- **PyOpenColorIO / PyOpenEXR link errors on Windows**: set `windows.msvc_runtime = "dynamic"` and `windows.python_wrappers = "on"` for wrapper builds.
 - **Preflight only**: run `uv run build.py` (no args) to see tool/repo readiness without building.
 
 ## Notes
