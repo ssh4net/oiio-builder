@@ -10,6 +10,7 @@ def cmake_args(builder, ctx) -> list[str]:
     enable_openexr = "ON" if cfg.build_exr_stack else "OFF"
     args = [
         "-DBUILD_TESTING=OFF",
+        "-DJPEGXL_STATIC=ON",
         f"-DJPEGXL_ENABLE_TOOLS={cfg.libjxl_enable_tools}",
         f"-DJPEGXL_ENABLE_OPENEXR={enable_openexr}",
         "-DJPEGXL_ENABLE_BENCHMARK=OFF",

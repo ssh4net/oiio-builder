@@ -297,9 +297,20 @@ class Builder:
             str(prefix / "lib" / "pkgconfig"),
             str(prefix / "share" / "pkgconfig"),
         ]
-        if env.get("PKG_CONFIG_PATH"):
-            pkg_paths.append(env["PKG_CONFIG_PATH"])
-        env["PKG_CONFIG_PATH"] = ":".join([p for p in pkg_paths if p])
+        existing_pkg_path = env.get("PKG_CONFIG_PATH")
+        if existing_pkg_path:
+            pkg_paths.extend(existing_pkg_path.split(os.pathsep))
+        deduped_paths: list[str] = []
+        seen: set[str] = set()
+        for path_item in pkg_paths:
+            if not path_item:
+                continue
+            normalized = os.path.normcase(os.path.normpath(path_item))
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            deduped_paths.append(path_item)
+        env["PKG_CONFIG_PATH"] = os.pathsep.join(deduped_paths)
         return env
 
     def _windows_runtime_mode(self) -> str:
@@ -1236,23 +1247,70 @@ endif()
         src = prefix / "lib" / "pkgconfig" / "OpenEXR.pc"
         if not src.exists():
             return
-        openjph_lib = "openjph"
-        if build_type == "Debug" and (prefix / "lib" / "libopenjph_d.a").exists():
-            openjph_lib = "openjph_d"
         override_dir = self.pkg_override_root / build_type
         override_dir.mkdir(parents=True, exist_ok=True)
         dst = override_dir / "OpenEXR.pc"
-        if dst.exists():
-            text = dst.read_text(encoding="utf-8")
-            if "openjph" in text:
-                return
+
+        def _pick_windows_lib(libdir: Path, names: list[str], globs: list[str]) -> Path | None:
+            for name in names:
+                candidate = libdir / name
+                if candidate.exists():
+                    return candidate
+            for pattern in globs:
+                matches = sorted(libdir.glob(pattern))
+                if matches:
+                    return matches[0]
+            return None
+
+        extra_flags = ""
+        if self.platform.os == "windows":
+            debug_postfix = str(self.config.global_cfg.windows.get("debug_postfix", "d"))
+            libdir = prefix / "lib"
+            if build_type == "Debug":
+                deflate_names = [f"deflatestatic{debug_postfix}.lib", "deflatestatic.lib", f"deflate{debug_postfix}.lib", "deflate.lib"]
+                deflate_globs = [f"deflate*{debug_postfix}.lib", "deflate*.lib"]
+                openjph_names = [f"openjph{debug_postfix}.lib", "openjph.lib"]
+                openjph_globs = [f"openjph*{debug_postfix}.lib", "openjph*.lib"]
+            else:
+                deflate_names = ["deflatestatic.lib", "deflate.lib", f"deflatestatic{debug_postfix}.lib", f"deflate{debug_postfix}.lib"]
+                deflate_globs = ["deflate*.lib", f"deflate*{debug_postfix}.lib"]
+                openjph_names = ["openjph.lib", f"openjph{debug_postfix}.lib"]
+                openjph_globs = ["openjph*.lib", f"openjph*{debug_postfix}.lib"]
+            deflate_lib = _pick_windows_lib(libdir, deflate_names, deflate_globs)
+            openjph_lib = _pick_windows_lib(libdir, openjph_names, openjph_globs)
+            windows_libs: list[str] = []
+            if deflate_lib:
+                windows_libs.append(deflate_lib.as_posix())
+            if openjph_lib:
+                windows_libs.append(openjph_lib.as_posix())
+            if windows_libs:
+                extra_flags = " " + " ".join(windows_libs)
+        else:
+            openjph_lib = "openjph"
+            if build_type == "Debug" and (prefix / "lib" / "libopenjph_d.a").exists():
+                openjph_lib = "openjph_d"
+            extra_flags = f" -ldeflate -l{openjph_lib}"
+
         lines = []
         for line in src.read_text(encoding="utf-8").splitlines():
-            if line.startswith("Libs:") and "openjph" not in line and "deflate" not in line:
-                lines.append(f"{line} -ldeflate -l{openjph_lib}")
-            else:
-                lines.append(line)
-        dst.write_text("\\n".join(lines) + "\\n", encoding="utf-8")
+            if line.startswith("Libs:"):
+                cleaned = re.sub(r"\s+-l(?:deflate|openjph[^\s]*)", "", line)
+                cleaned = re.sub(r"\s+[^\s]*deflate[^\s]*\.lib", "", cleaned, flags=re.IGNORECASE)
+                cleaned = re.sub(r"\s+[^\s]*openjph[^\s]*\.lib", "", cleaned, flags=re.IGNORECASE)
+                lines.append((cleaned.rstrip() + extra_flags).rstrip())
+                continue
+            if self.platform.os == "windows" and line.startswith("Requires.private:"):
+                cleaned = line
+                cleaned = re.sub(r"\blibdeflate\b(?:\s*[<>=]+\s*[\w\.\-]+)?", "", cleaned)
+                cleaned = re.sub(r"\bopenjph\b(?:\s*[<>=]+\s*[\w\.\-]+)?", "", cleaned)
+                cleaned = re.sub(r"\s+", " ", cleaned).rstrip()
+                if cleaned.endswith(":"):
+                    lines.append("Requires.private:")
+                else:
+                    lines.append(cleaned)
+                continue
+            lines.append(line)
+        dst.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     def _ensure_openjph_alias(self, prefix: Path) -> None:
         libdir = prefix / "lib"
@@ -1349,6 +1407,8 @@ endif()
         if repo.name == "glew":
             self._patch_glew_macos(src_dir)
         recipe_registry.patch_source(repo.name, self, src_dir)
+        if repo.name == "libjxl":
+            self._make_openexr_pc_override(install_prefix, build_type)
         if repo.name == "libjxl" and build_type == "Debug":
             self._ensure_openjph_alias(install_prefix)
         if repo.name == "libpng":
