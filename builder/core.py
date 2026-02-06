@@ -1320,15 +1320,142 @@ endif()
             "endif()\n"
             "# OPJ_WIN_TIFF_SCOPE_FIX_END"
         )
+        insert_after = "if(OPJ_HAVE_LIBPNG)\n\tlist(APPEND common_SRCS convertpng.c)\nendif()"
         if jp2_begin in jp2_text and jp2_end in jp2_text:
             start = jp2_text.index(jp2_begin)
             end = jp2_text.index(jp2_end, start) + len(jp2_end)
             jp2_text = jp2_text[:start] + jp2_fix + jp2_text[end:]
-        else:
-            insert_after = "if(OPJ_HAVE_LIBPNG)\n\tlist(APPEND common_SRCS convertpng.c)\nendif()"
-            if insert_after in jp2_text:
-                jp2_text = jp2_text.replace(insert_after, f"{insert_after}\n\n{jp2_fix}", 1)
+        elif insert_after in jp2_text:
+            jp2_text = jp2_text.replace(insert_after, f"{insert_after}\n\n{jp2_fix}", 1)
         jp2_cmake.write_text(jp2_text, encoding="utf-8")
+
+    def _patch_libtiff_static_config(self, src_dir: Path) -> None:
+        cmake_config_in = src_dir / "cmake" / "tiff-config.cmake.in"
+        libtiff_cmake_lists = src_dir / "libtiff" / "CMakeLists.txt"
+
+        if cmake_config_in.exists():
+            original_text = cmake_config_in.read_text(encoding="utf-8")
+            text = original_text
+            marker_begin = "# OIIO_BUILDER_TIFF_STATIC_CONFIG_BEGIN"
+            marker_end = "# OIIO_BUILDER_TIFF_STATIC_CONFIG_END"
+            replacement = (
+                "# OIIO_BUILDER_TIFF_STATIC_CONFIG_BEGIN\n"
+                "if(\"@TIFF_BUILD_LIB_VALUE@\" STREQUAL \"STATIC\")\n"
+                "    include(CMakeFindDependencyMacro)\n"
+                "\n"
+                "    # For static builds, consumers must also link our codec dependencies.\n"
+                "    #\n"
+                "    # Libtiff ships custom Find-modules for some dependencies and also uses\n"
+                "    # non-standard imported target names (e.g. liblzma::liblzma), so make sure\n"
+                "    # our modules are discoverable when find_dependency() runs.\n"
+                "    list(PREPEND CMAKE_MODULE_PATH \"${CMAKE_CURRENT_LIST_DIR}/modules\")\n"
+                "\n"
+                "    set(_tiff_static_deps \"@TIFF_STATIC_PACKAGE_DEPENDENCIES@\")\n"
+                "    foreach(_dep IN LISTS _tiff_static_deps)\n"
+                "        find_dependency(${_dep})\n"
+                "    endforeach()\n"
+                "    unset(_dep)\n"
+                "    unset(_tiff_static_deps)\n"
+                "endif()\n"
+                "# OIIO_BUILDER_TIFF_STATIC_CONFIG_END"
+            )
+            if marker_begin in text and marker_end in text:
+                start = text.index(marker_begin)
+                stop = text.index(marker_end, start) + len(marker_end)
+                text = text[:start] + replacement + text[stop:]
+            else:
+                original = "if(NOT \"@BUILD_SHARED_LIBS@\")\n    # TODO: import dependencies\nendif()"
+                if original in text:
+                    text = text.replace(original, replacement, 1)
+            if text != original_text:
+                cmake_config_in.write_text(text, encoding="utf-8")
+
+        if libtiff_cmake_lists.exists():
+            original_text = libtiff_cmake_lists.read_text(encoding="utf-8")
+            text = original_text
+            marker_begin = "# OIIO_BUILDER_TIFF_CMAKELISTS_STATIC_DEPS_BEGIN"
+            marker_end = "# OIIO_BUILDER_TIFF_CMAKELISTS_STATIC_DEPS_END"
+            block = (
+                "  # OIIO_BUILDER_TIFF_CMAKELISTS_STATIC_DEPS_BEGIN\n"
+                "  # For static builds, consumers must also link our codec dependencies.\n"
+                "  # Teach the installed tiff-config.cmake which packages to find, and install\n"
+                "  # the corresponding Find-modules we ship (when present).\n"
+                "  set(TIFF_STATIC_PACKAGE_DEPENDENCIES \"\")\n"
+                "  set(_tiff_find_modules \"\")\n"
+                "  if(TIFF_BUILD_LIB_VALUE STREQUAL \"STATIC\")\n"
+                "    # Derive package dependencies from the exported target interface. This keeps\n"
+                "    # tiff-config.cmake and the exported link interface consistent.\n"
+                "    get_target_property(_tiff_iface_libs tiff INTERFACE_LINK_LIBRARIES)\n"
+                "    if(NOT _tiff_iface_libs OR _tiff_iface_libs STREQUAL \"_tiff_iface_libs-NOTFOUND\")\n"
+                "      # Fallback: be explicit (should be rare; depends on CMake behavior).\n"
+                "      if(ZIP_SUPPORT)\n"
+                "        list(APPEND TIFF_STATIC_PACKAGE_DEPENDENCIES ZLIB)\n"
+                "      endif()\n"
+                "      if(LIBDEFLATE_SUPPORT)\n"
+                "        list(APPEND TIFF_STATIC_PACKAGE_DEPENDENCIES Deflate)\n"
+                "      endif()\n"
+                "      if(JPEG_SUPPORT)\n"
+                "        list(APPEND TIFF_STATIC_PACKAGE_DEPENDENCIES JPEG)\n"
+                "      endif()\n"
+                "      if(JBIG_SUPPORT)\n"
+                "        list(APPEND TIFF_STATIC_PACKAGE_DEPENDENCIES JBIG)\n"
+                "      endif()\n"
+                "      if(LERC_SUPPORT)\n"
+                "        list(APPEND TIFF_STATIC_PACKAGE_DEPENDENCIES LERC)\n"
+                "      endif()\n"
+                "      if(LZMA_SUPPORT)\n"
+                "        list(APPEND TIFF_STATIC_PACKAGE_DEPENDENCIES liblzma)\n"
+                "      endif()\n"
+                "      if(ZSTD_SUPPORT)\n"
+                "        list(APPEND TIFF_STATIC_PACKAGE_DEPENDENCIES ZSTD)\n"
+                "      endif()\n"
+                "      if(WEBP_SUPPORT)\n"
+                "        list(APPEND TIFF_STATIC_PACKAGE_DEPENDENCIES WebP)\n"
+                "      endif()\n"
+                "\n"
+                "      foreach(_pkg IN LISTS TIFF_STATIC_PACKAGE_DEPENDENCIES)\n"
+                "        if(EXISTS \"${PROJECT_SOURCE_DIR}/cmake/Find${_pkg}.cmake\")\n"
+                "          list(APPEND _tiff_find_modules \"${PROJECT_SOURCE_DIR}/cmake/Find${_pkg}.cmake\")\n"
+                "        endif()\n"
+                "      endforeach()\n"
+                "      unset(_pkg)\n"
+                "    else()\n"
+                "      foreach(_item IN LISTS _tiff_iface_libs)\n"
+                "        # Exported static link interfaces may wrap dependencies with LINK_ONLY.\n"
+                "        string(REGEX REPLACE \"^\\\\$<LINK_ONLY:(.*)>$\" \"\\\\1\" _item \"${_item}\")\n"
+                "        if(_item MATCHES \"^([^:]+)::\")\n"
+                "          set(_pkg \"${CMAKE_MATCH_1}\")\n"
+                "          list(APPEND TIFF_STATIC_PACKAGE_DEPENDENCIES \"${_pkg}\")\n"
+                "          if(EXISTS \"${PROJECT_SOURCE_DIR}/cmake/Find${_pkg}.cmake\")\n"
+                "            list(APPEND _tiff_find_modules \"${PROJECT_SOURCE_DIR}/cmake/Find${_pkg}.cmake\")\n"
+                "          endif()\n"
+                "        endif()\n"
+                "      endforeach()\n"
+                "      unset(_item)\n"
+                "      unset(_pkg)\n"
+                "    endif()\n"
+                "    unset(_tiff_iface_libs)\n"
+                "\n"
+                "    list(REMOVE_DUPLICATES TIFF_STATIC_PACKAGE_DEPENDENCIES)\n"
+                "    list(REMOVE_DUPLICATES _tiff_find_modules)\n"
+                "  endif()\n"
+                "\n"
+                "  if(_tiff_find_modules)\n"
+                "    install(FILES ${_tiff_find_modules} DESTINATION ${TIFF_CONFIGDIR}/modules)\n"
+                "  endif()\n"
+                "  unset(_tiff_find_modules)\n"
+                "  # OIIO_BUILDER_TIFF_CMAKELISTS_STATIC_DEPS_END\n"
+            )
+            if marker_begin in text and marker_end in text:
+                start = text.index(marker_begin)
+                stop = text.index(marker_end, start) + len(marker_end)
+                text = text[:start] + block + text[stop:]
+            else:
+                anchor = "  include(CMakePackageConfigHelpers)"
+                if anchor in text:
+                    text = text.replace(anchor, f"{block}\n{anchor}", 1)
+            if text != original_text:
+                libtiff_cmake_lists.write_text(text, encoding="utf-8")
 
     def _patch_openexr_python_linking(self, src_dir: Path) -> None:
         if self.platform.os != "windows":
@@ -1506,6 +1633,8 @@ endif()
                 self._ensure_openjph_alias(install_prefix)
         if repo.name == "openjpeg":
             self._patch_openjpeg_windows_static_pkgconfig(src_dir)
+        if repo.name == "libtiff":
+            self._patch_libtiff_static_config(src_dir)
         if repo.name == "openexr":
             self._patch_openexr_python_linking(src_dir)
         if repo.name == "libpng":
