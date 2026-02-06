@@ -19,6 +19,9 @@ _PREFLIGHT_REPO_URLS: dict[str, str] = {
     "glew": "https://github.com/Perlmint/glew-cmake.git",
     "glfw": "https://github.com/glfw/glfw.git",
     "pystring": "https://github.com/imageworks/pystring.git",
+    "freetype": "https://github.com/freetype/freetype.git",
+    "harfbuzz": "https://github.com/harfbuzz/harfbuzz.git",
+    "bzip2": "https://gitlab.com/federicomenaquintero/bzip2.git",
 }
 
 

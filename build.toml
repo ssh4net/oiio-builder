@@ -74,6 +74,18 @@ no_update = true
 #   off  -> force OFF for OpenColorIO/OpenEXR wrappers
 # python_wrappers = "auto"
 
+[windows.env]
+# FFmpeg on Windows:
+# - The builder does not build FFmpeg natively on Windows.
+# - Install/copy an MSVC-built static FFmpeg into the same prefix used by this script
+#   (the `install_prefix`/`prefix_base`), so headers are under `<prefix>/include`
+#   and libs are under `<prefix>/lib`.
+# Optional explicit overrides (should still point inside the same `<prefix>`):
+# FFMPEG_LIBAVCODEC = "<prefix>/lib/avcodecd.lib"
+# FFMPEG_LIBAVFORMAT = "<prefix>/lib/avformatd.lib"
+# FFMPEG_LIBAVUTIL = "<prefix>/lib/avutild.lib"
+# FFMPEG_LIBSWSCALE = "<prefix>/lib/swscaled.lib"
+
 [[repos]]
 name = "zlib-ng"
 dir = "zlib-ng"
@@ -253,6 +265,12 @@ url = "https://github.com/google/brotli.git"
 build_system = "cmake"
 
 [[repos]]
+name = "bzip2"
+dir = "bzip2"
+url = "https://gitlab.com/federicomenaquintero/bzip2.git"
+build_system = "cmake"
+
+[[repos]]
 name = "highway"
 dir = "highway"
 url = "https://github.com/google/highway.git"
@@ -263,6 +281,19 @@ name = "lcms2"
 dir = "Little-CMS"
 dir_candidates = ["Little-CMS", "Little-CMS-*", "lcms2", "lcms2-*"]
 url = "https://github.com/mm2/Little-CMS.git"
+build_system = "cmake"
+
+[[repos]]
+name = "freetype"
+dir = "freetype"
+url = "https://github.com/freetype/freetype.git"
+build_system = "cmake"
+deps = ["zlib-ng", "libpng", "brotli", "bzip2", "harfbuzz"]
+
+[[repos]]
+name = "harfbuzz"
+dir = "harfbuzz"
+url = "https://github.com/harfbuzz/harfbuzz.git"
 build_system = "cmake"
 
 [[repos]]
@@ -335,6 +366,18 @@ url = "https://github.com/pybind/pybind11.git"
 build_system = "cmake"
 
 [[repos]]
+name = "robinmap"
+dir = "robin-map"
+url = "https://github.com/Tessil/robin-map.git"
+build_system = "cmake"
+
+[[repos]]
+name = "fmt"
+dir = "fmt"
+url = "https://github.com/fmtlib/fmt.git"
+build_system = "cmake"
+
+[[repos]]
 name = "OpenColorIO"
 dir = "OpenColorIO"
 url = "https://github.com/AcademySoftwareFoundation/OpenColorIO.git"
@@ -361,12 +404,19 @@ deps = [
   "openexr",
   "imath",
   "libjxl",
+  "libultrahdr",
   "libraw",
   "libheif",
   "ptex",
   "libwebp",
   "giflib",
+  "bzip2",
+  "freetype",
+  "harfbuzz",
   "lcms2",
+  "OpenColorIO",
+  "robinmap",
+  "fmt",
   "yaml-cpp",
   "pystring",
   "pugixml",

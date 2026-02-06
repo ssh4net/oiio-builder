@@ -56,12 +56,16 @@ class BuildReport:
 
 
 class Builder:
-    def __init__(self, config: Config, platform: PlatformInfo, dry_run: bool, no_update: bool, force: bool) -> None:
+    def __init__(
+        self, config: Config, platform: PlatformInfo, dry_run: bool, no_update: bool, force: bool, force_all: bool = False
+    ) -> None:
         self.config = config
         self.platform = platform
         self.dry_run = dry_run
         self.no_update = no_update
         self.force = force
+        self.force_all = force_all or (force and not bool(config.only))
+        self.force_targets = set(config.only) if (force and bool(config.only) and not self.force_all) else set()
         self.toolchain = self._resolve_toolchain()
         self.repos = self._filter_repos()
         self.prefixes = self._compute_prefixes()
@@ -94,6 +98,12 @@ class Builder:
             "x265",
             "kvazaar",
             "libheif",
+            "bzip2",
+            "freetype",
+            "harfbuzz",
+            "libultrahdr",
+            "robinmap",
+            "fmt",
             "pybind11",
             "ffmpeg",
             "OpenImageIO",
@@ -104,7 +114,10 @@ class Builder:
         def enabled(repo: RepoConfig) -> bool:
             if repo.name == "ffmpeg" and self.platform.os == "windows":
                 if cfg.build_ffmpeg:
-                    print("[skip] ffmpeg: build is not supported on Windows (set build_ffmpeg=false in build.toml)")
+                    print(
+                        "[skip] ffmpeg: native build step is disabled on Windows; "
+                        "prebuilt FFmpeg is consumed via FFmpeg_ROOT/FFMPEG_ROOT or <src_root>/ffmpeg"
+                    )
                 return False
             if repo.name == "libiconv" and self.platform.os != "windows":
                 return False
@@ -353,9 +366,10 @@ class Builder:
                 runtime_flag = "/MTd" if build_type == "Debug" else "/MT"
             elif runtime_mode == "dynamic":
                 runtime_flag = "/MDd" if build_type == "Debug" else "/MD"
+            utf8_flag = "/utf-8"
             if build_type == "Debug":
-                return f"/Od /Zi {runtime_flag}".strip()
-            return f"/O2 /DNDEBUG {runtime_flag}".strip()
+                return f"/Od /Zi {runtime_flag} {utf8_flag}".strip()
+            return f"/O2 /DNDEBUG {runtime_flag} {utf8_flag}".strip()
         if build_type == "Debug":
             flags = "-O0 -g"
         else:
@@ -512,6 +526,139 @@ class Builder:
             ]
         elif name == "libpng":
             args += ["-DPNG_SHARED=OFF", "-DPNG_STATIC=ON", "-DPNG_TESTS=OFF"]
+        elif name == "bzip2":
+            args += [
+                "-DENABLE_SHARED_LIB=OFF",
+                "-DENABLE_STATIC_LIB=ON",
+                "-DENABLE_APP=OFF",
+                "-DENABLE_EXAMPLES=OFF",
+                "-DENABLE_DOCS=OFF",
+                "-DENABLE_LIB_ONLY=ON",
+            ]
+        elif name == "freetype":
+            args += [
+                "-DFT_DISABLE_BZIP2=OFF",
+                "-DFT_REQUIRE_BZIP2=ON",
+                "-DFT_DISABLE_HARFBUZZ=OFF",
+                "-DFT_REQUIRE_HARFBUZZ=ON",
+                "-DFT_DYNAMIC_HARFBUZZ=OFF",
+                "-DFT_DISABLE_PNG=OFF",
+                "-DFT_DISABLE_ZLIB=OFF",
+                "-DFT_DISABLE_BROTLI=OFF",
+            ]
+            bz_include = (ctx.install_prefix / "include").resolve()
+            lib_dir = (ctx.install_prefix / "lib").resolve()
+            bzip2_release: Path | None = None
+            bzip2_debug: Path | None = None
+            if self.platform.os == "windows":
+                debug_postfix = str(cfg.windows.get("debug_postfix", "d"))
+                self._ensure_bzip2_alias(ctx.install_prefix, ctx.build_type)
+                bzip2_release_candidates = [
+                    lib_dir / "bz2_static.lib",
+                    lib_dir / "bz2.lib",
+                    lib_dir / "libbz2_static.lib",
+                    lib_dir / "libbz2.lib",
+                ]
+                bzip2_debug_candidates = [
+                    lib_dir / f"bz2_static{debug_postfix}.lib",
+                    lib_dir / f"bz2{debug_postfix}.lib",
+                    lib_dir / f"libbz2_static{debug_postfix}.lib",
+                    lib_dir / f"libbz2{debug_postfix}.lib",
+                    lib_dir / "bz2_static.lib",
+                    lib_dir / "bz2.lib",
+                ]
+                bzip2_release = next((candidate for candidate in bzip2_release_candidates if candidate.exists()), None)
+                bzip2_debug = next((candidate for candidate in bzip2_debug_candidates if candidate.exists()), None)
+                if bzip2_release is None:
+                    matches = sorted(lib_dir.glob("*bz2*.lib"))
+                    if matches:
+                        bzip2_release = matches[0]
+                if bzip2_debug is None:
+                    matches = sorted(lib_dir.glob(f"*bz2*{debug_postfix}*.lib"))
+                    if matches:
+                        bzip2_debug = matches[0]
+                    elif bzip2_release is not None:
+                        bzip2_debug = bzip2_release
+            else:
+                bzip2_release_candidates = [
+                    lib_dir / "libbz2_static.a",
+                    lib_dir / "libbz2.a",
+                    lib_dir / "libbz2.so",
+                    lib_dir / "libbz2.dylib",
+                ]
+                bzip2_debug_candidates = [
+                    lib_dir / "libbz2_staticd.a",
+                    lib_dir / "libbz2d.a",
+                    lib_dir / "libbz2_static.a",
+                    lib_dir / "libbz2.a",
+                ]
+                bzip2_release = next((candidate for candidate in bzip2_release_candidates if candidate.exists()), None)
+                bzip2_debug = next((candidate for candidate in bzip2_debug_candidates if candidate.exists()), None)
+                if bzip2_debug is None and bzip2_release is not None:
+                    bzip2_debug = bzip2_release
+
+            if (bz_include / "bzlib.h").exists():
+                args.append(f"-DBZIP2_INCLUDE_DIR={bz_include.as_posix()}")
+            if bzip2_release is not None:
+                args.append(f"-DBZIP2_LIBRARY_RELEASE={bzip2_release.as_posix()}")
+            if bzip2_debug is not None:
+                args.append(f"-DBZIP2_LIBRARY_DEBUG={bzip2_debug.as_posix()}")
+            bzip2_default = bzip2_debug if ctx.build_type == "Debug" else bzip2_release
+            if bzip2_default is not None:
+                args.append(f"-DBZIP2_LIBRARY={bzip2_default.as_posix()}")
+                args.append(f"-DBZIP2_LIBRARIES={bzip2_default.as_posix()}")
+            if self.platform.os == "windows":
+                debug_postfix = str(cfg.windows.get("debug_postfix", "d"))
+                hb_include_candidates = [
+                    (ctx.install_prefix / "include" / "harfbuzz").resolve(),
+                    (ctx.install_prefix / "include").resolve(),
+                ]
+                hb_include_dir = next((candidate for candidate in hb_include_candidates if (candidate / "hb.h").exists()), None)
+
+                lib_dir = (ctx.install_prefix / "lib").resolve()
+                if ctx.build_type == "Debug":
+                    hb_lib_candidates = [
+                        lib_dir / f"harfbuzz{debug_postfix}.lib",
+                        lib_dir / f"libharfbuzz{debug_postfix}.lib",
+                        lib_dir / "harfbuzz.lib",
+                        lib_dir / "libharfbuzz.lib",
+                    ]
+                else:
+                    hb_lib_candidates = [
+                        lib_dir / "harfbuzz.lib",
+                        lib_dir / "libharfbuzz.lib",
+                        lib_dir / f"harfbuzz{debug_postfix}.lib",
+                        lib_dir / f"libharfbuzz{debug_postfix}.lib",
+                    ]
+                hb_library = next((candidate for candidate in hb_lib_candidates if candidate.exists()), None)
+                if hb_library is None:
+                    matches = sorted(lib_dir.glob("*harfbuzz*.lib"))
+                    if matches:
+                        hb_library = matches[0]
+
+                if hb_include_dir is not None:
+                    args.append(f"-DHarfBuzz_INCLUDE_DIR={hb_include_dir.as_posix()}")
+                if hb_library is not None:
+                    args.append(f"-DHarfBuzz_LIBRARY={hb_library.as_posix()}")
+        elif name == "harfbuzz":
+            args += [
+                "-DHB_BUILD_TESTS=OFF",
+                "-DHB_BUILD_UTILS=OFF",
+                "-DHB_BUILD_SUBSET=OFF",
+                "-DHB_HAVE_GLIB=OFF",
+                "-DHB_HAVE_ICU=OFF",
+                "-DHB_HAVE_FREETYPE=OFF",
+            ]
+        elif name == "robinmap":
+            args += ["-DTSL_ROBIN_MAP_ENABLE_INSTALL=ON"]
+        elif name == "fmt":
+            args += [
+                "-DFMT_DOC=OFF",
+                "-DFMT_TEST=OFF",
+                "-DFMT_FUZZ=OFF",
+                "-DFMT_CUDA_TEST=OFF",
+                "-DFMT_INSTALL=ON",
+            ]
         elif name == "libtiff" and not recipe_applied:
             args += [
                 "-Dtiff-tests=OFF",
@@ -820,14 +967,18 @@ class Builder:
     def _oiio_cache_args(self, ctx: BuildContext) -> list[str]:
         cfg = self.config.global_cfg
         args: list[str] = []
+        self._ensure_bzip2_alias(ctx.install_prefix, ctx.build_type)
+        self._ensure_freetype_harfbuzz_compat(ctx.install_prefix, ctx.build_type)
         cache_path = cfg.src_root / "OpenImageIO" / "build" / "CMakeCache.txt"
         allow = {
             "BUILD_SHARED_LIBS",
+            "EMBEDPLUGINS",
             "OIIO_BUILD_TOOLS",
             "OIIO_BUILD_TESTS",
-            "OIIO_BUILD_DOCS",
             "USE_PYTHON",
             "USE_JXL",
+            "USE_FREETYPE",
+            "USE_LIBUHDR",
             "USE_FFMPEG",
             "USE_QT",
             "USE_LIBCPLUSPLUS",
@@ -848,10 +999,13 @@ class Builder:
         # Defaults aligned with the shell script.
         defaults = {
             "BUILD_SHARED_LIBS": "OFF",
+            "EMBEDPLUGINS": "ON",
             "OIIO_BUILD_TOOLS": "ON",
             "OIIO_BUILD_TESTS": "OFF",
-            "OIIO_BUILD_DOCS": "OFF",
             "USE_PYTHON": "ON",
+            "USE_JXL": "ON" if cfg.build_libjxl else "OFF",
+            "USE_FREETYPE": "ON",
+            "USE_LIBUHDR": "ON" if cfg.build_libuhdr else "OFF",
             "LINKSTATIC": "ON",
         }
         for key, value in defaults.items():
@@ -860,14 +1014,468 @@ class Builder:
         if cfg.build_ffmpeg:
             values.setdefault("USE_FFMPEG", "ON")
 
-        # Keep Windows behavior explicit: ffmpeg is currently not supported by this builder on Windows.
-        if self.platform.os == "windows":
-            values["USE_FFMPEG"] = "OFF"
-        else:
-            values["USE_FFMPEG"] = "ON" if cfg.build_ffmpeg else "OFF"
+        # Enable ffmpeg plugins whenever the feature is enabled in config.
+        values["USE_FFMPEG"] = "ON" if cfg.build_ffmpeg else "OFF"
 
         # Python is mandatory for OIIO in this setup.
         values["USE_PYTHON"] = "ON"
+        # Always embed plugins for consistent single-binary plugin loading across platforms.
+        values["EMBEDPLUGINS"] = "ON"
+        args.append("-DOpenImageIO_REQUIRED_DEPS=FFmpeg;GIF;JXL;LibRaw;libuhdr;Freetype")
+
+        # Keep dependency discovery deterministic by hinting the shared prefix.
+        root_vars = (
+            "ZLIB",
+            "PNG",
+            "JPEG",
+            "TIFF",
+            "JXL",
+            "OpenColorIO",
+            "Freetype",
+            "BZIP2",
+            "libuhdr",
+            "Robinmap",
+            "fmt",
+            "OpenEXR",
+            "Imath",
+            "pugixml",
+            "pybind11",
+        )
+        install_prefix_posix = ctx.install_prefix.as_posix()
+        include_dir = ctx.install_prefix / "include"
+        include_dir_posix = include_dir.as_posix()
+        lib_dir = ctx.install_prefix / "lib"
+        lib_dir_posix = lib_dir.as_posix()
+
+        def _pick_library(stems: list[str]) -> Path | None:
+            if self.platform.os == "windows":
+                debug_postfix = str(cfg.windows.get("debug_postfix", "d"))
+                if ctx.build_type == "Debug":
+                    ordered: list[Path] = []
+                    for stem in stems:
+                        ordered.extend(
+                            [
+                                lib_dir / f"{stem}{debug_postfix}.lib",
+                                lib_dir / f"{stem}.lib",
+                                lib_dir / f"lib{stem}{debug_postfix}.lib",
+                                lib_dir / f"lib{stem}.lib",
+                            ]
+                        )
+                else:
+                    ordered = []
+                    for stem in stems:
+                        ordered.extend(
+                            [
+                                lib_dir / f"{stem}.lib",
+                                lib_dir / f"{stem}{debug_postfix}.lib",
+                                lib_dir / f"lib{stem}.lib",
+                                lib_dir / f"lib{stem}{debug_postfix}.lib",
+                            ]
+                        )
+                found = next((candidate for candidate in ordered if candidate.exists()), None)
+                if found is not None:
+                    return found
+                matches: list[Path] = []
+                for stem in stems:
+                    matches.extend(sorted(lib_dir.glob(f"{stem}*.lib")))
+                    matches.extend(sorted(lib_dir.glob(f"lib{stem}*.lib")))
+                return matches[0] if matches else None
+
+            ordered = []
+            for stem in stems:
+                ordered.extend(
+                    [
+                        lib_dir / f"lib{stem}.a",
+                        lib_dir / f"lib{stem}.so",
+                        lib_dir / f"lib{stem}.dylib",
+                        lib_dir / f"{stem}.a",
+                    ]
+                )
+            found = next((candidate for candidate in ordered if candidate.exists()), None)
+            if found is not None:
+                return found
+            matches = []
+            for stem in stems:
+                matches.extend(sorted(lib_dir.glob(f"lib{stem}.*")))
+            return matches[0] if matches else None
+
+        for var in root_vars:
+            args.append(f"-D{var}_ROOT={install_prefix_posix}")
+
+        pystring_include = include_dir / "pystring"
+        if not pystring_include.exists():
+            pystring_include = include_dir
+        args.append(f"-Dpystring_ROOT={install_prefix_posix}")
+        args.append(f"-Dpystring_INCLUDE_DIR={pystring_include.as_posix()}")
+
+        robinmap_include = ctx.install_prefix / "include"
+        if not (robinmap_include / "tsl" / "robin_map.h").exists():
+            source_robinmap_include = self.config.global_cfg.src_root / "robin-map" / "include"
+            if (source_robinmap_include / "tsl" / "robin_map.h").exists():
+                robinmap_include = source_robinmap_include
+        if (robinmap_include / "tsl" / "robin_map.h").exists():
+            args.append(f"-DROBINMAP_INCLUDE_DIR={robinmap_include.as_posix()}")
+
+        fmt_dir_candidates = [
+            lib_dir / "cmake" / "fmt",
+            ctx.install_prefix / "share" / "cmake" / "fmt",
+        ]
+        for fmt_dir in fmt_dir_candidates:
+            if (fmt_dir / "fmt-config.cmake").exists() or (fmt_dir / "fmtConfig.cmake").exists():
+                args.append(f"-Dfmt_DIR={fmt_dir.as_posix()}")
+                break
+
+        if self.platform.os == "windows":
+            debug_postfix = str(cfg.windows.get("debug_postfix", "d"))
+            if ctx.build_type == "Debug":
+                png_candidates = [
+                    lib_dir / f"libpng16_static{debug_postfix}.lib",
+                    lib_dir / f"png16_static{debug_postfix}.lib",
+                    lib_dir / f"libpng16{debug_postfix}.lib",
+                    lib_dir / f"png{debug_postfix}.lib",
+                ]
+                pystring_candidates = [lib_dir / f"pystring{debug_postfix}.lib", lib_dir / "pystring.lib"]
+            else:
+                png_candidates = [
+                    lib_dir / "libpng16_static.lib",
+                    lib_dir / "png16_static.lib",
+                    lib_dir / "libpng16.lib",
+                    lib_dir / "png.lib",
+                ]
+                pystring_candidates = [lib_dir / "pystring.lib", lib_dir / f"pystring{debug_postfix}.lib"]
+        else:
+            png_candidates = [
+                lib_dir / "libpng16.a",
+                lib_dir / "libpng.a",
+                lib_dir / "libpng16d.a",
+            ]
+            pystring_candidates = [lib_dir / "libpystring.a", lib_dir / "libpystringd.a", lib_dir / "libpystring_d.a"]
+
+        png_library = next((candidate for candidate in png_candidates if candidate.exists()), None)
+        if png_library is None:
+            if self.platform.os == "windows":
+                matches = sorted(lib_dir.glob("libpng*.lib")) + sorted(lib_dir.glob("png*.lib"))
+            else:
+                matches = sorted(lib_dir.glob("libpng*.a"))
+            if matches:
+                png_library = matches[0]
+
+        if png_library is not None:
+            args.append(f"-DPNG_LIBRARY={png_library.as_posix()}")
+            args.append(f"-DPNG_PNG_INCLUDE_DIR={include_dir_posix}")
+
+        pystring_library = next((candidate for candidate in pystring_candidates if candidate.exists()), None)
+        if pystring_library is None:
+            if self.platform.os == "windows":
+                matches = sorted(lib_dir.glob("pystring*.lib"))
+            else:
+                matches = sorted(lib_dir.glob("libpystring*.a"))
+            if matches:
+                pystring_library = matches[0]
+        if pystring_library is not None:
+            args.append(f"-Dpystring_LIBRARY={pystring_library.as_posix()}")
+
+        if (include_dir / "jxl" / "decode.h").exists():
+            args.append(f"-DJXL_INCLUDE_DIR={include_dir_posix}")
+        jxl_library = _pick_library(["jxl"])
+        if jxl_library is not None:
+            args.append(f"-DJXL_LIBRARY={jxl_library.as_posix()}")
+        jxl_threads_library = _pick_library(["jxl_threads"])
+        if jxl_threads_library is not None:
+            args.append(f"-DJXL_THREADS_LIBRARY={jxl_threads_library.as_posix()}")
+
+        gif_include = include_dir if (include_dir / "gif_lib.h").exists() else None
+        gif_library = _pick_library(["gif", "giflib", "libgif"])
+        if gif_include is not None:
+            args.append(f"-DGIF_INCLUDE_DIR={gif_include.as_posix()}")
+        if gif_library is not None:
+            args.append(f"-DGIF_LIBRARY={gif_library.as_posix()}")
+
+        libraw_include = include_dir if (include_dir / "libraw" / "libraw.h").exists() else None
+        libraw_library = _pick_library(["raw", "raw_r", "libraw", "libraw_r"])
+        libraw_r_library = _pick_library(["raw_r", "libraw_r", "raw", "libraw"])
+        if libraw_include is not None:
+            args.append(f"-DLibRaw_ROOT={install_prefix_posix}")
+            args.append(f"-DLIBRAW_INCLUDEDIR_HINT={include_dir_posix}")
+            args.append(f"-DLibRaw_INCLUDE_DIR={libraw_include.as_posix()}")
+        args.append(f"-DLIBRAW_LIBDIR_HINT={lib_dir_posix}")
+        if libraw_library is not None:
+            args.append(f"-DLibRaw_LIBRARIES={libraw_library.as_posix()}")
+        if libraw_r_library is not None:
+            args.append(f"-DLibRaw_r_LIBRARIES={libraw_r_library.as_posix()}")
+
+        libuhdr_include = None
+        for candidate in (include_dir, include_dir / "libuhdr", include_dir / "ultrahdr"):
+            if (candidate / "ultrahdr_api.h").exists():
+                libuhdr_include = candidate
+                break
+        libuhdr_library = _pick_library(["uhdr", "libuhdr"])
+        if libuhdr_include is not None:
+            args.append(f"-DLIBUHDR_INCLUDE_DIR={libuhdr_include.as_posix()}")
+        if libuhdr_library is not None:
+            args.append(f"-DLIBUHDR_LIBRARY={libuhdr_library.as_posix()}")
+
+        heif_library = None
+        if self.platform.os == "windows":
+            debug_postfix = str(cfg.windows.get("debug_postfix", "d"))
+            if ctx.build_type == "Debug":
+                heif_candidates = [lib_dir / f"heif{debug_postfix}.lib", lib_dir / "heif.lib", lib_dir / f"libheif{debug_postfix}.lib"]
+            else:
+                heif_candidates = [lib_dir / "heif.lib", lib_dir / f"heif{debug_postfix}.lib", lib_dir / "libheif.lib"]
+            heif_library = next((candidate for candidate in heif_candidates if candidate.exists()), None)
+            if heif_library is None:
+                heif_matches = sorted(lib_dir.glob("*heif*.lib"))
+                if heif_matches:
+                    heif_library = heif_matches[0]
+        else:
+            heif_candidates = [lib_dir / "libheif.a", lib_dir / "libheif.so", lib_dir / "libheif.dylib"]
+            heif_library = next((candidate for candidate in heif_candidates if candidate.exists()), None)
+            if heif_library is None:
+                heif_matches = sorted(lib_dir.glob("libheif.*"))
+                if heif_matches:
+                    heif_library = heif_matches[0]
+        if heif_library is not None:
+            args.append(f"-DLibheif_ROOT={install_prefix_posix}")
+            args.append(f"-DLIBHEIF_INCLUDE_PATH={include_dir_posix}")
+            args.append(f"-DLIBHEIF_LIBRARY_PATH={lib_dir_posix}")
+            args.append(f"-DLIBHEIF_INCLUDE_DIR={include_dir_posix}")
+            args.append(f"-DLIBHEIF_LIBRARY={heif_library.as_posix()}")
+
+        if cfg.build_ffmpeg:
+            def _normalize_ffmpeg_override(value: str | None) -> str | None:
+                if value is None:
+                    return None
+                trimmed = value.strip()
+                if len(trimmed) >= 2 and trimmed[0] == trimmed[-1] and trimmed[0] in {"\"", "'"}:
+                    trimmed = trimmed[1:-1].strip()
+                return trimmed or None
+
+            def _ffmpeg_override(name: str) -> str | None:
+                if self.platform.os == "windows":
+                    return _normalize_ffmpeg_override(cfg.windows_env.get(name) or cfg.env.get(name) or os.environ.get(name))
+                return _normalize_ffmpeg_override(cfg.env.get(name) or os.environ.get(name))
+
+            def _expand_override_path(value: str) -> Path:
+                expanded = Path(os.path.expandvars(value)).expanduser()
+                if not expanded.is_absolute():
+                    expanded = (cfg.repo_root / expanded).resolve()
+                return expanded
+
+            prefix_root = ctx.install_prefix.resolve()
+            prefix_norm = os.path.normcase(os.path.normpath(str(prefix_root)))
+
+            def _is_within_prefix(candidate: Path) -> bool:
+                if self.platform.os != "windows":
+                    return True
+                cand_str = str(candidate)
+                try:
+                    cand_str = str(candidate.resolve())
+                except OSError:
+                    pass
+                cand_norm = os.path.normcase(os.path.normpath(cand_str))
+                try:
+                    common = os.path.commonpath([cand_norm, prefix_norm])
+                except ValueError:
+                    return False
+                return common == prefix_norm
+
+            ffmpeg_roots: list[Path] = []
+            ffmpeg_root_overrides: list[Path] = []
+            for key in ("FFmpeg_ROOT", "FFMPEG_ROOT"):
+                value = _ffmpeg_override(key)
+                if not value:
+                    continue
+                expanded = _expand_override_path(value)
+                ffmpeg_root_overrides.append(expanded)
+                ffmpeg_roots.append(expanded)
+
+            if self.platform.os == "windows":
+                # Enforce using the build prefix only. Prebuilt FFmpeg must be installed into the same
+                # prefix as other deps (CMAKE_INSTALL_PREFIX/CMAKE_PREFIX_PATH).
+                if ffmpeg_root_overrides:
+                    for root in ffmpeg_root_overrides:
+                        if os.path.normcase(os.path.normpath(str(root))) != prefix_norm:
+                            print(f"[note] ignoring FFmpeg_ROOT outside install prefix: {root}", flush=True)
+                ffmpeg_roots = [prefix_root]
+            elif not ffmpeg_root_overrides:
+                repo_ffmpeg_root = self.repo_paths.get("ffmpeg")
+                if repo_ffmpeg_root is None:
+                    ffmpeg_repo = next((repo for repo in self.config.repos if repo.name == "ffmpeg"), None)
+                    if ffmpeg_repo is not None:
+                        repo_ffmpeg_root = self._resolve_repo_dir(ffmpeg_repo)
+                if repo_ffmpeg_root is not None and repo_ffmpeg_root.exists():
+                    ffmpeg_roots.append(repo_ffmpeg_root)
+
+                for candidate_name in ("ffmpeg", "FFmpeg", "FFMPEG"):
+                    source_ffmpeg_root = cfg.src_root / candidate_name
+                    if source_ffmpeg_root.exists():
+                        ffmpeg_roots.append(source_ffmpeg_root)
+
+            ffmpeg_roots.append(ctx.install_prefix)
+
+            deduped_roots: list[Path] = []
+            seen_roots: set[str] = set()
+            for root in ffmpeg_roots:
+                normalized = os.path.normcase(os.path.normpath(str(root)))
+                if normalized in seen_roots:
+                    continue
+                seen_roots.add(normalized)
+                deduped_roots.append(root)
+            ffmpeg_roots = deduped_roots
+
+            ffmpeg_include_override = _ffmpeg_override("FFMPEG_AVCODEC_INCLUDE_DIR") or _ffmpeg_override("FFMPEG_INCLUDE_DIR")
+            if ffmpeg_include_override:
+                candidate = _expand_override_path(ffmpeg_include_override)
+                if not _is_within_prefix(candidate):
+                    print(f"[note] ignoring FFmpeg include override outside install prefix: {candidate}", flush=True)
+                    ffmpeg_include = None
+                else:
+                    ffmpeg_include = candidate
+            else:
+                ffmpeg_include = None
+                for root in ffmpeg_roots:
+                    for candidate in (root / "include", root / "include" / "ffmpeg", root):
+                        if (
+                            (candidate / "libavcodec" / "version.h").exists()
+                            or (candidate / "libavcodec" / "version_major.h").exists()
+                            or (candidate / "libavcodec" / "avcodec.h").exists()
+                        ):
+                            ffmpeg_include = candidate
+                            break
+                    if ffmpeg_include is not None:
+                        break
+            if ffmpeg_include is not None:
+                args.append(f"-DFFMPEG_AVCODEC_INCLUDE_DIR={ffmpeg_include.as_posix()}")
+                args.append(f"-DFFMPEG_INCLUDE_DIR={ffmpeg_include.as_posix()}")
+
+            ffmpeg_lib_dirs: list[Path] = []
+            for root in ffmpeg_roots:
+                ffmpeg_lib_dirs.extend(
+                    [
+                        root / "lib",
+                        root / "lib64",
+                        root / "libavcodec",
+                        root / "libavformat",
+                        root / "libavutil",
+                        root / "libswscale",
+                    ]
+                )
+            deduped_lib_dirs: list[Path] = []
+            seen_lib_dirs: set[str] = set()
+            for directory in ffmpeg_lib_dirs:
+                normalized = os.path.normcase(os.path.normpath(str(directory)))
+                if normalized in seen_lib_dirs:
+                    continue
+                seen_lib_dirs.add(normalized)
+                if directory.exists():
+                    deduped_lib_dirs.append(directory)
+            ffmpeg_lib_dirs = deduped_lib_dirs
+
+            def _pick_ffmpeg_lib(stem: str) -> Path | None:
+                if self.platform.os == "windows":
+                    debug_postfix = str(cfg.windows.get("debug_postfix", "d"))
+                    if ctx.build_type == "Debug":
+                        candidate_names = [
+                            f"{stem}{debug_postfix}.lib",
+                            f"lib{stem}{debug_postfix}.lib",
+                            f"{stem}.lib",
+                            f"lib{stem}.lib",
+                        ]
+                    else:
+                        candidate_names = [
+                            f"{stem}.lib",
+                            f"lib{stem}.lib",
+                            f"{stem}{debug_postfix}.lib",
+                            f"lib{stem}{debug_postfix}.lib",
+                        ]
+                else:
+                    candidate_names = [f"lib{stem}.a", f"lib{stem}.so", f"lib{stem}.dylib"]
+
+                for directory in ffmpeg_lib_dirs:
+                    for name in candidate_names:
+                        candidate = directory / name
+                        if candidate.exists():
+                            return candidate
+
+                for directory in ffmpeg_lib_dirs:
+                    if self.platform.os == "windows":
+                        patterns = [f"{stem}*.lib", f"lib{stem}*.lib"]
+                    else:
+                        patterns = [f"lib{stem}.*"]
+                    for pattern in patterns:
+                        matches = sorted(directory.glob(pattern))
+                        if matches:
+                            return matches[0]
+                return None
+
+            ffmpeg_codec_override = _ffmpeg_override("FFMPEG_LIBAVCODEC")
+            ffmpeg_format_override = _ffmpeg_override("FFMPEG_LIBAVFORMAT")
+            ffmpeg_util_override = _ffmpeg_override("FFMPEG_LIBAVUTIL")
+            ffmpeg_swscale_override = _ffmpeg_override("FFMPEG_LIBSWSCALE")
+
+            def _maybe_override_lib(value: str | None) -> Path | None:
+                if not value:
+                    return None
+                candidate = _expand_override_path(value)
+                if not _is_within_prefix(candidate):
+                    print(f"[note] ignoring FFmpeg lib override outside install prefix: {candidate}", flush=True)
+                    return None
+                return candidate
+
+            ffmpeg_codec = _maybe_override_lib(ffmpeg_codec_override) or _pick_ffmpeg_lib("avcodec")
+            ffmpeg_format = _maybe_override_lib(ffmpeg_format_override) or _pick_ffmpeg_lib("avformat")
+            ffmpeg_util = _maybe_override_lib(ffmpeg_util_override) or _pick_ffmpeg_lib("avutil")
+            ffmpeg_swscale = _maybe_override_lib(ffmpeg_swscale_override) or _pick_ffmpeg_lib("swscale")
+
+            ffmpeg_root_hint: Path | None = None
+            if self.platform.os == "windows":
+                ffmpeg_root_hint = prefix_root
+            else:
+                ffmpeg_root_hint = ffmpeg_root_overrides[0] if ffmpeg_root_overrides else None
+            if ffmpeg_root_hint is None:
+                for chosen in (ffmpeg_codec, ffmpeg_format, ffmpeg_util, ffmpeg_swscale):
+                    if chosen is None:
+                        continue
+                    parent = chosen.parent
+                    parent_name = parent.name.lower()
+                    if parent_name in {"lib", "lib64", "libavcodec", "libavformat", "libavutil", "libswscale", "libswresample"}:
+                        ffmpeg_root_hint = parent.parent
+                    else:
+                        ffmpeg_root_hint = parent
+                    break
+            if ffmpeg_root_hint is None and ffmpeg_roots:
+                ffmpeg_root_hint = ffmpeg_roots[0]
+            if ffmpeg_root_hint is None:
+                ffmpeg_root_hint = ctx.install_prefix
+            args.append(f"-DFFmpeg_ROOT={ffmpeg_root_hint.as_posix()}")
+            args.append(f"-DFFMPEG_ROOT={ffmpeg_root_hint.as_posix()}")
+            if ffmpeg_codec is not None:
+                args.append(f"-DFFMPEG_LIBAVCODEC={ffmpeg_codec.as_posix()}")
+            if ffmpeg_format is not None:
+                args.append(f"-DFFMPEG_LIBAVFORMAT={ffmpeg_format.as_posix()}")
+            if ffmpeg_util is not None:
+                args.append(f"-DFFMPEG_LIBAVUTIL={ffmpeg_util.as_posix()}")
+            if ffmpeg_swscale is not None:
+                args.append(f"-DFFMPEG_LIBSWSCALE={ffmpeg_swscale.as_posix()}")
+            if self.platform.os == "windows":
+                missing_libs: list[str] = []
+                if ffmpeg_codec is None:
+                    missing_libs.append("avcodec")
+                if ffmpeg_format is None:
+                    missing_libs.append("avformat")
+                if ffmpeg_util is None:
+                    missing_libs.append("avutil")
+                if ffmpeg_swscale is None:
+                    missing_libs.append("swscale")
+                if missing_libs:
+                    searched = ", ".join(str(d) for d in ffmpeg_lib_dirs) if ffmpeg_lib_dirs else "<none>"
+                    print(
+                        "[note] FFmpeg .lib files missing for "
+                        + ", ".join(missing_libs)
+                        + f"; searched: {searched}. Install MSVC-built static FFmpeg into the build prefix "
+                        f"({ctx.install_prefix}), or define FFMPEG_LIBAV* overrides that point inside it.",
+                        flush=True,
+                    )
 
         # Ensure static dependency linking is propagated for static builds.
         args.append(f"-DCMAKE_PROJECT_TOP_LEVEL_INCLUDES={self._oiio_linkstatic_include(ctx)}")
@@ -878,9 +1486,53 @@ class Builder:
 
     def _oiio_linkstatic_include(self, ctx: BuildContext) -> str:
         include_path = ctx.build_dir / "oiio_linkstatic.cmake"
-        extra_libs = self._oiio_extra_static_libs(ctx.install_prefix)
+        extra_libs = self._oiio_extra_static_libs(ctx.install_prefix, ctx.build_type)
         extra_list = "\n  ".join(extra_libs) if extra_libs else ""
+        static_defs = self._oiio_static_preprocessor_definitions(ctx.install_prefix)
+        static_defs_list = "\n  ".join(static_defs) if static_defs else ""
         content = """\
+set(_oiio_static_defs
+  __EXTRA_DEFINITIONS__
+)
+if (NOT BUILD_SHARED_LIBS)
+  foreach(_oiio_def IN LISTS _oiio_static_defs)
+    if (NOT "${_oiio_def}" STREQUAL "")
+      add_compile_definitions(${_oiio_def})
+    endif()
+  endforeach()
+endif()
+
+function(_oiio_sanitize_split_define_options _target)
+  if (NOT TARGET "${_target}")
+    return()
+  endif()
+  get_target_property(_oiio_opts "${_target}" COMPILE_OPTIONS)
+  if (NOT _oiio_opts)
+    return()
+  endif()
+  set(_oiio_sanitized_opts)
+  set(_oiio_pending_define OFF)
+  foreach(_oiio_opt IN LISTS _oiio_opts)
+    if (_oiio_pending_define)
+      if (NOT "${_oiio_opt}" STREQUAL "")
+        if (_oiio_opt MATCHES "^[-/]")
+          list(APPEND _oiio_sanitized_opts "${_oiio_opt}")
+        else()
+          target_compile_definitions("${_target}" PRIVATE "${_oiio_opt}")
+        endif()
+      endif()
+      set(_oiio_pending_define OFF)
+      continue()
+    endif()
+    if ("${_oiio_opt}" STREQUAL "-D" OR "${_oiio_opt}" STREQUAL "/D")
+      set(_oiio_pending_define ON)
+    else()
+      list(APPEND _oiio_sanitized_opts "${_oiio_opt}")
+    endif()
+  endforeach()
+  set_target_properties("${_target}" PROPERTIES COMPILE_OPTIONS "${_oiio_sanitized_opts}")
+endfunction()
+
 function(_oiio_linkstatic_fixup)
   if (NOT TARGET OpenImageIO)
     return()
@@ -888,6 +1540,7 @@ function(_oiio_linkstatic_fixup)
   if (BUILD_SHARED_LIBS)
     return()
   endif()
+  _oiio_sanitize_split_define_options(OpenImageIO)
   set(_oiio_extra_libs
   __EXTRA_LIBS__
   )
@@ -907,41 +1560,121 @@ else()
   _oiio_linkstatic_fixup()
 endif()
 """
-        include_path.write_text(content.replace("__EXTRA_LIBS__", extra_list), encoding="utf-8")
+        include_path.write_text(
+            content.replace("__EXTRA_DEFINITIONS__", static_defs_list).replace("__EXTRA_LIBS__", extra_list),
+            encoding="utf-8",
+        )
         return str(include_path)
 
-    def _oiio_extra_static_libs(self, prefix: Path) -> list[str]:
+    def _oiio_extra_static_libs(self, prefix: Path, build_type: str) -> list[str]:
         prefix = prefix.resolve()
         libs: list[str] = []
         libdir = prefix / "lib"
+        seen: set[str] = set()
+
+        def add_entry(entry: str) -> None:
+            normalized = os.path.normcase(os.path.normpath(entry))
+            if normalized in seen:
+                return
+            seen.add(normalized)
+            libs.append(entry)
 
         def add_lib(name: str) -> None:
             path = libdir / name
             if path.exists():
-                libs.append(str(path))
+                add_entry(str(path))
 
-        # JXL deps
-        add_lib("libjxl_cms.a")
-        add_lib("libbrotlidec.a")
-        add_lib("libbrotlienc.a")
-        add_lib("libbrotlicommon.a")
+        if self.platform.os == "windows":
+            debug_postfix = str(self.config.global_cfg.windows.get("debug_postfix", "d"))
+            prefer_debug = build_type == "Debug"
 
-        # LibRaw deps
-        add_lib("liblcms2.a")
-        add_lib("libjasper.a")
+            def add_windows_library(stems: list[str]) -> None:
+                candidates: list[Path] = []
+                for stem in stems:
+                    if prefer_debug:
+                        candidates.extend(
+                            [
+                                libdir / f"{stem}{debug_postfix}.lib",
+                                libdir / f"lib{stem}{debug_postfix}.lib",
+                                libdir / f"{stem}.lib",
+                                libdir / f"lib{stem}.lib",
+                            ]
+                        )
+                    else:
+                        candidates.extend(
+                            [
+                                libdir / f"{stem}.lib",
+                                libdir / f"lib{stem}.lib",
+                                libdir / f"{stem}{debug_postfix}.lib",
+                                libdir / f"lib{stem}{debug_postfix}.lib",
+                            ]
+                        )
+                for candidate in candidates:
+                    if candidate.exists():
+                        add_entry(str(candidate))
+                        return
 
-        # HEIF deps
-        add_lib("libaom.a")
-        add_lib("libde265.a")
-        add_lib("libx265.a")
-        add_lib("libkvazaar.a")
+                matches: list[Path] = []
+                for stem in stems:
+                    matches.extend(sorted(libdir.glob(f"{stem}*.lib")))
+                    matches.extend(sorted(libdir.glob(f"lib{stem}*.lib")))
+                if matches:
+                    add_entry(str(matches[0]))
 
-        # FFmpeg deps
-        add_lib("libavformat.a")
-        add_lib("libavcodec.a")
-        add_lib("libswresample.a")
-        add_lib("libswscale.a")
-        add_lib("libavutil.a")
+            # JXL deps
+            add_windows_library(["jxl_cms"])
+            add_windows_library(["brotlidec"])
+            add_windows_library(["brotlienc"])
+            add_windows_library(["brotlicommon"])
+            add_windows_library(["hwy"])
+            add_windows_library(["hwy_contrib"])
+
+            # LibRaw deps
+            add_windows_library(["lcms2_static", "lcms2"])
+            add_windows_library(["jasper"])
+
+            # HEIF deps
+            add_windows_library(["aom"])
+            add_windows_library(["de265", "libde265"])
+            add_windows_library(["x265-static", "x265"])
+            add_windows_library(["kvazaar", "libkvazaar"])
+
+            # FFmpeg deps (if locally installed as .lib)
+            add_windows_library(["avformat"])
+            add_windows_library(["avcodec"])
+            add_windows_library(["swresample"])
+            add_windows_library(["swscale"])
+            add_windows_library(["avutil"])
+
+            # System libs needed by static deps (minizip-ng, FFmpeg, etc.)
+            for syslib in ("bcrypt.lib", "ws2_32.lib", "secur32.lib"):
+                add_entry(syslib)
+            add_entry("ucrtd.lib" if prefer_debug else "ucrt.lib")
+        else:
+            # JXL deps
+            add_lib("libjxl_cms.a")
+            add_lib("libbrotlidec.a")
+            add_lib("libbrotlienc.a")
+            add_lib("libbrotlicommon.a")
+            add_lib("libhwy.a")
+            add_lib("libhwy_contrib.a")
+
+            # LibRaw deps
+            add_lib("liblcms2.a")
+            add_lib("libjasper.a")
+
+            # HEIF deps
+            add_lib("libaom.a")
+            add_lib("libde265.a")
+            add_lib("libx265.a")
+            add_lib("libkvazaar.a")
+
+            # FFmpeg deps
+            add_lib("libavformat.a")
+            add_lib("libavcodec.a")
+            add_lib("libswresample.a")
+            add_lib("libswscale.a")
+            add_lib("libavutil.a")
 
         # OpenMP (libomp)
         omp_root = self.config.global_cfg.env.get("OpenMP_ROOT") or os.environ.get("OpenMP_ROOT")
@@ -949,31 +1682,63 @@ endif()
             for candidate in ("libomp.dylib", "libomp.a"):
                 path = Path(omp_root) / "lib" / candidate
                 if path.exists():
-                    libs.append(str(path))
+                    add_entry(str(path))
                     break
 
         # iconv (system)
         if (libdir / "libiconv.a").exists():
-            libs.append(str(libdir / "libiconv.a"))
+            add_entry(str(libdir / "libiconv.a"))
         else:
             if self.platform.os == "macos":
-                libs.append("iconv")
+                add_entry("iconv")
 
         # macOS Security framework (minizip-ng uses SecRandomCopyBytes)
         if self.platform.os == "macos":
-            libs.append("-Wl,-framework,Security")
+            add_entry("-Wl,-framework,Security")
             if self.config.global_cfg.build_ffmpeg:
-                libs.extend(
-                    [
-                        "-Wl,-framework,AudioToolbox",
-                        "-Wl,-framework,VideoToolbox",
-                        "-Wl,-framework,CoreMedia",
-                        "-Wl,-framework,CoreVideo",
-                        "-Wl,-framework,CoreFoundation",
-                    ]
-                )
+                for framework_flag in (
+                    "-Wl,-framework,AudioToolbox",
+                    "-Wl,-framework,VideoToolbox",
+                    "-Wl,-framework,CoreMedia",
+                    "-Wl,-framework,CoreVideo",
+                    "-Wl,-framework,CoreFoundation",
+                ):
+                    add_entry(framework_flag)
 
         return libs
+
+    def _oiio_static_preprocessor_definitions(self, prefix: Path) -> list[str]:
+        prefix = prefix.resolve()
+        include_dir = prefix / "include"
+        lib_dir = prefix / "lib"
+
+        def _has_any_library(stems: list[str]) -> bool:
+            for stem in stems:
+                if self.platform.os == "windows":
+                    if any(lib_dir.glob(f"{stem}*.lib")) or any(lib_dir.glob(f"lib{stem}*.lib")):
+                        return True
+                else:
+                    if any(lib_dir.glob(f"lib{stem}.a")) or any(lib_dir.glob(f"lib{stem}.so")) or any(lib_dir.glob(f"lib{stem}.dylib")):
+                        return True
+            return False
+
+        defs: list[str] = []
+
+        if (include_dir / "jxl" / "jxl_export.h").exists() and _has_any_library(["jxl", "jxl_threads"]):
+            defs.append("JXL_STATIC_DEFINE=1")
+        if (
+            ((include_dir / "openjpeg-2.5" / "openjpeg.h").exists() or (include_dir / "openjpeg" / "openjpeg.h").exists())
+            and _has_any_library(["openjp2"])
+        ):
+            defs.append("OPJ_STATIC")
+        if (include_dir / "libheif" / "heif.h").exists() and _has_any_library(["heif", "libheif"]):
+            defs.append("LIBHEIF_STATIC_BUILD")
+        if (include_dir / "libde265" / "de265.h").exists() and _has_any_library(["de265", "libde265"]):
+            defs.append("LIBDE265_STATIC_BUILD")
+        if (include_dir / "kvazaar.h").exists() and _has_any_library(["kvazaar"]):
+            defs.append("KVZ_STATIC_LIB")
+
+        return defs
 
     def _autotools_args(self, repo: RepoConfig) -> list[str]:
         if repo.name == "xz":
@@ -1312,6 +2077,228 @@ endif()
             lines.append(line)
         dst.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
+    def _ensure_harfbuzz_package(self, prefix: Path, build_type: str) -> None:
+        if self.dry_run:
+            return
+
+        include_dir = prefix / "include" / "harfbuzz"
+        if not (include_dir / "hb.h").exists():
+            return
+
+        libdir = prefix / "lib"
+        if not libdir.exists():
+            return
+
+        debug_postfix = str(self.config.global_cfg.windows.get("debug_postfix", "d"))
+        if self.platform.os == "windows":
+            release_candidates = [libdir / "harfbuzz.lib", libdir / "libharfbuzz.lib", libdir / f"harfbuzz{debug_postfix}.lib"]
+            debug_candidates = [libdir / f"harfbuzz{debug_postfix}.lib", libdir / "harfbuzz.lib", libdir / "libharfbuzz.lib"]
+            fallback_pattern = "*harfbuzz*.lib"
+        else:
+            release_candidates = [libdir / "libharfbuzz.a", libdir / "libharfbuzz.so", libdir / "libharfbuzz.dylib"]
+            debug_candidates = [libdir / "libharfbuzz.a", libdir / "libharfbuzz.so", libdir / "libharfbuzz.dylib"]
+            fallback_pattern = "libharfbuzz.*"
+
+        release_lib = next((candidate for candidate in release_candidates if candidate.exists()), None)
+        debug_lib = next((candidate for candidate in debug_candidates if candidate.exists()), None)
+        if release_lib is None and debug_lib is None:
+            matches = sorted(libdir.glob(fallback_pattern))
+            if matches:
+                release_lib = matches[0]
+                debug_lib = matches[0]
+            else:
+                return
+
+        default_lib = release_lib or debug_lib
+        if build_type == "Debug" and debug_lib is not None:
+            default_lib = debug_lib
+        if default_lib is None:
+            return
+
+        cmake_dir = libdir / "cmake" / "HarfBuzz"
+        try:
+            cmake_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return
+
+        include_path = include_dir.as_posix()
+        default_path = default_lib.as_posix()
+        release_path = release_lib.as_posix() if release_lib is not None else ""
+        debug_path = debug_lib.as_posix() if debug_lib is not None else ""
+        config_text = f"""\
+set(HarfBuzz_FOUND TRUE)
+set(HarfBuzz_INCLUDE_DIR "{include_path}")
+set(HarfBuzz_INCLUDE_DIRS "{include_path}")
+
+if(NOT TARGET HarfBuzz::HarfBuzz)
+  add_library(HarfBuzz::HarfBuzz UNKNOWN IMPORTED)
+  set_target_properties(HarfBuzz::HarfBuzz PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES "{include_path}"
+    IMPORTED_LOCATION "{default_path}"
+  )
+  if(EXISTS "{release_path}")
+    set_property(TARGET HarfBuzz::HarfBuzz PROPERTY IMPORTED_LOCATION_RELEASE "{release_path}")
+  endif()
+  if(EXISTS "{debug_path}")
+    set_property(TARGET HarfBuzz::HarfBuzz PROPERTY IMPORTED_LOCATION_DEBUG "{debug_path}")
+  endif()
+endif()
+
+if(NOT TARGET harfbuzz::harfbuzz)
+  add_library(harfbuzz::harfbuzz INTERFACE IMPORTED)
+  set_property(TARGET harfbuzz::harfbuzz PROPERTY INTERFACE_LINK_LIBRARIES HarfBuzz::HarfBuzz)
+endif()
+
+set(HarfBuzz_LIBRARY HarfBuzz::HarfBuzz)
+set(HarfBuzz_LIBRARIES HarfBuzz::HarfBuzz)
+"""
+        version_text = """\
+set(PACKAGE_VERSION "1.0.0")
+if(PACKAGE_FIND_VERSION VERSION_GREATER PACKAGE_VERSION)
+  set(PACKAGE_VERSION_COMPATIBLE FALSE)
+else()
+  set(PACKAGE_VERSION_COMPATIBLE TRUE)
+  if(PACKAGE_FIND_VERSION STREQUAL PACKAGE_VERSION)
+    set(PACKAGE_VERSION_EXACT TRUE)
+  endif()
+endif()
+"""
+        for name in ("HarfBuzzConfig.cmake", "harfbuzz-config.cmake"):
+            try:
+                (cmake_dir / name).write_text(config_text, encoding="utf-8")
+            except OSError:
+                return
+        for name in ("HarfBuzzConfigVersion.cmake", "harfbuzz-config-version.cmake"):
+            try:
+                (cmake_dir / name).write_text(version_text, encoding="utf-8")
+            except OSError:
+                return
+
+    def _ensure_freetype_harfbuzz_compat(self, prefix: Path, build_type: str) -> None:
+        if self.dry_run:
+            return
+
+        self._ensure_harfbuzz_package(prefix, build_type)
+
+        freetype_cfg = prefix / "lib" / "cmake" / "freetype" / "freetype-config.cmake"
+        if not freetype_cfg.exists():
+            return
+
+        try:
+            text = freetype_cfg.read_text(encoding="utf-8")
+        except OSError:
+            return
+        marker = "# oiio-builder: freetype harfbuzz compatibility"
+        if marker in text:
+            return
+
+        needle = "# Compute the installation prefix relative to this file."
+        if needle not in text:
+            return
+
+        shim = """\
+# oiio-builder: freetype harfbuzz compatibility
+include(CMakeFindDependencyMacro)
+find_dependency(ZLIB QUIET)
+if(NOT TARGET HarfBuzz::HarfBuzz AND NOT TARGET harfbuzz::harfbuzz)
+  find_dependency(HarfBuzz CONFIG QUIET)
+endif()
+if(TARGET HarfBuzz::HarfBuzz AND NOT TARGET harfbuzz::harfbuzz)
+  add_library(harfbuzz::harfbuzz INTERFACE IMPORTED)
+  set_property(TARGET harfbuzz::harfbuzz PROPERTY INTERFACE_LINK_LIBRARIES HarfBuzz::HarfBuzz)
+endif()
+if(TARGET harfbuzz::harfbuzz AND NOT TARGET HarfBuzz::HarfBuzz)
+  add_library(HarfBuzz::HarfBuzz INTERFACE IMPORTED)
+  set_property(TARGET HarfBuzz::HarfBuzz PROPERTY INTERFACE_LINK_LIBRARIES harfbuzz::harfbuzz)
+endif()
+"""
+        try:
+            freetype_cfg.write_text(text.replace(needle, shim + "\n" + needle, 1), encoding="utf-8")
+        except OSError:
+            return
+
+    def _ensure_pystring_package(self, prefix: Path, build_type: str) -> None:
+        include_dir = prefix / "include" / "pystring"
+        if not include_dir.exists():
+            include_dir = prefix / "include"
+        if not include_dir.exists():
+            return
+
+        libdir = prefix / "lib"
+        if not libdir.exists():
+            return
+
+        debug_postfix = str(self.config.global_cfg.windows.get("debug_postfix", "d"))
+        if self.platform.os == "windows":
+            release_candidates = [libdir / "pystring.lib", libdir / f"pystring{debug_postfix}.lib"]
+            debug_candidates = [libdir / f"pystring{debug_postfix}.lib", libdir / "pystring.lib"]
+            fallback_pattern = "pystring*.lib"
+        else:
+            release_candidates = [libdir / "libpystring.a", libdir / "libpystringd.a", libdir / "libpystring_d.a"]
+            debug_candidates = [libdir / "libpystringd.a", libdir / "libpystring_d.a", libdir / "libpystring.a"]
+            fallback_pattern = "libpystring*.a"
+
+        release_lib = next((candidate for candidate in release_candidates if candidate.exists()), None)
+        debug_lib = next((candidate for candidate in debug_candidates if candidate.exists()), None)
+        if release_lib is None and debug_lib is None:
+            matches = sorted(libdir.glob(fallback_pattern))
+            if matches:
+                release_lib = matches[0]
+                debug_lib = matches[0]
+            else:
+                return
+
+        default_lib = release_lib or debug_lib
+        if build_type == "Debug" and debug_lib is not None:
+            default_lib = debug_lib
+        if default_lib is None:
+            return
+
+        cmake_dir = libdir / "cmake" / "pystring"
+        cmake_dir.mkdir(parents=True, exist_ok=True)
+
+        include_path = include_dir.as_posix()
+        default_path = default_lib.as_posix()
+        release_path = release_lib.as_posix() if release_lib is not None else ""
+        debug_path = debug_lib.as_posix() if debug_lib is not None else ""
+        config_text = f"""\
+set(pystring_FOUND TRUE)
+set(pystring_INCLUDE_DIR "{include_path}")
+set(pystring_INCLUDE_DIRS "{include_path}")
+
+if(NOT TARGET pystring::pystring)
+  add_library(pystring::pystring UNKNOWN IMPORTED)
+  set_target_properties(pystring::pystring PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES "{include_path}"
+    IMPORTED_LOCATION "{default_path}"
+  )
+  if(EXISTS "{release_path}")
+    set_property(TARGET pystring::pystring PROPERTY IMPORTED_LOCATION_RELEASE "{release_path}")
+  endif()
+  if(EXISTS "{debug_path}")
+    set_property(TARGET pystring::pystring PROPERTY IMPORTED_LOCATION_DEBUG "{debug_path}")
+  endif()
+endif()
+
+set(pystring_LIBRARY pystring::pystring)
+set(pystring_LIBRARIES pystring::pystring)
+"""
+        version_text = """\
+set(PACKAGE_VERSION "1.0.0")
+if(PACKAGE_FIND_VERSION VERSION_GREATER PACKAGE_VERSION)
+  set(PACKAGE_VERSION_COMPATIBLE FALSE)
+else()
+  set(PACKAGE_VERSION_COMPATIBLE TRUE)
+  if(PACKAGE_FIND_VERSION STREQUAL PACKAGE_VERSION)
+    set(PACKAGE_VERSION_EXACT TRUE)
+  endif()
+endif()
+"""
+        for name in ("pystring-config.cmake", "pystringConfig.cmake"):
+            (cmake_dir / name).write_text(config_text, encoding="utf-8")
+        for name in ("pystring-config-version.cmake", "pystringConfigVersion.cmake"):
+            (cmake_dir / name).write_text(version_text, encoding="utf-8")
+
     def _ensure_openjph_alias(self, prefix: Path) -> None:
         libdir = prefix / "lib"
         debug_lib = libdir / "libopenjph_d.a"
@@ -1322,14 +2309,74 @@ endif()
             except OSError:
                 release_lib.write_bytes(debug_lib.read_bytes())
 
+    def _ensure_bzip2_alias(self, prefix: Path, build_type: str) -> None:
+        if self.dry_run:
+            return
+
+        libdir = prefix / "lib"
+        if not libdir.exists():
+            return
+
+        def _materialize_alias(target: Path, source: Path) -> None:
+            if target.exists() or not source.exists():
+                return
+            try:
+                target.symlink_to(source.name)
+            except OSError:
+                shutil.copy2(source, target)
+
+        if self.platform.os == "windows":
+            debug_postfix = str(self.config.global_cfg.windows.get("debug_postfix", "d"))
+            release_source_candidates = [
+                libdir / "bz2_static.lib",
+                libdir / "libbz2_static.lib",
+                libdir / "bz2.lib",
+                libdir / "libbz2.lib",
+            ]
+            debug_source_candidates = [
+                libdir / f"bz2_static{debug_postfix}.lib",
+                libdir / f"libbz2_static{debug_postfix}.lib",
+                libdir / f"bz2{debug_postfix}.lib",
+                libdir / f"libbz2{debug_postfix}.lib",
+            ]
+            release_source = next((candidate for candidate in release_source_candidates if candidate.exists()), None)
+            debug_source = next((candidate for candidate in debug_source_candidates if candidate.exists()), None)
+            if debug_source is None and release_source is not None:
+                debug_source = release_source
+
+            if release_source is not None:
+                _materialize_alias(libdir / "bz2.lib", release_source)
+                _materialize_alias(libdir / "libbz2.lib", release_source)
+            if debug_source is not None:
+                _materialize_alias(libdir / f"bz2{debug_postfix}.lib", debug_source)
+                _materialize_alias(libdir / f"libbz2{debug_postfix}.lib", debug_source)
+            return
+
+        release_source_candidates = [libdir / "libbz2_static.a", libdir / "libbz2.a"]
+        debug_source_candidates = [libdir / "libbz2_staticd.a", libdir / "libbz2d.a", libdir / "libbz2_static.a", libdir / "libbz2.a"]
+        release_source = next((candidate for candidate in release_source_candidates if candidate.exists()), None)
+        debug_source = next((candidate for candidate in debug_source_candidates if candidate.exists()), None)
+        if build_type == "Debug":
+            if debug_source is not None:
+                _materialize_alias(libdir / "libbz2.a", debug_source)
+                _materialize_alias(libdir / "libbz2d.a", debug_source)
+            elif release_source is not None:
+                _materialize_alias(libdir / "libbz2.a", release_source)
+                _materialize_alias(libdir / "libbz2d.a", release_source)
+        elif release_source is not None:
+            _materialize_alias(libdir / "libbz2.a", release_source)
+
     def _stamp_state(
         self, repo: RepoConfig, ctx: BuildContext, deps_heads: dict[str, str | None], cflags: str, cxxflags: str
     ) -> tuple[str, bool, str]:
-        if self.force:
-            return "build", False, "forced"
         stamp_dir = self.config.global_cfg.build_root / ".stamps" / repo.name
         stamp_path = stamp_dir / f"{ctx.build_type}.json"
         existing = read_stamp(stamp_path)
+        had_stamp = bool(existing)
+        if self.force_all:
+            return "build", had_stamp, "forced-all"
+        if self.force and self.force_targets and repo.name in self.force_targets:
+            return "build", had_stamp, "forced"
         if not existing:
             return "build", False, "no-stamp"
         payload = self._stamp_payload(repo, ctx, deps_heads, cflags, cxxflags)
@@ -1411,6 +2458,8 @@ endif()
             self._make_openexr_pc_override(install_prefix, build_type)
         if repo.name == "libjxl" and build_type == "Debug":
             self._ensure_openjph_alias(install_prefix)
+        if repo.name in {"OpenColorIO", "OpenImageIO"}:
+            self._ensure_pystring_package(install_prefix, build_type)
         if repo.name == "libpng":
             self._ensure_png16_include_alias(install_prefix)
         if repo.name == "OpenImageIO":
@@ -1724,6 +2773,9 @@ endif()
                             "",
                             "install(TARGETS gif ARCHIVE DESTINATION lib)",
                             "install(FILES \"${GIFLIB_SRC_DIR}/gif_lib.h\" DESTINATION include)",
+                            "if(EXISTS \"${GIFLIB_SRC_DIR}/gif_win32_compat.h\")",
+                            "  install(FILES \"${GIFLIB_SRC_DIR}/gif_win32_compat.h\" DESTINATION include)",
+                            "endif()",
                             "",
                         ]
                     )
@@ -1824,6 +2876,21 @@ endif()
                         ],
                     )
                     run(["install", "-m", "644", "gif_lib.h", str(install_prefix / "include" / "gif_lib.h")], cwd=str(src_dir))
+                    if (src_dir / "gif_win32_compat.h").exists():
+                        print_cmd(
+                            "install command",
+                            [
+                                "install",
+                                "-m",
+                                "644",
+                                "gif_win32_compat.h",
+                                str(install_prefix / "include" / "gif_win32_compat.h"),
+                            ],
+                        )
+                        run(
+                            ["install", "-m", "644", "gif_win32_compat.h", str(install_prefix / "include" / "gif_win32_compat.h")],
+                            cwd=str(src_dir),
+                        )
                     print_cmd("install command", ["install", "-m", "644", "libgif.a", str(install_prefix / "lib" / "libgif.a")])
                     run(["install", "-m", "644", "libgif.a", str(install_prefix / "lib" / "libgif.a")], cwd=str(src_dir))
                     print_cmd("install command", ["install", "-m", "644", "libutil.a", str(install_prefix / "lib" / "libutil.a")])
@@ -1835,6 +2902,14 @@ endif()
             self._make_openexr_pc_override(install_prefix, build_type)
         if repo.name == "openjph" and build_type == "Debug":
             self._ensure_openjph_alias(install_prefix)
+        if repo.name == "bzip2":
+            self._ensure_bzip2_alias(install_prefix, build_type)
+        if repo.name == "pystring":
+            self._ensure_pystring_package(install_prefix, build_type)
+        if repo.name == "harfbuzz":
+            self._ensure_harfbuzz_package(install_prefix, build_type)
+        if repo.name == "freetype":
+            self._ensure_freetype_harfbuzz_compat(install_prefix, build_type)
 
         if not self.dry_run:
             self._write_stamp(repo, ctx, deps_heads, cflags, cxxflags)

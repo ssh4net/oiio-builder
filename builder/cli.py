@@ -25,6 +25,7 @@ def main() -> int:
             "  uv run build.py --build-types Debug,ASAN\n"
             "  uv run build.py --build-types Debug --only OpenImageIO\n"
             "  uv run build.py --build-types Debug --force\n"
+            "  uv run build.py --build-types Debug --force-all\n"
             "  uv run build.py --skip libheif,libwebp\n"
         ),
     )
@@ -39,7 +40,16 @@ def main() -> int:
     parser.add_argument("--no-update", action="store_true", help="Skip git fetch/pull (overrides config)")
     parser.add_argument("--update", action="store_true", help="Force git fetch/pull (overrides config)")
     parser.add_argument("--dry-run", action="store_true", help="Print commands only")
-    parser.add_argument("--force", action="store_true", help="Force rebuild, ignore stamps")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Force rebuild selected repos. "
+            "With --only, forces only explicitly listed repos; "
+            "without --only, same as --force-all."
+        ),
+    )
+    parser.add_argument("--force-all", action="store_true", help="Force rebuild all repos in this run, ignore stamps")
     parser.add_argument("--preflight", action="store_true", help="Run tool/repo checks and exit")
     parser.add_argument("--list-repos", action="store_true", help="List configured repos")
     parser.add_argument("--print-prefixes", action="store_true", help="Print install prefixes and exit")
@@ -65,7 +75,14 @@ def main() -> int:
     if args.preflight or len(sys.argv) == 1:
         return run_preflight(config, platform_info, no_update=no_update)
 
-    builder = Builder(config, platform_info, dry_run=args.dry_run, no_update=no_update, force=args.force)
+    builder = Builder(
+        config,
+        platform_info,
+        dry_run=args.dry_run,
+        no_update=no_update,
+        force=args.force,
+        force_all=args.force_all,
+    )
 
     if args.list_repos:
         for repo in builder.repos:
@@ -87,6 +104,7 @@ def main() -> int:
             args.only,
             args.skip,
             args.force,
+            args.force_all,
             args.update,
             args.no_update,
             args.dry_run,
