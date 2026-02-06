@@ -656,7 +656,12 @@ class Builder:
                 "-DHWY_ENABLE_INSTALL=ON",
             ]
         elif name == "lcms2":
-            args += ["-DBUILD_TESTING=OFF", "-DBUILD_TESTS=OFF"]
+            args += [
+                "-DBUILD_TESTING=OFF",
+                "-DBUILD_TESTS=OFF",
+                "-DLCMS2_WITH_TIFF=OFF",
+                "-DLCMS2_BUILD_TIFICC=OFF",
+            ]
         elif name == "imath":
             args += [
                 "-DIMATH_BUILD_TESTS=OFF",
@@ -1222,6 +1227,31 @@ endif()
             text = text.replace(marker, insert, 1)
         cmake_file.write_text(text, encoding="utf-8")
 
+        third_party_cmake = src_dir / "third_party" / "CMakeLists.txt"
+        if not third_party_cmake.exists():
+            return
+        third_party_text = third_party_cmake.read_text(encoding="utf-8")
+        begin = "# OIIO_BUILDER_BROTLI_FALLBACK_BEGIN"
+        end = "# OIIO_BUILDER_BROTLI_FALLBACK_END"
+        replacement = (
+            "# OIIO_BUILDER_BROTLI_FALLBACK_BEGIN\n"
+            "find_package(Brotli CONFIG QUIET)\n"
+            "if(NOT Brotli_FOUND)\n"
+            "  list(PREPEND CMAKE_MODULE_PATH \"${PROJECT_SOURCE_DIR}/cmake\")\n"
+            "  find_package(Brotli REQUIRED)\n"
+            "endif()\n"
+            "# OIIO_BUILDER_BROTLI_FALLBACK_END"
+        )
+        if begin in third_party_text and end in third_party_text:
+            start = third_party_text.index(begin)
+            stop = third_party_text.index(end, start) + len(end)
+            third_party_text = third_party_text[:start] + replacement + third_party_text[stop:]
+        else:
+            needle = "find_package(Brotli CONFIG REQUIRED)"
+            if needle in third_party_text:
+                third_party_text = third_party_text.replace(needle, replacement, 1)
+        third_party_cmake.write_text(third_party_text, encoding="utf-8")
+
     def _patch_openjpeg_windows_static_pkgconfig(self, src_dir: Path) -> None:
         if self.platform.os != "windows":
             return
@@ -1354,6 +1384,16 @@ endif()
                 "    foreach(_dep IN LISTS _tiff_static_deps)\n"
                 "        find_dependency(${_dep})\n"
                 "    endforeach()\n"
+                "    if(NOT TARGET Deflate::Deflate)\n"
+                "        find_package(libdeflate QUIET CONFIG)\n"
+                "        if(TARGET libdeflate::libdeflate_static)\n"
+                "            add_library(Deflate::Deflate INTERFACE IMPORTED)\n"
+                "            target_link_libraries(Deflate::Deflate INTERFACE libdeflate::libdeflate_static)\n"
+                "        elseif(TARGET libdeflate::libdeflate_shared)\n"
+                "            add_library(Deflate::Deflate INTERFACE IMPORTED)\n"
+                "            target_link_libraries(Deflate::Deflate INTERFACE libdeflate::libdeflate_shared)\n"
+                "        endif()\n"
+                "    endif()\n"
                 "    unset(_dep)\n"
                 "    unset(_tiff_static_deps)\n"
                 "endif()\n"
@@ -1583,6 +1623,15 @@ endif()
             "cflags": cflags,
             "cxxflags": cxxflags,
         }
+        patch_revisions = {
+            "lcms2": "2",
+            "libjxl": "2",
+            "libtiff": "3",
+            "openexr": "2",
+            "openjpeg": "2",
+        }
+        if repo.name in patch_revisions:
+            payload["builder_patch_rev"] = patch_revisions[repo.name]
         if repo.name == "libiconv" and self.platform.os == "windows":
             zip_path = self._libiconv_export_zip()
             payload["vcpkg_export_zip"] = str(zip_path)
