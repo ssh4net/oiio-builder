@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-STAMP_REVISION = "5"
+STAMP_REVISION = "6"
 
 
 def cmake_args(builder, ctx) -> list[str]:
@@ -61,6 +61,16 @@ def cmake_args(builder, ctx) -> list[str]:
             args += [
                 f"-DHWY_INCLUDE_DIR={include_dir}",
                 f"-DHWY_LIBRARY={hwy_lib}",
+            ]
+        lcms_lib = None
+        for lcms_base in ("lcms2_static", "lcms2", "liblcms2", "lcms-2", "liblcms-2"):
+            lcms_lib = _pick_lib(lcms_base)
+            if lcms_lib:
+                break
+        if lcms_lib and (include_dir / "lcms2.h").exists():
+            args += [
+                f"-DLCMS2_INCLUDE_DIR={include_dir}",
+                f"-DLCMS2_LIBRARY={lcms_lib}",
             ]
     return args
 
