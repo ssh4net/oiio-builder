@@ -66,6 +66,7 @@ class Builder:
         self.prefixes = self._compute_prefixes()
         self.repo_paths: dict[str, Path] = {}
         self.pkg_override_root = self.config.global_cfg.build_root / "pkgconfig_override"
+        self._ocio_python_note_printed = False
 
     def _filter_repos(self) -> list[RepoConfig]:
         cfg = self.config.global_cfg
@@ -294,9 +295,15 @@ class Builder:
     def _base_flags(self, build_type: str) -> str:
         cfg = self.config.global_cfg
         if self.platform.os == "windows":
+            runtime_mode = str(cfg.windows.get("msvc_runtime", "static")).strip().lower()
+            runtime_flag = ""
+            if runtime_mode in {"", "static", "mt", "multithreaded"}:
+                runtime_flag = "/MTd" if build_type == "Debug" else "/MT"
+            elif runtime_mode in {"dynamic", "md", "multithreadeddll"}:
+                runtime_flag = "/MDd" if build_type == "Debug" else "/MD"
             if build_type == "Debug":
-                return "/Od /Zi"
-            return "/O2 /DNDEBUG"
+                return f"/Od /Zi {runtime_flag}".strip()
+            return f"/O2 /DNDEBUG {runtime_flag}".strip()
         if build_type == "Debug":
             flags = "-O0 -g"
         else:
@@ -646,7 +653,26 @@ class Builder:
             ]
         elif name == "yaml-cpp":
             args += ["-DYAML_BUILD_SHARED_LIBS=OFF", "-DYAML_CPP_INSTALL=ON"]
+        elif name == "expat":
+            if self.platform.os == "windows":
+                runtime_mode = str(cfg.windows.get("msvc_runtime", "static")).strip().lower()
+                if runtime_mode in {"", "static", "mt", "multithreaded"}:
+                    args.append("-DEXPAT_MSVC_STATIC_CRT=ON")
+                elif runtime_mode in {"dynamic", "md", "multithreadeddll"}:
+                    args.append("-DEXPAT_MSVC_STATIC_CRT=OFF")
         elif name == "OpenColorIO":
+            ocio_build_python = "ON"
+            if self.platform.os == "windows":
+                runtime_mode = str(cfg.windows.get("msvc_runtime", "static")).strip().lower()
+                if runtime_mode in {"", "static", "mt", "multithreaded"}:
+                    ocio_build_python = "OFF"
+                    if not self._ocio_python_note_printed:
+                        print(
+                            "[note] OpenColorIO: forcing OCIO_BUILD_PYTHON=OFF for Windows static CRT (/MT,/MTd). "
+                            "Use windows.msvc_runtime=dynamic (or explicit repo cmake arg) to build PyOpenColorIO.",
+                            flush=True,
+                        )
+                        self._ocio_python_note_printed = True
             args += [
                 "-DOCIO_INSTALL_EXT_PACKAGES=NONE",
                 f"-DOCIO_BUILD_APPS={cfg.ocio_build_apps}",
@@ -654,7 +680,7 @@ class Builder:
                 "-DOCIO_BUILD_NUKE=OFF",
                 "-DOCIO_BUILD_TESTS=OFF",
                 "-DOCIO_BUILD_GPU_TESTS=OFF",
-                "-DOCIO_BUILD_PYTHON=ON",
+                f"-DOCIO_BUILD_PYTHON={ocio_build_python}",
                 "-DOCIO_BUILD_JAVA=OFF",
                 "-DOCIO_BUILD_DOCS=OFF",
             ]
@@ -936,6 +962,7 @@ endif()
         if self.platform.os == "windows":
             debug_postfix = str(cfg.windows.get("debug_postfix", "d"))
             args.append(f"-DCMAKE_DEBUG_POSTFIX={debug_postfix}")
+            args.append("-DCMAKE_POLICY_DEFAULT_CMP0091=NEW")
             runtime_mode = str(cfg.windows.get("msvc_runtime", "static")).strip().lower()
             if runtime_mode in {"", "static", "mt", "multithreaded"}:
                 runtime = "MultiThreaded$<$<CONFIG:Debug>:Debug>"

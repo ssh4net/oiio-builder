@@ -9,6 +9,15 @@ from .config import Config
 from .core import Builder
 from .platform import PlatformInfo
 
+_PREFLIGHT_REPO_URLS: dict[str, str] = {
+    "libxml2": "https://gitlab.gnome.org/GNOME/libxml2.git",
+    "pugixml": "https://github.com/zeux/pugixml.git",
+    "expat": "https://github.com/libexpat/libexpat.git",
+    "yaml-cpp": "https://github.com/jbeder/yaml-cpp.git",
+    "pybind11": "https://github.com/pybind/pybind11.git",
+    "lcms2": "https://github.com/mm2/Little-CMS.git",
+}
+
 
 @dataclass
 class ToolCheck:
@@ -103,6 +112,9 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
 
     lines.append("Repos:")
     for repo in builder.repos:
+        url = repo.url or _PREFLIGHT_REPO_URLS.get(repo.name, "")
+        show_url = repo.name in _PREFLIGHT_REPO_URLS and bool(url)
+        url_suffix = f", url={url}" if show_url else ""
         if repo.name == "libiconv" and platform.os == "windows":
             zip_path = builder._libiconv_export_zip()
             if zip_path.exists():
@@ -114,14 +126,13 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
             continue
         path = builder._resolve_repo_dir(repo)
         if path.exists():
-            lines.append(f"  {repo.name}: ok ({path})")
+            lines.append(f"  {repo.name}: ok ({path}{url_suffix})")
             continue
         if repo.optional and not repo.url:
-            lines.append(f"  {repo.name}: missing (optional)")
+            lines.append(f"  {repo.name}: missing (optional{url_suffix})")
         else:
             missing_repos += 1
-            url = repo.url or "no-url"
-            lines.append(f"  {repo.name}: missing (expected at {path}, url={url})")
+            lines.append(f"  {repo.name}: missing (expected at {path}, url={url or 'no-url'})")
 
     lines.append("Summary:")
     lines.append(f"  missing tools: {missing_tools}")

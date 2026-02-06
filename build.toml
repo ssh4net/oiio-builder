@@ -257,7 +257,7 @@ build_system = "cmake"
 name = "lcms2"
 dir = "Little-CMS"
 dir_candidates = ["Little-CMS", "Little-CMS-*", "lcms2", "lcms2-*"]
-url = "https://github.com/ssh4net/Little-CMS.git"
+url = "https://github.com/mm2/Little-CMS.git"
 build_system = "cmake"
 
 [[repos]]
