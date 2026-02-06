@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import re
 
-STAMP_REVISION = "3"
+STAMP_REVISION = "5"
 
 
-def cmake_args(builder, _ctx) -> list[str]:
+def cmake_args(builder, ctx) -> list[str]:
     cfg = builder.config.global_cfg
     enable_openexr = "ON" if cfg.build_exr_stack else "OFF"
-    return [
+    args = [
         "-DBUILD_TESTING=OFF",
         f"-DJPEGXL_ENABLE_TOOLS={cfg.libjxl_enable_tools}",
         f"-DJPEGXL_ENABLE_OPENEXR={enable_openexr}",
@@ -28,6 +28,41 @@ def cmake_args(builder, _ctx) -> list[str]:
         "-DJPEGXL_FORCE_SYSTEM_GTEST=ON",
         "-DJPEGXL_BUNDLE_LIBPNG=OFF",
     ]
+    if builder.platform.os == "windows":
+        debug_postfix = str(cfg.windows.get("debug_postfix", "d"))
+        lib_dir = (ctx.install_prefix / "lib").resolve()
+        include_dir = (ctx.install_prefix / "include").resolve()
+
+        def _pick_lib(base: str):
+            if ctx.build_type == "Debug":
+                preferred = [f"{base}{debug_postfix}.lib", f"{base}.lib"]
+            else:
+                preferred = [f"{base}.lib", f"{base}{debug_postfix}.lib"]
+            for name in preferred:
+                candidate = lib_dir / name
+                if candidate.exists():
+                    return candidate
+            for candidate in sorted(lib_dir.glob(f"{base}*.lib")):
+                return candidate
+            return None
+
+        brotli_common = _pick_lib("brotlicommon")
+        brotli_enc = _pick_lib("brotlienc")
+        brotli_dec = _pick_lib("brotlidec")
+        if brotli_common and brotli_enc and brotli_dec and (include_dir / "brotli").is_dir():
+            args += [
+                f"-DBROTLI_INCLUDE_DIR={include_dir}",
+                f"-DBROTLICOMMON_LIBRARY={brotli_common}",
+                f"-DBROTLIENC_LIBRARY={brotli_enc}",
+                f"-DBROTLIDEC_LIBRARY={brotli_dec}",
+            ]
+        hwy_lib = _pick_lib("hwy")
+        if hwy_lib and (include_dir / "hwy").is_dir():
+            args += [
+                f"-DHWY_INCLUDE_DIR={include_dir}",
+                f"-DHWY_LIBRARY={hwy_lib}",
+            ]
+    return args
 
 
 def patch_source(_builder, src_dir) -> None:
