@@ -10,6 +10,7 @@ import subprocess
 from .config import Config, RepoConfig
 from .git_ops import ensure_repo, git_head
 from .platform import PlatformInfo
+from .recipes import registry as recipe_registry
 from .runner import banner, print_cmd, run
 from .stamps import compute_stamp, read_stamp, write_stamp
 from .topo import topo_sort
@@ -419,6 +420,10 @@ class Builder:
         cfg = self.config.global_cfg
         name = repo.name
         args: list[str] = []
+        recipe_args = recipe_registry.cmake_args(name, self, ctx)
+        recipe_applied = recipe_args is not None
+        if recipe_applied:
+            args.extend(recipe_args)
 
         if name == "zlib-ng":
             args += [
@@ -496,7 +501,7 @@ class Builder:
             ]
         elif name == "libpng":
             args += ["-DPNG_SHARED=OFF", "-DPNG_STATIC=ON", "-DPNG_TESTS=OFF"]
-        elif name == "libtiff":
+        elif name == "libtiff" and not recipe_applied:
             args += [
                 "-Dtiff-tests=OFF",
                 "-Dtiff-tools=ON",
@@ -514,7 +519,7 @@ class Builder:
                 args.append("-DCMAKE_C_FLAGS_RELEASE=/DFREEGLUT_STATIC")
             else:
                 args.append("-Dtiff-opengl=OFF")
-        elif name == "openjpeg":
+        elif name == "openjpeg" and not recipe_applied:
             args += [f"-DBUILD_CODEC={self._resolve_openjpeg_build_codec()}"]
             if self.platform.os == "windows":
                 debug_postfix = str(cfg.windows.get("debug_postfix", "d"))
@@ -655,7 +660,7 @@ class Builder:
                 "-DHWY_SYSTEM_GTEST=ON",
                 "-DHWY_ENABLE_INSTALL=ON",
             ]
-        elif name == "lcms2":
+        elif name == "lcms2" and not recipe_applied:
             args += [
                 "-DBUILD_TESTING=OFF",
                 "-DBUILD_TESTS=OFF",
@@ -701,7 +706,7 @@ class Builder:
                 "-DOPENEXR_FORCE_INTERNAL_DEFLATE=OFF",
                 "-DOPENEXR_FORCE_INTERNAL_OPENJPH=OFF",
             ]
-        elif name == "libjxl":
+        elif name == "libjxl" and not recipe_applied:
             enable_openexr = "ON" if cfg.build_exr_stack else "OFF"
             args += [
                 "-DBUILD_TESTING=OFF",
@@ -1201,333 +1206,6 @@ endif()
         if patched != text:
             cmake_lists.write_text(patched, encoding="utf-8")
 
-    def _patch_libjxl_openexr_static(self, src_dir: Path) -> None:
-        cmake_file = src_dir / "lib" / "jxl_extras.cmake"
-        if not cmake_file.exists():
-            return
-        text = cmake_file.read_text(encoding="utf-8")
-        if "JXL_OPENEXR_STATIC_PATCH" in text:
-            return
-        text = text.replace(
-            "list(APPEND JXL_EXTRAS_CODEC_INTERNAL_LIBRARIES PkgConfig::OpenEXR)",
-            "# JXL_OPENEXR_STATIC_PATCH\n    list(APPEND JXL_EXTRAS_CODEC_INTERNAL_LIBRARIES PkgConfig::OpenEXR ${OpenEXR_STATIC_LIBRARIES})",
-        )
-        marker = "if (OpenEXR_FOUND)"
-        if marker in text:
-            insert = (
-                "if (OpenEXR_FOUND)\n"
-                "  # JXL_OPENEXR_STATIC_PATCH\n"
-                "  if (OpenEXR_STATIC_LIBRARIES AND TARGET PkgConfig::OpenEXR)\n"
-                "    set_property(TARGET PkgConfig::OpenEXR APPEND PROPERTY INTERFACE_LINK_LIBRARIES \"${OpenEXR_STATIC_LIBRARIES}\")\n"
-                "  endif()\n"
-                "  if (OpenEXR_LIBRARY_DIRS AND TARGET PkgConfig::OpenEXR)\n"
-                "    set_property(TARGET PkgConfig::OpenEXR APPEND PROPERTY INTERFACE_LINK_DIRECTORIES \"${OpenEXR_LIBRARY_DIRS}\")\n"
-                "  endif()\n"
-            )
-            text = text.replace(marker, insert, 1)
-        cmake_file.write_text(text, encoding="utf-8")
-
-        third_party_cmake = src_dir / "third_party" / "CMakeLists.txt"
-        if not third_party_cmake.exists():
-            return
-        third_party_text = third_party_cmake.read_text(encoding="utf-8")
-        begin = "# OIIO_BUILDER_BROTLI_FALLBACK_BEGIN"
-        end = "# OIIO_BUILDER_BROTLI_FALLBACK_END"
-        replacement = (
-            "# OIIO_BUILDER_BROTLI_FALLBACK_BEGIN\n"
-            "find_package(Brotli CONFIG QUIET)\n"
-            "if(NOT Brotli_FOUND)\n"
-            "  list(PREPEND CMAKE_MODULE_PATH \"${PROJECT_SOURCE_DIR}/cmake\")\n"
-            "  find_package(Brotli REQUIRED)\n"
-            "endif()\n"
-            "# OIIO_BUILDER_BROTLI_FALLBACK_END"
-        )
-        if begin in third_party_text and end in third_party_text:
-            start = third_party_text.index(begin)
-            stop = third_party_text.index(end, start) + len(end)
-            third_party_text = third_party_text[:start] + replacement + third_party_text[stop:]
-        else:
-            needle = "find_package(Brotli CONFIG REQUIRED)"
-            if needle in third_party_text:
-                third_party_text = third_party_text.replace(needle, replacement, 1)
-        third_party_cmake.write_text(third_party_text, encoding="utf-8")
-
-    def _patch_openjpeg_windows_static_pkgconfig(self, src_dir: Path) -> None:
-        if self.platform.os != "windows":
-            return
-        cmake_file = src_dir / "thirdparty" / "CMakeLists.txt"
-        if not cmake_file.exists():
-            return
-        text = cmake_file.read_text(encoding="utf-8")
-        original = "if(BUILD_STATIC_LIBS AND NOT BUILD_SHARED_LIBS)"
-        patched = "if(BUILD_STATIC_LIBS AND NOT BUILD_SHARED_LIBS AND NOT WIN32)"
-        if original in text:
-            text = text.replace(original, patched)
-
-        old_block = (
-            "    # OPJ_WIN_ZLIB_TARGET_FALLBACK\n"
-            "    if(WIN32 AND \"${ZLIB_LIBRARIES}\" STREQUAL \"ZLIB::ZLIB\" AND NOT TARGET ZLIB::ZLIB)\n"
-            "      set(_opj_zlib_fallback \"\")\n"
-            "      foreach(_opj_zlib_name zlibstaticd zlibstatic zlibd zlib)\n"
-            "        find_library(_opj_zlib_candidate NAMES ${_opj_zlib_name})\n"
-            "        if(_opj_zlib_candidate)\n"
-            "          set(_opj_zlib_fallback \"${_opj_zlib_candidate}\")\n"
-            "          break()\n"
-            "        endif()\n"
-            "      endforeach()\n"
-            "      if(_opj_zlib_fallback)\n"
-            "        set(Z_LIBNAME ${_opj_zlib_fallback} PARENT_SCOPE)\n"
-            "      else()\n"
-            "        set(Z_LIBNAME ${ZLIB_LIBRARIES} PARENT_SCOPE)\n"
-            "      endif()\n"
-            "    else()\n"
-            "      set(Z_LIBNAME ${ZLIB_LIBRARIES} PARENT_SCOPE)\n"
-            "    endif()"
-        )
-        if old_block in text:
-            text = text.replace(old_block, "    set(Z_LIBNAME ${ZLIB_LIBRARIES} PARENT_SCOPE)")
-
-        begin_marker = "    # OPJ_WIN_ZLIB_FIX_BEGIN"
-        end_marker = "    # OPJ_WIN_ZLIB_FIX_END"
-        replacement = (
-            "    # OPJ_WIN_ZLIB_FIX_BEGIN\n"
-            "    if(WIN32 AND \"${ZLIB_LIBRARIES}\" STREQUAL \"ZLIB::ZLIB\")\n"
-            "      set(_opj_zlib_resolved \"\")\n"
-            "      if(TARGET ZLIB::ZLIB)\n"
-            "        get_target_property(_opj_zlib_debug ZLIB::ZLIB IMPORTED_LOCATION_DEBUG)\n"
-            "        get_target_property(_opj_zlib_release ZLIB::ZLIB IMPORTED_LOCATION_RELEASE)\n"
-            "        get_target_property(_opj_zlib_default ZLIB::ZLIB IMPORTED_LOCATION)\n"
-            "        if(CMAKE_BUILD_TYPE STREQUAL \"Debug\" AND _opj_zlib_debug)\n"
-            "          set(_opj_zlib_resolved \"${_opj_zlib_debug}\")\n"
-            "        elseif(_opj_zlib_release)\n"
-            "          set(_opj_zlib_resolved \"${_opj_zlib_release}\")\n"
-            "        elseif(_opj_zlib_default)\n"
-            "          set(_opj_zlib_resolved \"${_opj_zlib_default}\")\n"
-            "        endif()\n"
-            "      endif()\n"
-            "      if(NOT _opj_zlib_resolved)\n"
-            "        foreach(_opj_zlib_name zlibstaticd zlibstatic zlibd zlib)\n"
-            "          find_library(_opj_zlib_candidate NAMES ${_opj_zlib_name})\n"
-            "          if(_opj_zlib_candidate)\n"
-            "            set(_opj_zlib_resolved \"${_opj_zlib_candidate}\")\n"
-            "            break()\n"
-            "          endif()\n"
-            "        endforeach()\n"
-            "      endif()\n"
-            "      if(_opj_zlib_resolved)\n"
-            "        set(Z_LIBNAME \"${_opj_zlib_resolved}\" PARENT_SCOPE)\n"
-            "      else()\n"
-            "        set(Z_LIBNAME ${ZLIB_LIBRARIES} PARENT_SCOPE)\n"
-            "      endif()\n"
-            "    else()\n"
-            "      set(Z_LIBNAME ${ZLIB_LIBRARIES} PARENT_SCOPE)\n"
-            "    endif()\n"
-            "    # OPJ_WIN_ZLIB_FIX_END"
-        )
-
-        if begin_marker in text and end_marker in text:
-            start = text.index(begin_marker)
-            end = text.index(end_marker, start) + len(end_marker)
-            text = text[:start] + replacement + text[end:]
-        else:
-            needle = "    set(Z_LIBNAME ${ZLIB_LIBRARIES} PARENT_SCOPE)"
-            if needle in text:
-                text = text.replace(needle, replacement, 1)
-        cmake_file.write_text(text, encoding="utf-8")
-
-        jp2_cmake = src_dir / "src" / "bin" / "jp2" / "CMakeLists.txt"
-        if not jp2_cmake.exists():
-            return
-        jp2_text = jp2_cmake.read_text(encoding="utf-8")
-        jp2_begin = "# OPJ_WIN_TIFF_SCOPE_FIX_BEGIN"
-        jp2_end = "# OPJ_WIN_TIFF_SCOPE_FIX_END"
-        jp2_fix = (
-            "# OPJ_WIN_TIFF_SCOPE_FIX_BEGIN\n"
-            "if(WIN32 AND OPJ_HAVE_LIBTIFF)\n"
-            "  if(NOT TARGET TIFF::tiff)\n"
-            "    find_package(TIFF QUIET)\n"
-            "  endif()\n"
-            "endif()\n"
-            "# OPJ_WIN_TIFF_SCOPE_FIX_END"
-        )
-        insert_after = "if(OPJ_HAVE_LIBPNG)\n\tlist(APPEND common_SRCS convertpng.c)\nendif()"
-        if jp2_begin in jp2_text and jp2_end in jp2_text:
-            start = jp2_text.index(jp2_begin)
-            end = jp2_text.index(jp2_end, start) + len(jp2_end)
-            jp2_text = jp2_text[:start] + jp2_fix + jp2_text[end:]
-        elif insert_after in jp2_text:
-            jp2_text = jp2_text.replace(insert_after, f"{insert_after}\n\n{jp2_fix}", 1)
-        jp2_cmake.write_text(jp2_text, encoding="utf-8")
-
-    def _patch_libtiff_static_config(self, src_dir: Path) -> None:
-        cmake_config_in = src_dir / "cmake" / "tiff-config.cmake.in"
-        libtiff_cmake_lists = src_dir / "libtiff" / "CMakeLists.txt"
-
-        if cmake_config_in.exists():
-            original_text = cmake_config_in.read_text(encoding="utf-8")
-            text = original_text
-            marker_begin = "# OIIO_BUILDER_TIFF_STATIC_CONFIG_BEGIN"
-            marker_end = "# OIIO_BUILDER_TIFF_STATIC_CONFIG_END"
-            replacement = (
-                "# OIIO_BUILDER_TIFF_STATIC_CONFIG_BEGIN\n"
-                "if(\"@TIFF_BUILD_LIB_VALUE@\" STREQUAL \"STATIC\")\n"
-                "    include(CMakeFindDependencyMacro)\n"
-                "\n"
-                "    # For static builds, consumers must also link our codec dependencies.\n"
-                "    #\n"
-                "    # Libtiff ships custom Find-modules for some dependencies and also uses\n"
-                "    # non-standard imported target names (e.g. liblzma::liblzma), so make sure\n"
-                "    # our modules are discoverable when find_dependency() runs.\n"
-                "    list(PREPEND CMAKE_MODULE_PATH \"${CMAKE_CURRENT_LIST_DIR}/modules\")\n"
-                "\n"
-                "    set(_tiff_static_deps \"@TIFF_STATIC_PACKAGE_DEPENDENCIES@\")\n"
-                "    foreach(_dep IN LISTS _tiff_static_deps)\n"
-                "        find_dependency(${_dep})\n"
-                "    endforeach()\n"
-                "    if(NOT TARGET Deflate::Deflate)\n"
-                "        find_package(libdeflate QUIET CONFIG)\n"
-                "        if(TARGET libdeflate::libdeflate_static)\n"
-                "            add_library(Deflate::Deflate INTERFACE IMPORTED)\n"
-                "            target_link_libraries(Deflate::Deflate INTERFACE libdeflate::libdeflate_static)\n"
-                "        elseif(TARGET libdeflate::libdeflate_shared)\n"
-                "            add_library(Deflate::Deflate INTERFACE IMPORTED)\n"
-                "            target_link_libraries(Deflate::Deflate INTERFACE libdeflate::libdeflate_shared)\n"
-                "        endif()\n"
-                "    endif()\n"
-                "    unset(_dep)\n"
-                "    unset(_tiff_static_deps)\n"
-                "endif()\n"
-                "# OIIO_BUILDER_TIFF_STATIC_CONFIG_END"
-            )
-            if marker_begin in text and marker_end in text:
-                start = text.index(marker_begin)
-                stop = text.index(marker_end, start) + len(marker_end)
-                text = text[:start] + replacement + text[stop:]
-            else:
-                original = "if(NOT \"@BUILD_SHARED_LIBS@\")\n    # TODO: import dependencies\nendif()"
-                if original in text:
-                    text = text.replace(original, replacement, 1)
-            if text != original_text:
-                cmake_config_in.write_text(text, encoding="utf-8")
-
-        if libtiff_cmake_lists.exists():
-            original_text = libtiff_cmake_lists.read_text(encoding="utf-8")
-            text = original_text
-            marker_begin = "# OIIO_BUILDER_TIFF_CMAKELISTS_STATIC_DEPS_BEGIN"
-            marker_end = "# OIIO_BUILDER_TIFF_CMAKELISTS_STATIC_DEPS_END"
-            block = (
-                "  # OIIO_BUILDER_TIFF_CMAKELISTS_STATIC_DEPS_BEGIN\n"
-                "  # For static builds, consumers must also link our codec dependencies.\n"
-                "  # Teach the installed tiff-config.cmake which packages to find, and install\n"
-                "  # the corresponding Find-modules we ship (when present).\n"
-                "  set(TIFF_STATIC_PACKAGE_DEPENDENCIES \"\")\n"
-                "  set(_tiff_find_modules \"\")\n"
-                "  if(TIFF_BUILD_LIB_VALUE STREQUAL \"STATIC\")\n"
-                "    # Derive package dependencies from the exported target interface. This keeps\n"
-                "    # tiff-config.cmake and the exported link interface consistent.\n"
-                "    get_target_property(_tiff_iface_libs tiff INTERFACE_LINK_LIBRARIES)\n"
-                "    if(NOT _tiff_iface_libs OR _tiff_iface_libs STREQUAL \"_tiff_iface_libs-NOTFOUND\")\n"
-                "      # Fallback: be explicit (should be rare; depends on CMake behavior).\n"
-                "      if(ZIP_SUPPORT)\n"
-                "        list(APPEND TIFF_STATIC_PACKAGE_DEPENDENCIES ZLIB)\n"
-                "      endif()\n"
-                "      if(LIBDEFLATE_SUPPORT)\n"
-                "        list(APPEND TIFF_STATIC_PACKAGE_DEPENDENCIES Deflate)\n"
-                "      endif()\n"
-                "      if(JPEG_SUPPORT)\n"
-                "        list(APPEND TIFF_STATIC_PACKAGE_DEPENDENCIES JPEG)\n"
-                "      endif()\n"
-                "      if(JBIG_SUPPORT)\n"
-                "        list(APPEND TIFF_STATIC_PACKAGE_DEPENDENCIES JBIG)\n"
-                "      endif()\n"
-                "      if(LERC_SUPPORT)\n"
-                "        list(APPEND TIFF_STATIC_PACKAGE_DEPENDENCIES LERC)\n"
-                "      endif()\n"
-                "      if(LZMA_SUPPORT)\n"
-                "        list(APPEND TIFF_STATIC_PACKAGE_DEPENDENCIES liblzma)\n"
-                "      endif()\n"
-                "      if(ZSTD_SUPPORT)\n"
-                "        list(APPEND TIFF_STATIC_PACKAGE_DEPENDENCIES ZSTD)\n"
-                "      endif()\n"
-                "      if(WEBP_SUPPORT)\n"
-                "        list(APPEND TIFF_STATIC_PACKAGE_DEPENDENCIES WebP)\n"
-                "      endif()\n"
-                "\n"
-                "      foreach(_pkg IN LISTS TIFF_STATIC_PACKAGE_DEPENDENCIES)\n"
-                "        if(EXISTS \"${PROJECT_SOURCE_DIR}/cmake/Find${_pkg}.cmake\")\n"
-                "          list(APPEND _tiff_find_modules \"${PROJECT_SOURCE_DIR}/cmake/Find${_pkg}.cmake\")\n"
-                "        endif()\n"
-                "      endforeach()\n"
-                "      unset(_pkg)\n"
-                "    else()\n"
-                "      foreach(_item IN LISTS _tiff_iface_libs)\n"
-                "        # Exported static link interfaces may wrap dependencies with LINK_ONLY.\n"
-                "        string(REGEX REPLACE \"^\\\\$<LINK_ONLY:(.*)>$\" \"\\\\1\" _item \"${_item}\")\n"
-                "        if(_item MATCHES \"^([^:]+)::\")\n"
-                "          set(_pkg \"${CMAKE_MATCH_1}\")\n"
-                "          list(APPEND TIFF_STATIC_PACKAGE_DEPENDENCIES \"${_pkg}\")\n"
-                "          if(EXISTS \"${PROJECT_SOURCE_DIR}/cmake/Find${_pkg}.cmake\")\n"
-                "            list(APPEND _tiff_find_modules \"${PROJECT_SOURCE_DIR}/cmake/Find${_pkg}.cmake\")\n"
-                "          endif()\n"
-                "        endif()\n"
-                "      endforeach()\n"
-                "      unset(_item)\n"
-                "      unset(_pkg)\n"
-                "    endif()\n"
-                "    unset(_tiff_iface_libs)\n"
-                "\n"
-                "    list(REMOVE_DUPLICATES TIFF_STATIC_PACKAGE_DEPENDENCIES)\n"
-                "    list(REMOVE_DUPLICATES _tiff_find_modules)\n"
-                "  endif()\n"
-                "\n"
-                "  if(_tiff_find_modules)\n"
-                "    install(FILES ${_tiff_find_modules} DESTINATION ${TIFF_CONFIGDIR}/modules)\n"
-                "  endif()\n"
-                "  unset(_tiff_find_modules)\n"
-                "  # OIIO_BUILDER_TIFF_CMAKELISTS_STATIC_DEPS_END\n"
-            )
-            if marker_begin in text and marker_end in text:
-                start = text.index(marker_begin)
-                stop = text.index(marker_end, start) + len(marker_end)
-                text = text[:start] + block + text[stop:]
-            else:
-                anchor = "  include(CMakePackageConfigHelpers)"
-                if anchor in text:
-                    text = text.replace(anchor, f"{block}\n{anchor}", 1)
-            if text != original_text:
-                libtiff_cmake_lists.write_text(text, encoding="utf-8")
-
-    def _patch_openexr_python_linking(self, src_dir: Path) -> None:
-        if self.platform.os != "windows":
-            return
-        cmake_file = src_dir / "src" / "wrappers" / "python" / "CMakeLists.txt"
-        if not cmake_file.exists():
-            return
-        text = cmake_file.read_text(encoding="utf-8")
-        begin = "# OIIO_BUILDER_PYOPENEXR_LINK_FIX_BEGIN"
-        end = "# OIIO_BUILDER_PYOPENEXR_LINK_FIX_END"
-        replacement = (
-            "# OIIO_BUILDER_PYOPENEXR_LINK_FIX_BEGIN\n"
-            "target_link_libraries (PyOpenEXR PRIVATE OpenEXR::OpenEXR pybind11::headers)\n"
-            "if(TARGET Python3::Module)\n"
-            "  target_link_libraries (PyOpenEXR PRIVATE Python3::Module)\n"
-            "elseif(TARGET Python3::Python)\n"
-            "  target_link_libraries (PyOpenEXR PRIVATE Python3::Python)\n"
-            "else()\n"
-            "  target_link_libraries (PyOpenEXR PRIVATE ${Python3_LIBRARIES})\n"
-            "endif()\n"
-            "# OIIO_BUILDER_PYOPENEXR_LINK_FIX_END"
-        )
-        if begin in text and end in text:
-            start = text.index(begin)
-            stop = text.index(end, start) + len(end)
-            text = text[:start] + replacement + text[stop:]
-        else:
-            pattern = r'target_link_libraries\s*\(\s*PyOpenEXR\s+PRIVATE\s+"?\$\{Python3_LIBRARIES\}"?\s+OpenEXR::OpenEXR\s+pybind11::headers\s*\)'
-            if re.search(pattern, text):
-                text = re.sub(pattern, replacement, text, count=1)
-        cmake_file.write_text(text, encoding="utf-8")
-
     def _ensure_png16_include_alias(self, prefix: Path) -> None:
         cfg = self.config.global_cfg
         if not cfg.openimageio_patch_png_include:
@@ -1623,15 +1301,9 @@ endif()
             "cflags": cflags,
             "cxxflags": cxxflags,
         }
-        patch_revisions = {
-            "lcms2": "2",
-            "libjxl": "2",
-            "libtiff": "3",
-            "openexr": "2",
-            "openjpeg": "2",
-        }
-        if repo.name in patch_revisions:
-            payload["builder_patch_rev"] = patch_revisions[repo.name]
+        recipe_revision = recipe_registry.stamp_revision(repo.name)
+        if recipe_revision is not None:
+            payload["builder_patch_rev"] = recipe_revision
         if repo.name == "libiconv" and self.platform.os == "windows":
             zip_path = self._libiconv_export_zip()
             payload["vcpkg_export_zip"] = str(zip_path)
@@ -1676,16 +1348,9 @@ endif()
 
         if repo.name == "glew":
             self._patch_glew_macos(src_dir)
-        if repo.name == "libjxl":
-            self._patch_libjxl_openexr_static(src_dir)
-            if build_type == "Debug":
-                self._ensure_openjph_alias(install_prefix)
-        if repo.name == "openjpeg":
-            self._patch_openjpeg_windows_static_pkgconfig(src_dir)
-        if repo.name == "libtiff":
-            self._patch_libtiff_static_config(src_dir)
-        if repo.name == "openexr":
-            self._patch_openexr_python_linking(src_dir)
+        recipe_registry.patch_source(repo.name, self, src_dir)
+        if repo.name == "libjxl" and build_type == "Debug":
+            self._ensure_openjph_alias(install_prefix)
         if repo.name == "libpng":
             self._ensure_png16_include_alias(install_prefix)
         if repo.name == "OpenImageIO":
