@@ -16,6 +16,9 @@ _PREFLIGHT_REPO_URLS: dict[str, str] = {
     "yaml-cpp": "https://github.com/jbeder/yaml-cpp.git",
     "pybind11": "https://github.com/pybind/pybind11.git",
     "lcms2": "https://github.com/mm2/Little-CMS.git",
+    "glew": "https://github.com/Perlmint/glew-cmake.git",
+    "glfw": "https://github.com/glfw/glfw.git",
+    "pystring": "https://github.com/imageworks/pystring.git",
 }
 
 
