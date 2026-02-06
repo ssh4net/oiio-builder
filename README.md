@@ -34,6 +34,7 @@ Key options:
 - `windows.generator`: choose one of `msvc`, `ninja-msvc`, `msvc-clang-cl`, `ninja-clang-cl`.
 - `windows.install_prefix`: single prefix for Debug+Release on Windows.
 - `windows.asan_prefix`: optional separate prefix for ASAN.
+- `windows.msvc_runtime`: `static` (default, `/MT`/`/MTd`) or `dynamic` (`/MD`/`/MDd`).
 - `windows.env`: tool overrides for Windows (e.g. `PKG_CONFIG_EXECUTABLE`, `DOXYGEN_EXECUTABLE`).
 
 ## Prefix Rules
@@ -94,6 +95,18 @@ uv run build.py --config build.toml --build-types Debug,Release
 uv run build.py --build-types Debug,Release
 ```
 
+### Windows: libiconv (for libxml2)
+On Windows, `libiconv` is imported from a **vcpkg export zip** (no source build).
+
+- Default path: `external/vcpkg-export-libiconv.zip`
+- Override: set `LIBICONV_VCPKG_EXPORT_ZIP` in `[windows.env]` (or process env)
+- Prefer exporting a `*-static` triplet (e.g. `x64-windows-static`) to avoid DLL collisions in the shared prefix.
+
+Example:
+```bat
+vcpkg export libiconv:x64-windows-static --zip --output=vcpkg-export-libiconv
+```
+
 ### Tool overrides (Windows)
 ```toml
 [windows.env]
@@ -104,7 +117,7 @@ DOXYGEN_EXECUTABLE = "C:\\Program Files\\doxygen\\bin\\doxygen.exe"
 ## Troubleshooting
 
 - **Rebuild not triggered after local edits**: stamps track git commits only. Use `--force` or delete `../_build_py/.stamps`.
-- **Missing optional repos**: `yaml-cpp`, `pystring`, `expat`, `pugixml`, `libiconv`, `libxml2` are skipped if not present.
+- **Missing optional repos**: `yaml-cpp`, `pystring`, `expat`, `pugixml`, `libxml2` are skipped if not present. On Windows, `libiconv` is expected via `external/vcpkg-export-libiconv.zip`.
 - **OpenMP not found (macOS/Linux)**: set `OpenMP_ROOT` in `build.toml` or environment.
 - **ASAN failures on Windows**: prefer clang-cl and ensure the MSVC AddressSanitizer component is installed.
 - **Preflight only**: run `uv run build.py` (no args) to see tool/repo readiness without building.

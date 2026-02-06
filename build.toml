@@ -66,6 +66,8 @@ no_update = true
 # install_prefix = "E:\\DVS"
 # asan_prefix = "E:\\DVS_ASAN"
 # debug_postfix = "d"
+# msvc_runtime: static|dynamic (default: static => /MT, /MTd)
+# msvc_runtime = "static"
 
 [[repos]]
 name = "zlib-ng"
@@ -95,8 +97,11 @@ source_subdir = "build/cmake"
 [[repos]]
 name = "libiconv"
 dir = "libiconv"
+# Windows-only: imported from a vcpkg export zip placed under `external/`.
+# Default expected path: `external/vcpkg-export-libiconv.zip`
+# Override: set `LIBICONV_VCPKG_EXPORT_ZIP` in `[windows.env]` or the process env.
 url = ""
-build_system = "cmake"
+build_system = "libiconv"
 optional = true
 
 [[repos]]
@@ -105,7 +110,7 @@ dir = "libxml2"
 url = ""
 build_system = "cmake"
 optional = true
-deps = ["xz"]
+deps = ["xz", "libiconv"]
 
 [[repos]]
 name = "glfw"
@@ -143,7 +148,7 @@ name = "libtiff"
 dir = "libtiff"
 url = "https://gitlab.com/libtiff/libtiff.git"
 build_system = "cmake"
-deps = ["zlib-ng", "libjpeg-turbo", "libdeflate", "zstd"]
+deps = ["zlib-ng", "libjpeg-turbo", "libdeflate", "zstd", "xz", "freeglut"]
 
 [[repos]]
 name = "openjpeg"

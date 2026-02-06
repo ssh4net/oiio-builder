@@ -4,12 +4,13 @@ from dataclasses import dataclass
 from pathlib import Path
 import os
 import re
+import shutil
 import subprocess
 
 from .config import Config, RepoConfig
 from .git_ops import ensure_repo, git_head
 from .platform import PlatformInfo
-from .runner import run
+from .runner import banner, print_cmd, run
 from .stamps import compute_stamp, read_stamp, write_stamp
 from .topo import topo_sort
 
@@ -97,6 +98,12 @@ class Builder:
         ocio_repos = {"minizip-ng", "OpenColorIO"}
 
         def enabled(repo: RepoConfig) -> bool:
+            if repo.name == "ffmpeg" and self.platform.os == "windows":
+                if cfg.build_ffmpeg:
+                    print("[skip] ffmpeg: build is not supported on Windows (set build_ffmpeg=false in build.toml)")
+                return False
+            if repo.name == "libiconv" and self.platform.os != "windows":
+                return False
             if repo.name in gl_repos and not cfg.build_gl_stack:
                 return False
             if repo.name in imageio_repos and not cfg.build_imageio_stack:
@@ -138,7 +145,19 @@ class Builder:
         repos = [r for r in repos if enabled(r)]
 
         if self.config.only:
-            repos = [r for r in repos if r.name in self.config.only]
+            selected = set(self.config.only)
+            by_name = {repo.name: repo for repo in repos}
+            pending = list(selected)
+            while pending:
+                current = pending.pop()
+                repo = by_name.get(current)
+                if not repo:
+                    continue
+                for dep in repo.deps:
+                    if dep not in selected and dep in by_name:
+                        selected.add(dep)
+                        pending.append(dep)
+            repos = [r for r in repos if r.name in selected]
         if self.config.skip:
             repos = [r for r in repos if r.name not in self.config.skip]
         return repos
@@ -274,6 +293,10 @@ class Builder:
 
     def _base_flags(self, build_type: str) -> str:
         cfg = self.config.global_cfg
+        if self.platform.os == "windows":
+            if build_type == "Debug":
+                return "/Od /Zi"
+            return "/O2 /DNDEBUG"
         if build_type == "Debug":
             flags = "-O0 -g"
         else:
@@ -294,6 +317,11 @@ class Builder:
         cfg = self.config.global_cfg
         cflags = self._base_flags(build_type)
         cxxflags = self._base_flags(build_type)
+        if self.platform.os == "windows":
+            if build_type == "ASAN":
+                cflags += " /fsanitize=address"
+                cxxflags += " /fsanitize=address"
+            return cflags, cxxflags, ""
         if self.platform.os in {"macos", "linux"} and cfg.use_libcxx:
             cxxflags += " -stdlib=libc++"
         if build_type == "ASAN":
@@ -310,7 +338,7 @@ class Builder:
 
     def _linker_flags_init(self) -> str:
         cfg = self.config.global_cfg
-        if self.platform.os == "macos":
+        if self.platform.os in {"macos", "windows"}:
             return ""
         return "-fuse-ld=lld" if cfg.use_lld else ""
 
@@ -369,8 +397,6 @@ class Builder:
                 "-DZSTD_BUILD_SHARED=OFF",
                 "-DZSTD_BUILD_STATIC=ON",
             ]
-        elif name == "libiconv":
-            args += ["-DCMAKE_POLICY_VERSION_MINIMUM=3.5"]
         elif name == "libxml2":
             args += [
                 "-DLIBXML2_WITH_LZMA=ON",
@@ -378,6 +404,20 @@ class Builder:
                 "-DLIBXML2_WITH_TESTS=OFF",
                 "-DLIBXML2_WITH_PROGRAMS=OFF",
             ]
+            if self.platform.os == "windows":
+                if not any(a.startswith("-DLIBXML2_WITH_ICONV=") for a in repo.cmake_args):
+                    debug_postfix = str(cfg.windows.get("debug_postfix", "d"))
+                    iconv_header = ctx.install_prefix / "include" / "iconv.h"
+                    iconv_cfg = ctx.install_prefix / "lib" / "cmake" / "Iconv" / "IconvConfig.cmake"
+                    if ctx.build_type == "Debug":
+                        iconv_lib = ctx.install_prefix / "lib" / f"iconv{debug_postfix}.lib"
+                    else:
+                        iconv_lib = ctx.install_prefix / "lib" / "iconv.lib"
+
+                    if iconv_cfg.exists() or (iconv_header.exists() and iconv_lib.exists()):
+                        args.append("-DLIBXML2_WITH_ICONV=ON")
+                    else:
+                        args.append("-DLIBXML2_WITH_ICONV=OFF")
         elif name == "glfw":
             args += [
                 "-DGLFW_BUILD_EXAMPLES=ON",
@@ -415,11 +455,18 @@ class Builder:
                 "-Dtiff-tools=ON",
                 "-Dtiff-docs=OFF",
                 "-Dtiff-contrib=OFF",
-                "-Dtiff-opengl=OFF",
                 "-Dwebp=OFF",
                 "-DJPEG_SUPPORT=ON",
                 "-DJPEG_DUAL_MODE_8_12=ON",
             ]
+            if self.platform.os == "windows":
+                # libtiff's Findliblzma module doesn't propagate this define for static linking.
+                args.append("-Dtiff-opengl=ON")
+                args.append("-DCMAKE_C_FLAGS=/DLZMA_API_STATIC")
+                args.append("-DCMAKE_C_FLAGS_DEBUG=/DFREEGLUT_STATIC")
+                args.append("-DCMAKE_C_FLAGS_RELEASE=/DFREEGLUT_STATIC")
+            else:
+                args.append("-Dtiff-opengl=OFF")
         elif name == "openjpeg":
             args += [f"-DBUILD_CODEC={self._resolve_openjpeg_build_codec()}"]
             if self.platform.os == "macos" and self._resolve_openjpeg_build_codec() == "ON":
@@ -509,6 +556,20 @@ class Builder:
                 "-DWITH_DAV1D=OFF",
                 "-DWITH_RAV1E=OFF",
             ]
+            if self.platform.os == "windows":
+                debug_postfix = str(cfg.windows.get("debug_postfix", "d"))
+                aom_include_dir = ctx.install_prefix / "include"
+                release_aom_lib = ctx.install_prefix / "lib" / "aom.lib"
+                debug_aom_lib = ctx.install_prefix / "lib" / f"aom{debug_postfix}.lib"
+                aom_lib = debug_aom_lib if ctx.build_type == "Debug" else release_aom_lib
+                if not aom_lib.exists():
+                    candidates = sorted((ctx.install_prefix / "lib").glob("aom*.lib"))
+                    if candidates:
+                        aom_lib = candidates[0]
+                args += [
+                    f"-DAOM_INCLUDE_DIR={aom_include_dir}",
+                    f"-DAOM_LIBRARY={aom_lib}",
+                ]
         elif name == "brotli":
             args += ["-DBROTLI_DISABLE_TESTS=ON", "-DBROTLI_BUILD_TOOLS=OFF"]
         elif name == "highway":
@@ -597,6 +658,21 @@ class Builder:
                 "-DOCIO_BUILD_JAVA=OFF",
                 "-DOCIO_BUILD_DOCS=OFF",
             ]
+            if self.platform.os == "windows":
+                debug_postfix = str(cfg.windows.get("debug_postfix", "d"))
+                pystring_include_dir = ctx.install_prefix / "include" / "pystring"
+                release_pystring_lib = ctx.install_prefix / "lib" / "pystring.lib"
+                debug_pystring_lib = ctx.install_prefix / "lib" / f"pystring{debug_postfix}.lib"
+                pystring_lib = debug_pystring_lib if ctx.build_type == "Debug" else release_pystring_lib
+                if not pystring_lib.exists():
+                    candidates = sorted((ctx.install_prefix / "lib").glob("pystring*.lib"))
+                    if candidates:
+                        pystring_lib = candidates[0]
+                args += [
+                    f"-Dpystring_ROOT={ctx.install_prefix}",
+                    f"-Dpystring_INCLUDE_DIR={pystring_include_dir}",
+                    f"-Dpystring_LIBRARY={pystring_lib}",
+                ]
         elif name == "googletest":
             args += [
                 "-DINSTALL_GTEST=ON",
@@ -653,6 +729,12 @@ class Builder:
 
         if cfg.build_ffmpeg:
             values.setdefault("USE_FFMPEG", "ON")
+
+        # Keep Windows behavior explicit: ffmpeg is currently not supported by this builder on Windows.
+        if self.platform.os == "windows":
+            values["USE_FFMPEG"] = "OFF"
+        else:
+            values["USE_FFMPEG"] = "ON" if cfg.build_ffmpeg else "OFF"
 
         # Python is mandatory for OIIO in this setup.
         values["USE_PYTHON"] = "ON"
@@ -854,6 +936,14 @@ endif()
         if self.platform.os == "windows":
             debug_postfix = str(cfg.windows.get("debug_postfix", "d"))
             args.append(f"-DCMAKE_DEBUG_POSTFIX={debug_postfix}")
+            runtime_mode = str(cfg.windows.get("msvc_runtime", "static")).strip().lower()
+            if runtime_mode in {"", "static", "mt", "multithreaded"}:
+                runtime = "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+            elif runtime_mode in {"dynamic", "md", "multithreadeddll"}:
+                runtime = "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+            else:
+                runtime = str(cfg.windows.get("msvc_runtime"))
+            args.append(f"-DCMAKE_MSVC_RUNTIME_LIBRARY={runtime}")
 
         if repo.shared is None:
             build_shared = not cfg.static_default
@@ -863,12 +953,18 @@ endif()
 
         cflags = self._base_flags(ctx.build_type)
         cxxflags = self._base_flags(ctx.build_type)
+        if self.platform.os == "windows":
+            cxxflags += " /bigobj"
         if self.platform.os in {"macos", "linux"} and cfg.use_libcxx:
             cxxflags += " -stdlib=libc++"
 
         if ctx.build_type == "ASAN":
-            cxxflags += " -fsanitize=address -fno-omit-frame-pointer"
-            cflags += " -fsanitize=address -fno-omit-frame-pointer"
+            if self.platform.os == "windows":
+                cxxflags += " /fsanitize=address"
+                cflags += " /fsanitize=address"
+            else:
+                cxxflags += " -fsanitize=address -fno-omit-frame-pointer"
+                cflags += " -fsanitize=address -fno-omit-frame-pointer"
         args.append(f"-DCMAKE_C_FLAGS_INIT={cflags}")
         args.append(f"-DCMAKE_CXX_FLAGS_INIT={cxxflags}")
 
@@ -924,7 +1020,45 @@ endif()
                 return base
         return cfg.src_root / repo.dir
 
+    def _libiconv_export_zip(self, env: dict[str, str] | None = None) -> Path:
+        cfg = self.config.global_cfg
+        default = cfg.repo_root / "external" / "vcpkg-export-libiconv.zip"
+        override = None
+        if env:
+            override = env.get("LIBICONV_VCPKG_EXPORT_ZIP") or env.get("VCPKG_LIBICONV_EXPORT_ZIP")
+        if not override and self.platform.os == "windows":
+            override = (
+                cfg.windows_env.get("LIBICONV_VCPKG_EXPORT_ZIP")
+                or cfg.windows_env.get("VCPKG_LIBICONV_EXPORT_ZIP")
+                or cfg.env.get("LIBICONV_VCPKG_EXPORT_ZIP")
+                or cfg.env.get("VCPKG_LIBICONV_EXPORT_ZIP")
+                or os.environ.get("LIBICONV_VCPKG_EXPORT_ZIP")
+                or os.environ.get("VCPKG_LIBICONV_EXPORT_ZIP")
+            )
+        if override:
+            path = Path(os.path.expandvars(override)).expanduser()
+            if not path.is_absolute():
+                path = (cfg.repo_root / path).resolve()
+            return path
+
+        external_dir = cfg.repo_root / "external"
+        if default.exists():
+            return default
+        if external_dir.is_dir():
+            matches = sorted(external_dir.glob("vcpkg-export-libiconv*.zip"))
+            if matches:
+                return matches[0]
+        return default
+
     def _maybe_skip_missing(self, repo: RepoConfig, path: Path) -> bool:
+        if repo.name == "libiconv" and self.platform.os == "windows":
+            zip_path = self._libiconv_export_zip()
+            if zip_path.exists():
+                return False
+            if repo.optional:
+                print(f"[skip] {repo.name}: missing vcpkg export zip at {zip_path}")
+                return True
+            return False
         if path.exists():
             return False
         if repo.optional and not repo.url:
@@ -1062,7 +1196,7 @@ endif()
     def _stamp_payload(
         self, repo: RepoConfig, ctx: BuildContext, deps_heads: dict[str, str | None], cflags: str, cxxflags: str
     ) -> dict:
-        return {
+        payload = {
             "repo": repo.name,
             "build_type": ctx.build_type,
             "toolchain": self._toolchain_fingerprint(),
@@ -1073,6 +1207,14 @@ endif()
             "cflags": cflags,
             "cxxflags": cxxflags,
         }
+        if repo.name == "libiconv" and self.platform.os == "windows":
+            zip_path = self._libiconv_export_zip()
+            payload["vcpkg_export_zip"] = str(zip_path)
+            if zip_path.exists():
+                st = zip_path.stat()
+                payload["vcpkg_export_zip_size"] = int(st.st_size)
+                payload["vcpkg_export_zip_mtime"] = int(st.st_mtime)
+        return payload
 
     def _build_repo(self, repo: RepoConfig, build_type: str, deps_heads: dict[str, str | None]) -> tuple[str, str]:
         if not repo.build_system:
@@ -1091,13 +1233,19 @@ endif()
         if self.platform.os in {"macos", "linux"} and self.config.global_cfg.use_libcxx:
             cxxflags += " -stdlib=libc++"
         if build_type == "ASAN":
-            cflags += " -fsanitize=address -fno-omit-frame-pointer"
-            cxxflags += " -fsanitize=address -fno-omit-frame-pointer"
+            if self.platform.os == "windows":
+                cflags += " /fsanitize=address"
+                cxxflags += " /fsanitize=address"
+            else:
+                cflags += " -fsanitize=address -fno-omit-frame-pointer"
+                cxxflags += " -fsanitize=address -fno-omit-frame-pointer"
 
         state, had_stamp, reason = self._stamp_state(repo, ctx, deps_heads, cflags, cxxflags)
         if state == "skip":
             print(f"[skip] {repo.name} ({build_type}) up-to-date")
             return "skipped", reason
+
+        banner(f"{repo.name} ({build_type})", color="cyan")
 
         env = self._env_for_build(build_type, install_prefix)
 
@@ -1113,6 +1261,10 @@ endif()
             self._ensure_png16_include_alias(install_prefix)
 
         if repo.build_system == "cmake":
+            if not self.dry_run:
+                cache = build_dir / "CMakeCache.txt"
+                if cache.exists():
+                    shutil.rmtree(build_dir, ignore_errors=True)
             build_dir.mkdir(parents=True, exist_ok=True)
             cmd = ["cmake", "-S", str(src_dir), "-B", str(build_dir)]
             cmd.extend(self._cmake_generator_args())
@@ -1122,9 +1274,19 @@ endif()
             cmake_args.extend(self._expand_args(repo.cmake_args, build_type, install_prefix))
             cmd.extend(cmake_args)
 
+            print_cmd("Full cmake config command", cmd)
+            banner(f"{repo.name} ({build_type}) - configure")
             run(cmd, env=env, dry_run=self.dry_run)
-            run(["cmake", "--build", str(build_dir), "--config", build_type, "--", f"-j{self._jobs()}"], env=env, dry_run=self.dry_run)
-            run(["cmake", "--install", str(build_dir), "--config", build_type], env=env, dry_run=self.dry_run)
+
+            build_cmd = ["cmake", "--build", str(build_dir), "--config", build_type, "--parallel", str(self._jobs())]
+            print_cmd("build command", build_cmd)
+            banner(f"{repo.name} ({build_type}) - building")
+            run(build_cmd, env=env, dry_run=self.dry_run)
+
+            install_cmd = ["cmake", "--install", str(build_dir), "--config", build_type]
+            print_cmd("install command", install_cmd)
+            banner(f"{repo.name} ({build_type}) - install")
+            run(install_cmd, env=env, dry_run=self.dry_run)
         elif repo.build_system == "autotools":
             build_dir.mkdir(parents=True, exist_ok=True)
             configure = src_dir / "configure"
@@ -1142,9 +1304,19 @@ endif()
             }
             cmd = [str(configure), f"--prefix={install_prefix}", "--disable-shared", "--enable-static"]
             cmd.extend(self._autotools_args(repo))
+            print_cmd("configure command", cmd)
+            banner(f"{repo.name} ({build_type}) - configure")
             run(cmd, cwd=str(build_dir), env=env, dry_run=self.dry_run)
-            run(["make", f"-j{self._jobs()}"], cwd=str(build_dir), env=env, dry_run=self.dry_run)
-            run(["make", "install"], cwd=str(build_dir), env=env, dry_run=self.dry_run)
+
+            build_cmd = ["make", f"-j{self._jobs()}"]
+            print_cmd("build command", build_cmd)
+            banner(f"{repo.name} ({build_type}) - building")
+            run(build_cmd, cwd=str(build_dir), env=env, dry_run=self.dry_run)
+
+            install_cmd = ["make", "install"]
+            print_cmd("install command", install_cmd)
+            banner(f"{repo.name} ({build_type}) - install")
+            run(install_cmd, cwd=str(build_dir), env=env, dry_run=self.dry_run)
         elif repo.build_system == "ffmpeg":
             build_dir.mkdir(parents=True, exist_ok=True)
             configure = src_dir / "configure"
@@ -1152,25 +1324,291 @@ endif()
                 raise RuntimeError(f"Missing configure script for {repo.name}: {configure}")
             cmd = [str(configure)]
             cmd.extend(self._ffmpeg_configure_args(ctx))
+            print_cmd("configure command", cmd)
+            banner(f"{repo.name} ({build_type}) - configure")
             run(cmd, cwd=str(build_dir), env=env, dry_run=self.dry_run)
-            run(["make", f"-j{self._jobs()}"], cwd=str(build_dir), env=env, dry_run=self.dry_run)
-            run(["make", "install"], cwd=str(build_dir), env=env, dry_run=self.dry_run)
+
+            build_cmd = ["make", f"-j{self._jobs()}"]
+            print_cmd("build command", build_cmd)
+            banner(f"{repo.name} ({build_type}) - building")
+            run(build_cmd, cwd=str(build_dir), env=env, dry_run=self.dry_run)
+
+            install_cmd = ["make", "install"]
+            print_cmd("install command", install_cmd)
+            banner(f"{repo.name} ({build_type}) - install")
+            run(install_cmd, cwd=str(build_dir), env=env, dry_run=self.dry_run)
+        elif repo.build_system == "libiconv":
+            if self.platform.os != "windows":
+                raise RuntimeError("libiconv build system is only supported on Windows")
+            build_dir.mkdir(parents=True, exist_ok=True)
+
+            zip_path = self._libiconv_export_zip(env)
+            if not zip_path.exists():
+                raise RuntimeError(f"Missing libiconv vcpkg export zip: {zip_path}")
+
+            banner(f"{repo.name} ({build_type}) - stage")
+            print(f"vcpkg export zip: {zip_path}", flush=True)
+
+            import zipfile
+
+            export_dir = build_dir / "_libiconv_vcpkg_export"
+            marker = export_dir / ".zipstamp"
+            st = zip_path.stat()
+            stamp = f"{zip_path}|{int(st.st_size)}|{int(st.st_mtime)}"
+
+            if self.dry_run:
+                print(f"[dry-run] extract -> {export_dir}", flush=True)
+                return ("rebuilt" if had_stamp else "built"), ""
+
+            if marker.exists() and marker.read_text(encoding="utf-8").strip() == stamp:
+                pass
+            else:
+                if export_dir.exists():
+                    shutil.rmtree(export_dir, ignore_errors=True)
+                export_dir.mkdir(parents=True, exist_ok=True)
+                with zipfile.ZipFile(zip_path) as zf:
+                    export_abs = export_dir.resolve()
+                    for info in zf.infolist():
+                        name = info.filename
+                        if not name or name.endswith("/"):
+                            continue
+                        dest = export_dir / name
+                        dest_abs = dest.resolve()
+                        if export_abs not in dest_abs.parents and dest_abs != export_abs:
+                            raise RuntimeError(f"Refusing to extract outside destination: {name}")
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        with zf.open(info) as src_f, open(dest, "wb") as dst_f:
+                            shutil.copyfileobj(src_f, dst_f)
+                marker.write_text(stamp, encoding="utf-8")
+
+            def _find_export_root(base: Path) -> Path:
+                if (base / "installed").is_dir():
+                    return base
+                for child in base.iterdir():
+                    if child.is_dir() and (child / "installed").is_dir():
+                        return child
+                raise RuntimeError(f"Unexpected vcpkg export layout under {base}")
+
+            export_root = _find_export_root(export_dir)
+            installed_dir = export_root / "installed"
+
+            triplet_candidates = [
+                p
+                for p in installed_dir.iterdir()
+                if p.is_dir() and p.name != "vcpkg" and (p / "include" / "iconv.h").exists()
+            ]
+            if not triplet_candidates:
+                raise RuntimeError(f"vcpkg export zip does not contain installed/<triplet>/include/iconv.h: {zip_path}")
+
+            def _triplet_score(path: Path) -> tuple[int, str]:
+                name = path.name.lower()
+                score = 0
+                if "static" in name:
+                    score -= 10
+                bin_dir = path / "bin"
+                if bin_dir.is_dir() and any(bin_dir.glob("*.dll")):
+                    score += 5
+                return score, name
+
+            triplet_candidates.sort(key=_triplet_score)
+            triplet_dir = triplet_candidates[0]
+
+            include_src = triplet_dir / "include"
+            lib_src = triplet_dir / "lib"
+            debug_lib_src = triplet_dir / "debug" / "lib"
+            bin_src = triplet_dir / "bin"
+
+            required = [
+                include_src / "iconv.h",
+                lib_src / "iconv.lib",
+                lib_src / "charset.lib",
+                debug_lib_src / "iconv.lib",
+                debug_lib_src / "charset.lib",
+            ]
+            missing = [p for p in required if not p.exists()]
+            if missing:
+                wanted = "\n".join(f"  - {p}" for p in missing)
+                raise RuntimeError(f"libiconv vcpkg export is missing expected files:\n{wanted}")
+
+            debug_postfix = str(self.config.global_cfg.windows.get("debug_postfix", "d"))
+
+            def _add_debug_postfix(filename: str) -> str:
+                p = Path(filename)
+                suffixes = p.suffixes
+                if not suffixes:
+                    return filename + debug_postfix
+                base = filename
+                for suff in suffixes:
+                    if base.endswith(suff):
+                        base = base[: -len(suff)]
+                if base.endswith(debug_postfix):
+                    return filename
+                return base + debug_postfix + "".join(suffixes)
+
+            banner(f"{repo.name} ({build_type}) - install")
+
+            inc_dst = install_prefix / "include"
+            lib_dst = install_prefix / "lib"
+            bin_dst = install_prefix / "bin"
+            inc_dst.mkdir(parents=True, exist_ok=True)
+            lib_dst.mkdir(parents=True, exist_ok=True)
+            if bin_src.is_dir():
+                bin_dst.mkdir(parents=True, exist_ok=True)
+
+            for item in include_src.iterdir():
+                if item.is_file():
+                    shutil.copy2(item, inc_dst / item.name)
+            for item in lib_src.iterdir():
+                if item.is_file():
+                    shutil.copy2(item, lib_dst / item.name)
+            for item in debug_lib_src.iterdir():
+                if item.is_file():
+                    shutil.copy2(item, lib_dst / _add_debug_postfix(item.name))
+
+            if bin_src.is_dir():
+                if any(bin_src.glob("*.dll")):
+                    print("[note] libiconv export contains DLLs; prefer exporting a *-static triplet for a fully static prefix", flush=True)
+                for item in bin_src.iterdir():
+                    if item.is_file() and item.suffix.lower() in {".dll", ".pdb"}:
+                        shutil.copy2(item, bin_dst / item.name)
+
+            cmake_dir = install_prefix / "lib" / "cmake" / "Iconv"
+            cmake_dir.mkdir(parents=True, exist_ok=True)
+            (cmake_dir / "IconvConfig.cmake").write_text(
+                "\n".join(
+                    [
+                        "# Generated by oiio-builder (imported from vcpkg export)",
+                        "set(Iconv_FOUND TRUE)",
+                        "set(Iconv_IS_BUILT_IN FALSE)",
+                        "",
+                        "get_filename_component(_iconv_prefix \"${CMAKE_CURRENT_LIST_DIR}/../../..\" ABSOLUTE)",
+                        "set(_iconv_incdir \"${_iconv_prefix}/include\")",
+                        "set(_iconv_libdir \"${_iconv_prefix}/lib\")",
+                        f"set(_iconv_debug_postfix \"{debug_postfix}\")",
+                        "",
+                        "set(_iconv_lib_release \"${_iconv_libdir}/iconv.lib\")",
+                        "set(_iconv_lib_debug \"${_iconv_libdir}/iconv${_iconv_debug_postfix}.lib\")",
+                        "set(_charset_lib_release \"${_iconv_libdir}/charset.lib\")",
+                        "set(_charset_lib_debug \"${_iconv_libdir}/charset${_iconv_debug_postfix}.lib\")",
+                        "",
+                        "if(NOT TARGET Iconv::Charset)",
+                        "  add_library(Iconv::Charset UNKNOWN IMPORTED)",
+                        "  set_property(TARGET Iconv::Charset PROPERTY IMPORTED_CONFIGURATIONS \"RELEASE;DEBUG\")",
+                        "  set_target_properties(Iconv::Charset PROPERTIES",
+                        "    INTERFACE_INCLUDE_DIRECTORIES \"${_iconv_incdir}\"",
+                        "    IMPORTED_LOCATION \"${_charset_lib_release}\"",
+                        "    IMPORTED_LOCATION_RELEASE \"${_charset_lib_release}\"",
+                        "    IMPORTED_LOCATION_DEBUG \"${_charset_lib_debug}\"",
+                        "    MAP_IMPORTED_CONFIG_MINSIZEREL Release",
+                        "    MAP_IMPORTED_CONFIG_RELWITHDEBINFO Release",
+                        "    MAP_IMPORTED_CONFIG_ASAN Release",
+                        "  )",
+                        "endif()",
+                        "",
+                        "if(NOT TARGET Iconv::Iconv)",
+                        "  add_library(Iconv::Iconv UNKNOWN IMPORTED)",
+                        "  set_property(TARGET Iconv::Iconv PROPERTY IMPORTED_CONFIGURATIONS \"RELEASE;DEBUG\")",
+                        "  set_target_properties(Iconv::Iconv PROPERTIES",
+                        "    INTERFACE_INCLUDE_DIRECTORIES \"${_iconv_incdir}\"",
+                        "    IMPORTED_LOCATION \"${_iconv_lib_release}\"",
+                        "    IMPORTED_LOCATION_RELEASE \"${_iconv_lib_release}\"",
+                        "    IMPORTED_LOCATION_DEBUG \"${_iconv_lib_debug}\"",
+                        "    INTERFACE_LINK_LIBRARIES \"Iconv::Charset\"",
+                        "    MAP_IMPORTED_CONFIG_MINSIZEREL Release",
+                        "    MAP_IMPORTED_CONFIG_RELWITHDEBINFO Release",
+                        "    MAP_IMPORTED_CONFIG_ASAN Release",
+                        "  )",
+                        "endif()",
+                        "",
+                        "set(Iconv_INCLUDE_DIR \"${_iconv_incdir}\")",
+                        "set(Iconv_INCLUDE_DIRS \"${_iconv_incdir}\")",
+                        "set(Iconv_LIBRARY \"${_iconv_lib_release}\")",
+                        "set(Iconv_LIBRARIES \"${_iconv_lib_release};${_charset_lib_release}\")",
+                        "",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
         elif repo.build_system == "giflib":
             build_dir.mkdir(parents=True, exist_ok=True)
-            make_env = env.copy()
-            make_env["CC"] = self.toolchain.get("cc", make_env.get("CC", "cc"))
-            cflags, _cxxflags, _ldflags = self._non_cmake_flags(build_type)
-            make_env["CFLAGS"] = f"{cflags} -std=gnu99 -Wall -Wno-format-truncation"
-            getversion = src_dir / "getversion"
-            if getversion.exists() and not os.access(getversion, os.X_OK):
-                if not self.dry_run:
-                    getversion.chmod(getversion.stat().st_mode | 0o111)
-            try:
-                run(["make", "clean"], cwd=str(src_dir), env=make_env, dry_run=self.dry_run)
-            except subprocess.CalledProcessError:
-                pass
-            run(
-                [
+            if self.platform.os == "windows":
+                cmake_src_dir = build_dir / "_giflib_cmake"
+                cmake_src_dir.mkdir(parents=True, exist_ok=True)
+                cmake_lists = cmake_src_dir / "CMakeLists.txt"
+                cmake_lists.write_text(
+                    "\n".join(
+                        [
+                            "cmake_minimum_required(VERSION 3.20)",
+                            "project(giflib C)",
+                            "",
+                            "if (NOT DEFINED GIFLIB_SRC_DIR)",
+                            "  message(FATAL_ERROR \"GIFLIB_SRC_DIR is not set\")",
+                            "endif()",
+                            "",
+                            "file(GLOB _giflib_sources",
+                            "  \"${GIFLIB_SRC_DIR}/*.c\"",
+                            "  \"${GIFLIB_SRC_DIR}/lib/*.c\"",
+                            ")",
+                            "",
+                            "# Exclude tool sources (we only need the library for consumers like libjxl/OIIO).",
+                            "set(_giflib_tool_sources",
+                            "  \"${GIFLIB_SRC_DIR}/gif2rgb.c\"",
+                            "  \"${GIFLIB_SRC_DIR}/gifbuild.c\"",
+                            "  \"${GIFLIB_SRC_DIR}/giffix.c\"",
+                            "  \"${GIFLIB_SRC_DIR}/giftext.c\"",
+                            "  \"${GIFLIB_SRC_DIR}/giftool.c\"",
+                            "  \"${GIFLIB_SRC_DIR}/gifclrmp.c\"",
+                            ")",
+                            "list(REMOVE_ITEM _giflib_sources ${_giflib_tool_sources})",
+                            "",
+                            "add_library(gif STATIC ${_giflib_sources})",
+                            "target_include_directories(gif PUBLIC \"${GIFLIB_SRC_DIR}\")",
+                            "set_target_properties(gif PROPERTIES OUTPUT_NAME gif DEBUG_POSTFIX \"${CMAKE_DEBUG_POSTFIX}\")",
+                            "",
+                            "install(TARGETS gif ARCHIVE DESTINATION lib)",
+                            "install(FILES \"${GIFLIB_SRC_DIR}/gif_lib.h\" DESTINATION include)",
+                            "",
+                        ]
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+
+                cmd = ["cmake", "-S", str(cmake_src_dir), "-B", str(build_dir)]
+                cmd.extend(self._cmake_generator_args())
+                cmd.append(f"-DGIFLIB_SRC_DIR={src_dir.as_posix()}")
+                cmd.extend(self._cmake_common_args(repo, ctx))
+                print_cmd("Full cmake config command", cmd)
+                banner(f"{repo.name} ({build_type}) - configure")
+                run(cmd, env=env, dry_run=self.dry_run)
+
+                build_cmd = ["cmake", "--build", str(build_dir), "--config", build_type, "--parallel", str(self._jobs())]
+                print_cmd("build command", build_cmd)
+                banner(f"{repo.name} ({build_type}) - building")
+                run(build_cmd, env=env, dry_run=self.dry_run)
+
+                install_cmd = ["cmake", "--install", str(build_dir), "--config", build_type]
+                print_cmd("install command", install_cmd)
+                banner(f"{repo.name} ({build_type}) - install")
+                run(install_cmd, env=env, dry_run=self.dry_run)
+            else:
+                make_env = env.copy()
+                make_env["CC"] = self.toolchain.get("cc", make_env.get("CC", "cc"))
+                cflags, _cxxflags, _ldflags = self._non_cmake_flags(build_type)
+                make_env["CFLAGS"] = f"{cflags} -std=gnu99 -Wall -Wno-format-truncation"
+                getversion = src_dir / "getversion"
+                if getversion.exists() and not os.access(getversion, os.X_OK):
+                    if not self.dry_run:
+                        getversion.chmod(getversion.stat().st_mode | 0o111)
+                try:
+                    clean_cmd = ["make", "clean"]
+                    print_cmd("clean command", clean_cmd)
+                    banner(f"{repo.name} ({build_type}) - clean")
+                    run(["make", "clean"], cwd=str(src_dir), env=make_env, dry_run=self.dry_run)
+                except subprocess.CalledProcessError:
+                    pass
+                build_cmd = [
                     "make",
                     f"-j{self._jobs()}",
                     "libgif.a",
@@ -1181,26 +1619,59 @@ endif()
                     "giftext",
                     "giftool",
                     "gifclrmp",
-                ],
-                cwd=str(src_dir),
-                env={
-                    **make_env,
-                    "PREFIX": str(install_prefix),
-                    "BINDIR": str(install_prefix / "bin"),
-                    "INCDIR": str(install_prefix / "include"),
-                    "LIBDIR": str(install_prefix / "lib"),
-                    "MANDIR": str(install_prefix / "share" / "man"),
-                },
-                dry_run=self.dry_run,
-            )
-            if not self.dry_run:
-                (install_prefix / "bin").mkdir(parents=True, exist_ok=True)
-                (install_prefix / "include").mkdir(parents=True, exist_ok=True)
-                (install_prefix / "lib").mkdir(parents=True, exist_ok=True)
-                run(["install", "gif2rgb", "gifbuild", "giffix", "giftext", "giftool", "gifclrmp", str(install_prefix / "bin")], cwd=str(src_dir))
-                run(["install", "-m", "644", "gif_lib.h", str(install_prefix / "include" / "gif_lib.h")], cwd=str(src_dir))
-                run(["install", "-m", "644", "libgif.a", str(install_prefix / "lib" / "libgif.a")], cwd=str(src_dir))
-                run(["install", "-m", "644", "libutil.a", str(install_prefix / "lib" / "libutil.a")], cwd=str(src_dir))
+                ]
+                print_cmd("build command", build_cmd)
+                banner(f"{repo.name} ({build_type}) - building")
+                run(
+                    build_cmd,
+                    cwd=str(src_dir),
+                    env={
+                        **make_env,
+                        "PREFIX": str(install_prefix),
+                        "BINDIR": str(install_prefix / "bin"),
+                        "INCDIR": str(install_prefix / "include"),
+                        "LIBDIR": str(install_prefix / "lib"),
+                        "MANDIR": str(install_prefix / "share" / "man"),
+                    },
+                    dry_run=self.dry_run,
+                )
+                if not self.dry_run:
+                    (install_prefix / "bin").mkdir(parents=True, exist_ok=True)
+                    (install_prefix / "include").mkdir(parents=True, exist_ok=True)
+                    (install_prefix / "lib").mkdir(parents=True, exist_ok=True)
+                    banner(f"{repo.name} ({build_type}) - install")
+                    print_cmd(
+                        "install command",
+                        [
+                            "install",
+                            "gif2rgb",
+                            "gifbuild",
+                            "giffix",
+                            "giftext",
+                            "giftool",
+                            "gifclrmp",
+                            str(install_prefix / "bin"),
+                        ],
+                    )
+                    run(
+                        ["install", "gif2rgb", "gifbuild", "giffix", "giftext", "giftool", "gifclrmp", str(install_prefix / "bin")],
+                        cwd=str(src_dir),
+                    )
+                    print_cmd(
+                        "install command",
+                        [
+                            "install",
+                            "-m",
+                            "644",
+                            "gif_lib.h",
+                            str(install_prefix / "include" / "gif_lib.h"),
+                        ],
+                    )
+                    run(["install", "-m", "644", "gif_lib.h", str(install_prefix / "include" / "gif_lib.h")], cwd=str(src_dir))
+                    print_cmd("install command", ["install", "-m", "644", "libgif.a", str(install_prefix / "lib" / "libgif.a")])
+                    run(["install", "-m", "644", "libgif.a", str(install_prefix / "lib" / "libgif.a")], cwd=str(src_dir))
+                    print_cmd("install command", ["install", "-m", "644", "libutil.a", str(install_prefix / "lib" / "libutil.a")])
+                    run(["install", "-m", "644", "libutil.a", str(install_prefix / "lib" / "libutil.a")], cwd=str(src_dir))
         else:
             raise RuntimeError(f"Unsupported build_system: {repo.build_system}")
 
@@ -1231,6 +1702,8 @@ endif()
             repo_dir = self._resolve_repo_dir(repo)
             self.repo_paths[repo.name] = repo_dir
             if self._maybe_skip_missing(repo, repo_dir):
+                continue
+            if repo.name == "libiconv" and self.platform.os == "windows":
                 continue
             ensure_repo(repo_dir, repo.url, repo.ref, repo.ref_type, update=not self.no_update, dry_run=self.dry_run)
 

@@ -103,6 +103,15 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
 
     lines.append("Repos:")
     for repo in builder.repos:
+        if repo.name == "libiconv" and platform.os == "windows":
+            zip_path = builder._libiconv_export_zip()
+            if zip_path.exists():
+                lines.append(f"  {repo.name}: ok (vcpkg export zip: {zip_path})")
+            else:
+                lines.append(f"  {repo.name}: missing (vcpkg export zip expected at {zip_path})")
+                if not repo.optional:
+                    missing_repos += 1
+            continue
         path = builder._resolve_repo_dir(repo)
         if path.exists():
             lines.append(f"  {repo.name}: ok ({path})")
