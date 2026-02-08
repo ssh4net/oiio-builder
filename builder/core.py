@@ -65,9 +65,11 @@ class Builder:
         self.no_update = no_update
         self.force = force
         self.force_all = force_all or (force and not bool(config.only))
-        self.force_targets = set(config.only) if (force and bool(config.only) and not self.force_all) else set()
+        self.force_targets: set[str] = set()
         self.toolchain = self._resolve_toolchain()
         self.repos = self._filter_repos()
+        if force and bool(self.config.only) and not self.force_all:
+            self.force_targets = set(self.config.only)
         self.prefixes = self._compute_prefixes()
         self.repo_paths: dict[str, Path] = {}
         self.pkg_override_root = self.config.global_cfg.build_root / "pkgconfig_override"
@@ -77,7 +79,42 @@ class Builder:
 
     def _filter_repos(self) -> list[RepoConfig]:
         cfg = self.config.global_cfg
-        repos = [r for r in self.config.repos if r.enabled]
+        configured_repos = [r for r in self.config.repos if r.enabled]
+        by_name_configured = {repo.name: repo for repo in configured_repos}
+        by_lower_configured: dict[str, list[str]] = {}
+        for repo in configured_repos:
+            by_lower_configured.setdefault(repo.name.lower(), []).append(repo.name)
+
+        def resolve_user_repo_names(names: set[str], opt: str) -> set[str]:
+            resolved: set[str] = set()
+            unknown: list[str] = []
+            ambiguous: list[tuple[str, list[str]]] = []
+
+            for name in names:
+                if name in by_name_configured:
+                    resolved.add(name)
+                    continue
+                matches = by_lower_configured.get(name.lower(), [])
+                if len(matches) == 1:
+                    resolved.add(matches[0])
+                elif len(matches) > 1:
+                    ambiguous.append((name, matches))
+                else:
+                    unknown.append(name)
+
+            if ambiguous:
+                lines = [
+                    f"Ambiguous repo name '{name}' in {opt}: matches {', '.join(matches)}"
+                    for name, matches in ambiguous
+                ]
+                lines.append("Use exact names as shown by: uv run build.py --list-repos")
+                raise SystemExit("\n".join(lines))
+            if unknown:
+                names_str = ", ".join(sorted(unknown))
+                raise SystemExit(f"Unknown repo name(s) in {opt}: {names_str}\nUse: uv run build.py --list-repos")
+            return resolved
+
+        repos = list(configured_repos)
 
         # Apply group toggles to approximate the shell script behavior.
         gl_repos = {"glfw", "freeglut", "glew"}
@@ -162,8 +199,10 @@ class Builder:
         repos = [r for r in repos if enabled(r)]
 
         if self.config.only:
-            selected = set(self.config.only)
-            by_name = {repo.name: repo for repo in repos}
+            explicit = resolve_user_repo_names(set(self.config.only), "--only")
+            self.config.only = set(explicit)
+            selected = set(explicit)
+            by_name = by_name_configured
             pending = list(selected)
             while pending:
                 current = pending.pop()
@@ -174,9 +213,17 @@ class Builder:
                     if dep not in selected and dep in by_name:
                         selected.add(dep)
                         pending.append(dep)
+
+            enabled_names = {repo.name for repo in repos}
+            disabled_explicit = sorted(name for name in explicit if name not in enabled_names)
+            if disabled_explicit:
+                names_str = ", ".join(disabled_explicit)
+                raise SystemExit(f"Repo(s) requested by --only are disabled by config/toggles: {names_str}")
             repos = [r for r in repos if r.name in selected]
         if self.config.skip:
-            repos = [r for r in repos if r.name not in self.config.skip]
+            skip = resolve_user_repo_names(set(self.config.skip), "--skip")
+            self.config.skip = set(skip)
+            repos = [r for r in repos if r.name not in skip]
         return repos
 
     def _compute_prefixes(self) -> dict[str, Path]:
