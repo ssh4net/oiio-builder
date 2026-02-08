@@ -130,7 +130,10 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
             continue
         path = builder._resolve_repo_dir(repo)
         if path.exists():
-            lines.append(f"  {repo.name}: ok ({path})")
+            if url:
+                lines.append(f"  {repo.name}: ok ({path}, url={url})")
+            else:
+                lines.append(f"  {repo.name}: ok ({path})")
             continue
         if repo.optional and not repo.url:
             if url:

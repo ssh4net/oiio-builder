@@ -34,6 +34,7 @@ Key options:
 - `windows.generator`: choose one of `msvc`, `ninja-msvc`, `msvc-clang-cl`, `ninja-clang-cl`.
 - `windows.install_prefix`: single prefix for Debug+Release on Windows.
 - `windows.asan_prefix`: optional separate prefix for ASAN.
+- `windows.build_ffmpeg`: defaults to `false` (native FFmpeg build is disabled on Windows; see below).
 - `windows.msvc_runtime`: `static` (default, `/MT`/`/MTd`) or `dynamic` (`/MD`/`/MDd`).
 - `windows.python_wrappers`: `auto` (default), `on`, `off` for OpenColorIO/OpenEXR Python bindings.
   `auto` enables wrappers only when `windows.msvc_runtime=dynamic`.
@@ -60,10 +61,14 @@ uv run build.py --list-repos
 uv run build.py --print-prefixes
 
 # Force rebuild
-uv run build.py --force
+uv run build.py --force          # with --only: forces only selected repos
+uv run build.py --force-all      # forces all repos in this run
 
 # Build only specific repos
 uv run build.py --only libjpeg-turbo,libpng,openjpeg
+
+# Windows: build OIIO without FFmpeg
+uv run build.py --build-types Debug --only OpenImageIO --no-ffmpeg
 
 # Skip certain repos
 uv run build.py --skip libwebp,libheif
@@ -97,6 +102,13 @@ uv run build.py --config build.toml --build-types Debug,Release
 uv run build.py --build-types Debug,Release
 ```
 
+### Windows: FFmpeg
+On Windows, the builder does not build FFmpeg from source. By default, `windows.build_ffmpeg = false` to keep OpenImageIO builds self-contained.
+
+To enable the OpenImageIO FFmpeg plugin:
+1. Install/copy an **MSVC-built static** FFmpeg into the same prefix used by this script (headers under `<prefix>/include`, libs under `<prefix>/lib`).
+2. Set `windows.build_ffmpeg = true` (or omit `--no-ffmpeg`).
+
 ### Windows: libiconv (for libxml2)
 On Windows, `libiconv` is imported from a **vcpkg export zip** (no source build).
 
@@ -118,7 +130,7 @@ DOXYGEN_EXECUTABLE = "C:\\Program Files\\doxygen\\bin\\doxygen.exe"
 
 ## Troubleshooting
 
-- **Rebuild not triggered after local edits**: stamps track git commits only. Use `--force` or delete `../_build_py/.stamps`.
+- **Rebuild not triggered after local edits**: stamps track dependency fingerprints (git heads + builder patch revisions), but not uncommitted working tree changes. Use `--force --only <repo>` for targeted rebuilds or `--force-all` for a clean run.
 - **Missing optional repos**: `yaml-cpp`, `pystring`, `expat`, `pugixml`, `libxml2` are skipped if not present. On Windows, `libiconv` is expected via `external/vcpkg-export-libiconv.zip`.
 - **OpenMP not found (macOS/Linux)**: set `OpenMP_ROOT` in `build.toml` or environment.
 - **ASAN failures on Windows**: prefer clang-cl and ensure the MSVC AddressSanitizer component is installed.

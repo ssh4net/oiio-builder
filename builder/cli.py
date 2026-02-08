@@ -24,6 +24,7 @@ def main() -> int:
             "  uv run build.py --build-types Debug,Release\n"
             "  uv run build.py --build-types Debug,ASAN\n"
             "  uv run build.py --build-types Debug --only OpenImageIO\n"
+            "  uv run build.py --build-types Debug --only OpenImageIO --no-ffmpeg\n"
             "  uv run build.py --build-types Debug --force\n"
             "  uv run build.py --build-types Debug --force-all\n"
             "  uv run build.py --skip libheif,libwebp\n"
@@ -40,6 +41,11 @@ def main() -> int:
     parser.add_argument("--no-update", action="store_true", help="Skip git fetch/pull (overrides config)")
     parser.add_argument("--update", action="store_true", help="Force git fetch/pull (overrides config)")
     parser.add_argument("--dry-run", action="store_true", help="Print commands only")
+    parser.add_argument(
+        "--no-ffmpeg",
+        action="store_true",
+        help="Disable FFmpeg (also disables OpenImageIO ffmpeg plugin detection)",
+    )
     parser.add_argument(
         "--force",
         action="store_true",
@@ -60,6 +66,10 @@ def main() -> int:
 
     if args.build_types:
         config.build_types = _parse_build_types(args.build_types)
+
+    if args.no_ffmpeg:
+        config.global_cfg.build_ffmpeg = False
+        config.global_cfg.windows["build_ffmpeg"] = False
 
     if args.only:
         config.only = {name.strip() for name in args.only.split(",") if name.strip()}
@@ -103,6 +113,7 @@ def main() -> int:
             args.build_types,
             args.only,
             args.skip,
+            args.no_ffmpeg,
             args.force,
             args.force_all,
             args.update,

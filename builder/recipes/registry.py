@@ -4,14 +4,17 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
-from . import lcms2, libjxl, libtiff, openexr, openjpeg
+from . import lcms2, libheif, libjxl, libtiff, libultrahdr, openexr, openjpeg, x265
 
 _RECIPES: dict[str, ModuleType] = {
     "lcms2": lcms2,
+    "libheif": libheif,
     "libjxl": libjxl,
     "libtiff": libtiff,
+    "libultrahdr": libultrahdr,
     "openexr": openexr,
     "openjpeg": openjpeg,
+    "x265": x265,
 }
 
 

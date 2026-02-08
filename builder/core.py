@@ -113,7 +113,7 @@ class Builder:
 
         def enabled(repo: RepoConfig) -> bool:
             if repo.name == "ffmpeg" and self.platform.os == "windows":
-                if cfg.build_ffmpeg:
+                if self._ffmpeg_enabled():
                     print(
                         "[skip] ffmpeg: native build step is disabled on Windows; "
                         "prebuilt FFmpeg is consumed via FFmpeg_ROOT/FFMPEG_ROOT or <src_root>/ffmpeg"
@@ -153,7 +153,7 @@ class Builder:
                 return False
             if repo.name == "pybind11" and not cfg.build_pybind11:
                 return False
-            if repo.name == "ffmpeg" and not cfg.build_ffmpeg:
+            if repo.name == "ffmpeg" and not self._ffmpeg_enabled():
                 return False
             if repo.name == "OpenImageIO" and not cfg.build_oiio:
                 return False
@@ -333,6 +333,22 @@ class Builder:
         if mode in {"dynamic", "md", "multithreadeddll"}:
             return "dynamic"
         return mode
+
+    def _ffmpeg_enabled(self) -> bool:
+        cfg = self.config.global_cfg
+        enabled = bool(cfg.build_ffmpeg)
+        if self.platform.os == "windows":
+            override = cfg.windows.get("build_ffmpeg")
+            if override is None:
+                return enabled
+            if isinstance(override, str):
+                value = override.strip().lower()
+                if value in {"0", "false", "off", "no"}:
+                    return False
+                if value in {"1", "true", "on", "yes"}:
+                    return True
+            return bool(override)
+        return enabled
 
     def _windows_python_wrappers_mode(self) -> str:
         mode = str(self.config.global_cfg.windows.get("python_wrappers", "auto")).strip().lower()
@@ -752,6 +768,24 @@ class Builder:
                 "-DENABLE_LCMS=ON",
                 "-DENABLE_JASPER=ON",
             ]
+            if self.platform.os == "windows":
+                debug_postfix = str(cfg.windows.get("debug_postfix", "d"))
+                lib_dir = (ctx.install_prefix / "lib").resolve()
+                include_dir = (ctx.install_prefix / "include").resolve()
+                lcms_release = lib_dir / "lcms2_static.lib"
+                lcms_debug = lib_dir / f"lcms2_static{debug_postfix}.lib"
+                lcms_lib = lcms_debug if ctx.build_type == "Debug" else lcms_release
+                if not lcms_lib.exists():
+                    candidates = sorted(lib_dir.glob("lcms2_static*.lib"))
+                    if candidates:
+                        lcms_lib = candidates[0]
+                if lcms_lib.exists() and (include_dir / "lcms2.h").exists():
+                    # LibRaw ships its own FindLCMS2.cmake which doesn't look for
+                    # `lcms2_static`, so force the static library explicitly.
+                    args += [
+                        f"-DLCMS2_INCLUDE_DIR={include_dir}",
+                        f"-DLCMS2_LIBRARIES={lcms_lib}",
+                    ]
         elif name == "aom":
             args += [
                 "-DENABLE_TESTS=OFF",
@@ -966,6 +1000,7 @@ class Builder:
 
     def _oiio_cache_args(self, ctx: BuildContext) -> list[str]:
         cfg = self.config.global_cfg
+        ffmpeg_enabled = self._ffmpeg_enabled()
         args: list[str] = []
         self._ensure_bzip2_alias(ctx.install_prefix, ctx.build_type)
         self._ensure_freetype_harfbuzz_compat(ctx.install_prefix, ctx.build_type)
@@ -1011,17 +1046,20 @@ class Builder:
         for key, value in defaults.items():
             values.setdefault(key, value)
 
-        if cfg.build_ffmpeg:
+        if ffmpeg_enabled:
             values.setdefault("USE_FFMPEG", "ON")
 
         # Enable ffmpeg plugins whenever the feature is enabled in config.
-        values["USE_FFMPEG"] = "ON" if cfg.build_ffmpeg else "OFF"
+        values["USE_FFMPEG"] = "ON" if ffmpeg_enabled else "OFF"
 
         # Python is mandatory for OIIO in this setup.
         values["USE_PYTHON"] = "ON"
         # Always embed plugins for consistent single-binary plugin loading across platforms.
         values["EMBEDPLUGINS"] = "ON"
-        args.append("-DOpenImageIO_REQUIRED_DEPS=FFmpeg;GIF;JXL;LibRaw;libuhdr;Freetype")
+        required = ["GIF", "JXL", "LibRaw", "libuhdr", "Freetype"]
+        if ffmpeg_enabled:
+            required.insert(0, "FFmpeg")
+        args.append(f"-DOpenImageIO_REQUIRED_DEPS={';'.join(required)}")
 
         # Keep dependency discovery deterministic by hinting the shared prefix.
         root_vars = (
@@ -1032,7 +1070,7 @@ class Builder:
             "JXL",
             "OpenColorIO",
             "Freetype",
-            "BZIP2",
+            "BZip2",
             "libuhdr",
             "Robinmap",
             "fmt",
@@ -1241,7 +1279,7 @@ class Builder:
             args.append(f"-DLIBHEIF_INCLUDE_DIR={include_dir_posix}")
             args.append(f"-DLIBHEIF_LIBRARY={heif_library.as_posix()}")
 
-        if cfg.build_ffmpeg:
+        if ffmpeg_enabled:
             def _normalize_ffmpeg_override(value: str | None) -> str | None:
                 if value is None:
                     return None
@@ -1487,7 +1525,15 @@ class Builder:
     def _oiio_linkstatic_include(self, ctx: BuildContext) -> str:
         include_path = ctx.build_dir / "oiio_linkstatic.cmake"
         extra_libs = self._oiio_extra_static_libs(ctx.install_prefix, ctx.build_type)
-        extra_list = "\n  ".join(extra_libs) if extra_libs else ""
+        def _cmake_quote(value: str) -> str:
+            # CMake treats backslashes as escapes inside strings, so always normalize
+            # Windows paths to forward slashes before embedding.
+            if self.platform.os == "windows":
+                value = value.replace("\\", "/")
+            value = value.replace('"', '\\"')
+            return f"\"{value}\""
+
+        extra_list = "\n  ".join(_cmake_quote(entry) for entry in extra_libs) if extra_libs else ""
         static_defs = self._oiio_static_preprocessor_definitions(ctx.install_prefix)
         static_defs_list = "\n  ".join(static_defs) if static_defs else ""
         content = """\
@@ -1564,7 +1610,7 @@ endif()
             content.replace("__EXTRA_DEFINITIONS__", static_defs_list).replace("__EXTRA_LIBS__", extra_list),
             encoding="utf-8",
         )
-        return str(include_path)
+        return include_path.as_posix() if self.platform.os == "windows" else str(include_path)
 
     def _oiio_extra_static_libs(self, prefix: Path, build_type: str) -> list[str]:
         prefix = prefix.resolve()
@@ -1630,6 +1676,8 @@ endif()
             add_windows_library(["hwy_contrib"])
 
             # LibRaw deps
+            # Prefer the static LCMS2 library to avoid accidentally pulling in
+            # the DLL import library when both exist in the prefix.
             add_windows_library(["lcms2_static", "lcms2"])
             add_windows_library(["jasper"])
 
@@ -1649,7 +1697,10 @@ endif()
             # System libs needed by static deps (minizip-ng, FFmpeg, etc.)
             for syslib in ("bcrypt.lib", "ws2_32.lib", "secur32.lib"):
                 add_entry(syslib)
-            add_entry("ucrtd.lib" if prefer_debug else "ucrt.lib")
+            # `ucrt(d).lib` are the import libraries for the UCRT DLL and should
+            # not be forced for `/MT` builds (it causes CRT mixing).
+            if self._windows_runtime_mode() == "dynamic":
+                add_entry("ucrtd.lib" if prefer_debug else "ucrt.lib")
         else:
             # JXL deps
             add_lib("libjxl_cms.a")
@@ -1695,7 +1746,7 @@ endif()
         # macOS Security framework (minizip-ng uses SecRandomCopyBytes)
         if self.platform.os == "macos":
             add_entry("-Wl,-framework,Security")
-            if self.config.global_cfg.build_ffmpeg:
+            if self._ffmpeg_enabled():
                 for framework_flag in (
                     "-Wl,-framework,AudioToolbox",
                     "-Wl,-framework,VideoToolbox",
@@ -2174,10 +2225,120 @@ endif()
             except OSError:
                 return
 
+    def _ensure_bzip2_package(self, prefix: Path, build_type: str) -> None:
+        if self.dry_run:
+            return
+
+        include_dir = prefix / "include"
+        if not (include_dir / "bzlib.h").exists():
+            return
+
+        libdir = prefix / "lib"
+        if not libdir.exists():
+            return
+
+        debug_postfix = str(self.config.global_cfg.windows.get("debug_postfix", "d"))
+        if self.platform.os == "windows":
+            release_candidates = [
+                libdir / "bz2_static.lib",
+                libdir / "bz2.lib",
+                libdir / "libbz2_static.lib",
+                libdir / "libbz2.lib",
+            ]
+            debug_candidates = [
+                libdir / f"bz2_static{debug_postfix}.lib",
+                libdir / f"bz2{debug_postfix}.lib",
+                libdir / f"libbz2_static{debug_postfix}.lib",
+                libdir / f"libbz2{debug_postfix}.lib",
+            ]
+            fallback_pattern = "*bz2*.lib"
+        else:
+            release_candidates = [libdir / "libbz2_static.a", libdir / "libbz2.a", libdir / "libbz2.so", libdir / "libbz2.dylib"]
+            debug_candidates = [
+                libdir / "libbz2_staticd.a",
+                libdir / "libbz2d.a",
+                libdir / "libbz2_static.a",
+                libdir / "libbz2.a",
+            ]
+            fallback_pattern = "lib*bz2*.*"
+
+        release_lib = next((candidate for candidate in release_candidates if candidate.exists()), None)
+        debug_lib = next((candidate for candidate in debug_candidates if candidate.exists()), None)
+        if release_lib is None and debug_lib is None:
+            matches = sorted(libdir.glob(fallback_pattern))
+            if matches:
+                release_lib = matches[0]
+                debug_lib = matches[0]
+            else:
+                return
+
+        default_lib = release_lib or debug_lib
+        if build_type == "Debug" and debug_lib is not None:
+            default_lib = debug_lib
+        if default_lib is None:
+            return
+
+        cmake_dir = libdir / "cmake" / "BZip2"
+        try:
+            cmake_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return
+
+        include_path = include_dir.as_posix()
+        default_path = default_lib.as_posix()
+        release_path = release_lib.as_posix() if release_lib is not None else ""
+        debug_path = debug_lib.as_posix() if debug_lib is not None else ""
+        config_text = f"""\
+set(BZip2_FOUND TRUE)
+set(BZIP2_FOUND TRUE)
+set(BZip2_INCLUDE_DIR "{include_path}")
+set(BZIP2_INCLUDE_DIR "{include_path}")
+set(BZIP2_INCLUDE_DIRS "{include_path}")
+
+if(NOT TARGET BZip2::BZip2)
+  add_library(BZip2::BZip2 UNKNOWN IMPORTED)
+  set_target_properties(BZip2::BZip2 PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES "{include_path}"
+    IMPORTED_LOCATION "{default_path}"
+  )
+  if(EXISTS "{release_path}")
+    set_property(TARGET BZip2::BZip2 PROPERTY IMPORTED_LOCATION_RELEASE "{release_path}")
+  endif()
+  if(EXISTS "{debug_path}")
+    set_property(TARGET BZip2::BZip2 PROPERTY IMPORTED_LOCATION_DEBUG "{debug_path}")
+  endif()
+endif()
+
+set(BZIP2_LIBRARY BZip2::BZip2)
+set(BZIP2_LIBRARIES BZip2::BZip2)
+"""
+        version_text = """\
+set(PACKAGE_VERSION "1.0.0")
+if(PACKAGE_FIND_VERSION VERSION_GREATER PACKAGE_VERSION)
+  set(PACKAGE_VERSION_COMPATIBLE FALSE)
+else()
+  set(PACKAGE_VERSION_COMPATIBLE TRUE)
+  if(PACKAGE_FIND_VERSION STREQUAL PACKAGE_VERSION)
+    set(PACKAGE_VERSION_EXACT TRUE)
+  endif()
+endif()
+"""
+        for name in ("BZip2Config.cmake", "bzip2-config.cmake"):
+            try:
+                (cmake_dir / name).write_text(config_text, encoding="utf-8")
+            except OSError:
+                return
+        for name in ("BZip2ConfigVersion.cmake", "bzip2-config-version.cmake"):
+            try:
+                (cmake_dir / name).write_text(version_text, encoding="utf-8")
+            except OSError:
+                return
+
     def _ensure_freetype_harfbuzz_compat(self, prefix: Path, build_type: str) -> None:
         if self.dry_run:
             return
 
+        self._ensure_bzip2_package(prefix, build_type)
         self._ensure_harfbuzz_package(prefix, build_type)
 
         freetype_cfg = prefix / "lib" / "cmake" / "freetype" / "freetype-config.cmake"
@@ -2189,9 +2350,6 @@ endif()
         except OSError:
             return
         marker = "# oiio-builder: freetype harfbuzz compatibility"
-        if marker in text:
-            return
-
         needle = "# Compute the installation prefix relative to this file."
         if needle not in text:
             return
@@ -2200,6 +2358,7 @@ endif()
 # oiio-builder: freetype harfbuzz compatibility
 include(CMakeFindDependencyMacro)
 find_dependency(ZLIB QUIET)
+find_dependency(BZip2 QUIET)
 if(NOT TARGET HarfBuzz::HarfBuzz AND NOT TARGET harfbuzz::harfbuzz)
   find_dependency(HarfBuzz CONFIG QUIET)
 endif()
@@ -2212,8 +2371,18 @@ if(TARGET harfbuzz::harfbuzz AND NOT TARGET HarfBuzz::HarfBuzz)
   set_property(TARGET HarfBuzz::HarfBuzz PROPERTY INTERFACE_LINK_LIBRARIES harfbuzz::harfbuzz)
 endif()
 """
+
+        if marker in text:
+            start = text.find(marker)
+            end = text.find(needle, start)
+            if end == -1:
+                return
+            updated = text[:start] + shim + "\n" + text[end:]
+        else:
+            updated = text.replace(needle, shim + "\n" + needle, 1)
+
         try:
-            freetype_cfg.write_text(text.replace(needle, shim + "\n" + needle, 1), encoding="utf-8")
+            freetype_cfg.write_text(updated, encoding="utf-8")
         except OSError:
             return
 
@@ -2308,6 +2477,99 @@ endif()
                 release_lib.symlink_to(debug_lib.name)
             except OSError:
                 release_lib.write_bytes(debug_lib.read_bytes())
+
+    def _prune_lcms2_shared_artifacts(self, prefix: Path) -> None:
+        if self.dry_run or self.platform.os != "windows":
+            return
+
+        libdir = prefix / "lib"
+        bindir = prefix / "bin"
+        if not libdir.is_dir() or not bindir.is_dir():
+            return
+
+        debug_postfix = str(self.config.global_cfg.windows.get("debug_postfix", "d"))
+        static_candidates = [
+            libdir / "lcms2_static.lib",
+            libdir / f"lcms2_static{debug_postfix}.lib",
+        ]
+        if not any(p.exists() for p in static_candidates):
+            return
+
+        dll_candidates = [bindir / "lcms2.dll", bindir / f"lcms2{debug_postfix}.dll"]
+        if not any(p.exists() for p in dll_candidates):
+            return
+
+        # A static prefix should not ship shared LCMS2 artifacts. Leaving stale
+        # DLL/import-lib pairs in the shared Windows prefix can cause accidental
+        # mixing of static and shared LCMS2 in downstream links (LNK2005/LNK1169).
+        for path in dll_candidates + [libdir / "lcms2.lib", libdir / f"lcms2{debug_postfix}.lib"]:
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
+
+    def _ensure_libdeflate_alias(self, prefix: Path, build_type: str) -> None:
+        if self.dry_run or self.platform.os != "windows":
+            return
+
+        libdir = prefix / "lib"
+        if not libdir.exists():
+            return
+
+        debug_postfix = str(self.config.global_cfg.windows.get("debug_postfix", "d"))
+        release_source = libdir / "deflatestatic.lib"
+        debug_source = libdir / f"deflatestatic{debug_postfix}.lib"
+        if not release_source.exists() and not debug_source.exists():
+            return
+        if not debug_source.exists() and release_source.exists():
+            debug_source = release_source
+
+        def _materialize_alias(target: Path, source: Path) -> None:
+            if target.exists() or not source.exists():
+                return
+            try:
+                target.symlink_to(source.name)
+            except OSError:
+                shutil.copy2(source, target)
+
+        _materialize_alias(libdir / "deflate.lib", release_source)
+        _materialize_alias(libdir / f"deflate{debug_postfix}.lib", debug_source)
+        if build_type == "Debug":
+            # Some projects request explicit debug naming even in single-config generators.
+            _materialize_alias(libdir / "deflated.lib", debug_source)
+
+    def _ensure_openjph_windows_alias(self, prefix: Path, build_type: str) -> None:
+        if self.dry_run or self.platform.os != "windows":
+            return
+
+        libdir = prefix / "lib"
+        if not libdir.exists():
+            return
+
+        debug_postfix = str(self.config.global_cfg.windows.get("debug_postfix", "d"))
+        matches = sorted(libdir.glob("openjph*.lib"))
+        if not matches:
+            return
+
+        release_candidates = [m for m in matches if not m.name.lower().endswith(f"{debug_postfix}.lib")]
+        debug_candidates = [m for m in matches if m.name.lower().endswith(f"{debug_postfix}.lib")]
+        release_source = release_candidates[0] if release_candidates else matches[0]
+        debug_source = debug_candidates[0] if debug_candidates else release_source
+
+        def _materialize_alias(target: Path, source: Path) -> None:
+            if target.exists() or not source.exists():
+                return
+            try:
+                target.symlink_to(source.name)
+            except OSError:
+                shutil.copy2(source, target)
+
+        _materialize_alias(libdir / "openjph.lib", release_source)
+        _materialize_alias(libdir / f"openjph{debug_postfix}.lib", debug_source)
+        if build_type == "Debug":
+            _materialize_alias(libdir / "openjphd.lib", debug_source)
 
     def _ensure_bzip2_alias(self, prefix: Path, build_type: str) -> None:
         if self.dry_run:
@@ -2418,6 +2680,23 @@ endif()
                 payload["vcpkg_export_zip_mtime"] = int(st.st_mtime)
         return payload
 
+    def _dep_fingerprint(self, dep: str, build_type: str) -> str | None:
+        """Return a stable fingerprint for a dependency suitable for stamps.
+
+        Prefer the dependency's computed stamp (includes toolchain/flags/patch
+        revisions) and fall back to its git head when no stamp is available.
+        """
+        stamp_path = self.config.global_cfg.build_root / ".stamps" / dep / f"{build_type}.json"
+        existing = read_stamp(stamp_path)
+        if existing:
+            stamp_value = existing.get("stamp")
+            if isinstance(stamp_value, str) and stamp_value:
+                return f"stamp:{stamp_value}"
+        dep_dir = self.repo_paths.get(dep)
+        if dep_dir:
+            return git_head(dep_dir)
+        return None
+
     def _build_repo(self, repo: RepoConfig, build_type: str, deps_heads: dict[str, str | None]) -> tuple[str, str]:
         if not repo.build_system:
             return "skipped", "no-build-system"
@@ -2450,6 +2729,13 @@ endif()
         banner(f"{repo.name} ({build_type})", color="cyan")
 
         env = self._env_for_build(build_type, install_prefix)
+
+        # Prefix compatibility shims that some downstream projects rely on.
+        # These are cheap no-ops if the relevant files don't exist yet.
+        if "libdeflate" in repo.deps:
+            self._ensure_libdeflate_alias(install_prefix, build_type)
+        if "openjph" in repo.deps:
+            self._ensure_openjph_windows_alias(install_prefix, build_type)
 
         if repo.name == "glew":
             self._patch_glew_macos(src_dir)
@@ -2902,8 +3188,15 @@ endif()
             self._make_openexr_pc_override(install_prefix, build_type)
         if repo.name == "openjph" and build_type == "Debug":
             self._ensure_openjph_alias(install_prefix)
+        if repo.name == "openjph":
+            self._ensure_openjph_windows_alias(install_prefix, build_type)
+        if repo.name == "libdeflate":
+            self._ensure_libdeflate_alias(install_prefix, build_type)
+        if repo.name == "lcms2":
+            self._prune_lcms2_shared_artifacts(install_prefix)
         if repo.name == "bzip2":
             self._ensure_bzip2_alias(install_prefix, build_type)
+            self._ensure_bzip2_package(install_prefix, build_type)
         if repo.name == "pystring":
             self._ensure_pystring_package(install_prefix, build_type)
         if repo.name == "harfbuzz":
@@ -2945,11 +3238,13 @@ endif()
                 if self._maybe_skip_missing(repo, src_dir):
                     report.record(build_type, repo.name, "missing", "not-found")
                     continue
-                deps_heads = {
-                    dep: git_head(self.repo_paths[dep])
-                    for dep in repo.deps
-                    if dep in repos_by_name and dep in self.repo_paths
-                }
+                deps_heads: dict[str, str | None] = {}
+                for dep in repo.deps:
+                    if dep not in repos_by_name:
+                        continue
+                    if dep not in self.repo_paths:
+                        continue
+                    deps_heads[dep] = self._dep_fingerprint(dep, build_type)
                 # Decide build system for xz/lcms2 based on config and source layout.
                 if repo.name == "xz":
                     cmake_lists = src_dir / "CMakeLists.txt"

@@ -66,6 +66,7 @@ no_update = true
 # install_prefix = "E:\\DVS"
 # asan_prefix = "E:\\DVS_ASAN"
 # debug_postfix = "d"
+build_ffmpeg = false  # disable FFmpeg (and OpenImageIO ffmpeg plugin) on Windows
 # msvc_runtime: static|dynamic (default: static => /MT, /MTd)
 # msvc_runtime = "static"
 # python_wrappers: auto|on|off (default: auto)
@@ -124,7 +125,8 @@ optional = true
 [[repos]]
 name = "libxml2"
 dir = "libxml2"
-url = ""
+dir_candidates = ["libxml2", "libxml2-*"]
+url = "https://gitlab.gnome.org/GNOME/libxml2.git"
 build_system = "cmake"
 optional = true
 deps = ["xz", "libiconv"]
@@ -183,7 +185,7 @@ build_system = "cmake"
 [[repos]]
 name = "pugixml"
 dir = "pugixml"
-url = ""
+url = "https://github.com/zeux/pugixml.git"
 build_system = "cmake"
 #optional = true
 
@@ -320,7 +322,7 @@ deps = ["imath", "libdeflate", "openjph", "zlib-ng", "pybind11"]
 name = "expat"
 dir = "expat"
 dir_candidates = ["expat/expat", "libexpat/expat", "expat", "libexpat"]
-url = ""
+url = "https://github.com/libexpat/libexpat.git"
 build_system = "cmake"
 #optional = true
 
@@ -348,14 +350,14 @@ deps = ["zlib-ng"]
 [[repos]]
 name = "yaml-cpp"
 dir = "yaml-cpp"
-url = ""
+url = "https://github.com/jbeder/yaml-cpp.git"
 build_system = "cmake"
 #optional = true
 
 [[repos]]
 name = "pystring"
 dir = "pystring"
-url = ""
+url = "https://github.com/imageworks/pystring.git"
 build_system = "cmake"
 #optional = true
 
