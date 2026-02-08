@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 STAMP_REVISION = "3"
 
 
-def cmake_args(builder, _ctx) -> list[str]:
+def cmake_args(builder, ctx) -> list[str]:
     args = [
         "-Dtiff-tests=OFF",
         "-Dtiff-tools=ON",
@@ -15,9 +17,26 @@ def cmake_args(builder, _ctx) -> list[str]:
     ]
     if builder.platform.os == "windows":
         args.append("-Dtiff-opengl=ON")
-        args.append("-DCMAKE_C_FLAGS=/DLZMA_API_STATIC")
-        args.append("-DCMAKE_C_FLAGS_DEBUG=/DFREEGLUT_STATIC")
-        args.append("-DCMAKE_C_FLAGS_RELEASE=/DFREEGLUT_STATIC")
+        # Keep ASAN/Debug flags intact; inject required static-link defines via a
+        # top-level include instead of overwriting CMAKE_*_FLAGS.
+        include_path = Path(ctx.build_dir) / "oiio_builder_libtiff_defines.cmake"
+        try:
+            include_path.write_text(
+                "\n".join(
+                    [
+                        "if(WIN32)",
+                        "  if(NOT BUILD_SHARED_LIBS)",
+                        "    add_compile_definitions(LZMA_API_STATIC FREEGLUT_STATIC)",
+                        "  endif()",
+                        "endif()",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+        args.append(f"-DCMAKE_PROJECT_TOP_LEVEL_INCLUDES={include_path.as_posix()}")
     else:
         args.append("-Dtiff-opengl=OFF")
     return args

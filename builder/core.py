@@ -385,6 +385,11 @@ class Builder:
             utf8_flag = "/utf-8"
             if build_type == "Debug":
                 return f"/Od /Zi {runtime_flag} {utf8_flag}".strip()
+            if build_type == "ASAN":
+                # MSVC ASAN warns (C5072) when no debug info is emitted. This repo
+                # treats warnings as errors for some dependencies (e.g. zlib-ng),
+                # so include `/Zi` even for optimized ASAN builds.
+                return f"/O2 /DNDEBUG {runtime_flag} {utf8_flag} /Zi".strip()
             return f"/O2 /DNDEBUG {runtime_flag} {utf8_flag}".strip()
         if build_type == "Debug":
             flags = "-O0 -g"
@@ -688,9 +693,24 @@ class Builder:
             if self.platform.os == "windows":
                 # libtiff's Findliblzma module doesn't propagate this define for static linking.
                 args.append("-Dtiff-opengl=ON")
-                args.append("-DCMAKE_C_FLAGS=/DLZMA_API_STATIC")
-                args.append("-DCMAKE_C_FLAGS_DEBUG=/DFREEGLUT_STATIC")
-                args.append("-DCMAKE_C_FLAGS_RELEASE=/DFREEGLUT_STATIC")
+                include_path = ctx.build_dir / "oiio_builder_libtiff_defines.cmake"
+                try:
+                    include_path.write_text(
+                        "\n".join(
+                            [
+                                "if(WIN32)",
+                                "  if(NOT BUILD_SHARED_LIBS)",
+                                "    add_compile_definitions(LZMA_API_STATIC FREEGLUT_STATIC)",
+                                "  endif()",
+                                "endif()",
+                                "",
+                            ]
+                        ),
+                        encoding="utf-8",
+                    )
+                except OSError:
+                    pass
+                args.append(f"-DCMAKE_PROJECT_TOP_LEVEL_INCLUDES={include_path.as_posix()}")
             else:
                 args.append("-Dtiff-opengl=OFF")
         elif name == "openjpeg" and not recipe_applied:
