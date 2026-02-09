@@ -25,6 +25,8 @@ def main() -> int:
             "  uv run build.py --build-types Debug,ASAN\n"
             "  uv run build.py --build-types Debug --only OpenImageIO\n"
             "  uv run build.py --build-types Debug --only OpenImageIO --no-ffmpeg\n"
+            "  uv run build.py --tui\n"
+            "  uv run build.py --tui-dialog\n"
             "  uv run build.py --build-types Debug --force\n"
             "  uv run build.py --build-types Debug --force-all\n"
             "  uv run build.py --skip libheif,libwebp\n"
@@ -41,6 +43,8 @@ def main() -> int:
     parser.add_argument("--no-update", action="store_true", help="Skip git fetch/pull (overrides config)")
     parser.add_argument("--update", action="store_true", help="Force git fetch/pull (overrides config)")
     parser.add_argument("--dry-run", action="store_true", help="Print commands only")
+    parser.add_argument("--tui", action="store_true", help="Interactive console UI (no full-screen redraw)")
+    parser.add_argument("--tui-dialog", action="store_true", help="Dialog-based TUI (requires prompt_toolkit)")
     parser.add_argument(
         "--no-ffmpeg",
         action="store_true",
@@ -84,6 +88,20 @@ def main() -> int:
 
     if args.preflight or len(sys.argv) == 1:
         return run_preflight(config, platform_info, no_update=no_update)
+
+    if args.tui and args.tui_dialog:
+        print("error: use only one of --tui or --tui-dialog", flush=True)
+        return 2
+
+    if args.tui:
+        from .console_ui import run_console_ui
+
+        return run_console_ui(config, platform_info, config_path)
+
+    if args.tui_dialog:
+        from .tui import run_tui
+
+        return run_tui(config, platform_info, config_path)
 
     builder = Builder(
         config,

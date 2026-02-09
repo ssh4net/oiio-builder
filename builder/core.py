@@ -150,10 +150,11 @@ class Builder:
 
         def enabled(repo: RepoConfig) -> bool:
             if repo.name == "ffmpeg" and self.platform.os == "windows":
-                if self._ffmpeg_enabled():
+                if self._ffmpeg_enabled() and not self.dry_run:
                     print(
                         "[skip] ffmpeg: native build step is disabled on Windows; "
-                        "prebuilt FFmpeg is consumed via FFmpeg_ROOT/FFMPEG_ROOT or <src_root>/ffmpeg"
+                        "prebuilt FFmpeg is consumed via FFmpeg_ROOT/FFMPEG_ROOT or <src_root>/ffmpeg",
+                        flush=True,
                     )
                 return False
             if repo.name == "libiconv" and self.platform.os != "windows":

@@ -74,6 +74,19 @@ uv run build.py --build-types Debug --only OpenImageIO --no-ffmpeg
 uv run build.py --skip libwebp,libheif
 ```
 
+## TUI (optional)
+
+The interactive UI is optional and intended for quick local iteration:
+- `--tui`: wizard-style console UI (no full-screen redraw)
+- `--tui-dialog`: dialog-based UI (requires `prompt_toolkit`)
+
+```bash
+uv run build.py --tui
+
+uv pip install prompt_toolkit
+uv run build.py --tui-dialog
+```
+
 ## Platform Examples
 
 ### macOS (Apple Clang + libc++)
