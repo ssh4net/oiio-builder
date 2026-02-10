@@ -32,14 +32,13 @@ def run_tui(config: Config, platform: PlatformInfo, config_path: Path) -> int:
         return 2
 
     try:
-        from prompt_toolkit.shortcuts import (
-            checkboxlist_dialog,
-            input_dialog,
-            message_dialog,
-            radiolist_dialog,
-            yes_no_dialog,
-        )
+        from prompt_toolkit.application import Application
+        from prompt_toolkit.key_binding import KeyBindings
+        from prompt_toolkit.layout import Layout
+        from prompt_toolkit.layout.containers import HSplit
+        from prompt_toolkit.shortcuts import input_dialog, message_dialog
         from prompt_toolkit.styles import Style
+        from prompt_toolkit.widgets import Button, CheckboxList, Dialog, Label, RadioList
     except ImportError:
         print(
             "error: prompt_toolkit is required for --tui-dialog.\n"
@@ -74,8 +73,114 @@ def run_tui(config: Config, platform: PlatformInfo, config_path: Path) -> int:
             pass
         return factory(**kwargs)
 
-    def _pick_yes_no(title: str, text: str) -> bool:
-        return bool(_dialog(yes_no_dialog, title=title, text=text).run())
+    def _radio_select(
+        title: str,
+        text: str,
+        values: list[tuple[str, str]],
+        default_value: str | None = None,
+    ) -> str | None:
+        radio = RadioList(values=values)
+        if default_value is not None:
+            try:
+                radio.current_value = default_value
+            except Exception:
+                pass
+
+        app: Application | None = None
+
+        def _accept() -> None:
+            assert app is not None
+            app.exit(result=radio.current_value)
+
+        def _cancel() -> None:
+            assert app is not None
+            app.exit(result=None)
+
+        dialog = Dialog(
+            title=title,
+            body=HSplit([Label(text=text), radio], padding=1),
+            buttons=[Button(text="OK", handler=_accept), Button(text="Cancel", handler=_cancel)],
+            with_background=True,
+        )
+
+        kb = KeyBindings()
+
+        @kb.add("enter")
+        def _on_enter(event) -> None:
+            _accept()
+
+        @kb.add("escape")
+        def _on_escape(event) -> None:
+            _cancel()
+
+        app = Application(layout=Layout(dialog), key_bindings=kb, style=grayscale_style, full_screen=True)
+        app.layout.focus(radio)
+        return app.run()
+
+    def _checkbox_select(
+        title: str,
+        text: str,
+        values: list[tuple[str, str]],
+        default_values: set[str] | None = None,
+    ) -> set[str] | None:
+        kwargs: dict[str, object] = {"values": values}
+        if default_values is not None:
+            try:
+                if "default_values" in inspect.signature(CheckboxList).parameters:
+                    kwargs["default_values"] = list(sorted(default_values))
+            except (TypeError, ValueError):
+                pass
+        checklist = CheckboxList(**kwargs)
+
+        app: Application | None = None
+
+        def _accept() -> None:
+            assert app is not None
+            app.exit(result=list(checklist.current_values))
+
+        def _cancel() -> None:
+            assert app is not None
+            app.exit(result=None)
+
+        dialog = Dialog(
+            title=title,
+            body=HSplit([Label(text=text), checklist], padding=1),
+            buttons=[Button(text="OK", handler=_accept), Button(text="Cancel", handler=_cancel)],
+            with_background=True,
+        )
+
+        kb = KeyBindings()
+
+        @kb.add("enter")
+        def _on_enter(event) -> None:
+            _accept()
+
+        @kb.add("escape")
+        def _on_escape(event) -> None:
+            _cancel()
+
+        app = Application(layout=Layout(dialog), key_bindings=kb, style=grayscale_style, full_screen=True)
+        app.layout.focus(checklist)
+        checked = app.run()
+        if checked is None:
+            return None
+        return {str(v) for v in checked}
+
+    def _pick_yes_no(title: str, text: str, default: bool | None = None) -> bool | None:
+        default_value = None
+        if default is True:
+            default_value = "yes"
+        elif default is False:
+            default_value = "no"
+        result = _radio_select(
+            title=title,
+            text=text,
+            values=[("yes", "Yes"), ("no", "No")],
+            default_value=default_value,
+        )
+        if result is None:
+            return None
+        return result == "yes"
 
     def _pause_after_output(exit_code: int = 0) -> int | None:
         """Avoid immediately re-opening the full-screen UI after printing lots of output.
@@ -91,42 +196,23 @@ def run_tui(config: Config, platform: PlatformInfo, config_path: Path) -> int:
         return None
 
     def _pick_action() -> str:
-        value = (
-            _dialog(
-                radiolist_dialog,
-                title="oiio-builder",
-                text="Select an action:",
-                values=[
-                    ("configure", "Configure"),
-                    ("build", "Build"),
-                    ("preflight", "Preflight report"),
-                    ("clone", "Clone missing repos"),
-                    ("update", "Update repos (fetch/pull)"),
-                    ("list-repos", "List repos (print to terminal)"),
-                    ("print-prefixes", "Print prefixes (print to terminal)"),
-                    ("quit", "Quit"),
-                ],
-            ).run()
-            or "quit"
+        value = _radio_select(
+            title="oiio-builder",
+            text="Select an action:",
+            values=[
+                ("configure", "Configure"),
+                ("build", "Build"),
+                ("preflight", "Preflight report"),
+                ("clone", "Clone missing repos"),
+                ("update", "Update repos (fetch/pull)"),
+                ("list-repos", "List repos (print to terminal)"),
+                ("print-prefixes", "Print prefixes (print to terminal)"),
+                ("quit", "Quit"),
+            ],
         )
+        if not value:
+            value = "quit"
         return str(value)
-
-    def _checkboxlist(
-        title: str, text: str, values: list[tuple[str, str]], default_values: set[str] | None = None
-    ) -> set[str] | None:
-        kwargs = {"title": title, "text": text, "values": values}
-        if default_values is not None:
-            try:
-                sig = inspect.signature(checkboxlist_dialog)
-                if "default_values" in sig.parameters:
-                    kwargs["default_values"] = list(sorted(default_values))
-            except (TypeError, ValueError):
-                # Best-effort: older prompt_toolkit versions may not support defaults.
-                pass
-        checked = _dialog(checkboxlist_dialog, **kwargs).run()
-        if checked is None:
-            return None
-        return {str(v) for v in checked}
 
     def _probe_repos(no_update: bool) -> Builder | None:
         saved_only = set(config.only)
@@ -166,7 +252,7 @@ def run_tui(config: Config, platform: PlatformInfo, config_path: Path) -> int:
             values.append((repo.name, label))
 
         default_roots = set(config.only) if config.only else {r.name for r in probe.repos if r.name not in config.skip}
-        return _checkboxlist(
+        return _checkbox_select(
             title="Root repos",
             text="Select root repos to build (deps are added automatically).\n"
             "Tip: leave empty to build all enabled repos.",
@@ -190,7 +276,7 @@ def run_tui(config: Config, platform: PlatformInfo, config_path: Path) -> int:
                 label = _repo_label(probe, repo.name, found)
             values.append((repo.name, label))
 
-        return _checkboxlist(
+        return _checkbox_select(
             title="Skip repos",
             text="Select repos to skip for this run.",
             values=values,
@@ -200,7 +286,7 @@ def run_tui(config: Config, platform: PlatformInfo, config_path: Path) -> int:
     def _pick_build_types() -> list[str] | None:
         values = [("Debug", "Debug"), ("Release", "Release"), ("ASAN", "ASAN")]
         current_set = {d for d in config.build_types if d in {"Debug", "Release", "ASAN"}}
-        checked = _checkboxlist(
+        checked = _checkbox_select(
             title="Build types",
             text=f"Select build types (current: {', '.join(sorted(current_set)) or 'none'}):",
             values=values,
@@ -212,8 +298,7 @@ def run_tui(config: Config, platform: PlatformInfo, config_path: Path) -> int:
         return selected or None
 
     def _pick_force_mode() -> tuple[bool, bool] | None:
-        mode = _dialog(
-            radiolist_dialog,
+        mode = _radio_select(
             title="Rebuild policy",
             text="Select rebuild policy:",
             values=[
@@ -221,7 +306,7 @@ def run_tui(config: Config, platform: PlatformInfo, config_path: Path) -> int:
                 ("force", "Force selected repos (equivalent to --force)"),
                 ("force-all", "Force all repos in run (equivalent to --force-all)"),
             ],
-        ).run()
+        )
         if not mode:
             return None
         if mode == "force-all":
@@ -233,8 +318,7 @@ def run_tui(config: Config, platform: PlatformInfo, config_path: Path) -> int:
     def _pick_windows_build_settings() -> None:
         win_cfg = config.global_cfg.windows
         current_gen = str(win_cfg.get("generator", "ninja-msvc"))
-        gen = _dialog(
-            radiolist_dialog,
+        gen = _radio_select(
             title="Windows generator",
             text=f"Select generator (current: {current_gen}):",
             values=[
@@ -243,26 +327,26 @@ def run_tui(config: Config, platform: PlatformInfo, config_path: Path) -> int:
                 ("msvc-clang-cl", "msvc-clang-cl (VS generator + clang-cl)"),
                 ("ninja-clang-cl", "ninja-clang-cl (Ninja + clang-cl)"),
             ],
-        ).run()
+            default_value=current_gen,
+        )
         if gen:
             win_cfg["generator"] = str(gen)
 
         current_rt = str(win_cfg.get("msvc_runtime", "static"))
-        rt = _dialog(
-            radiolist_dialog,
+        rt = _radio_select(
             title="MSVC runtime",
             text=f"Select MSVC runtime (current: {current_rt}):",
             values=[
                 ("static", "static (/MT, /MTd)"),
                 ("dynamic", "dynamic (/MD, /MDd)"),
             ],
-        ).run()
+            default_value=current_rt,
+        )
         if rt:
             win_cfg["msvc_runtime"] = str(rt)
 
         current_wrappers = str(win_cfg.get("python_wrappers", "auto"))
-        wrappers = _dialog(
-            radiolist_dialog,
+        wrappers = _radio_select(
             title="Python wrappers",
             text=f"OpenColorIO/OpenEXR python wrappers (current: {current_wrappers}):",
             values=[
@@ -270,7 +354,8 @@ def run_tui(config: Config, platform: PlatformInfo, config_path: Path) -> int:
                 ("on", "on (force enabled)"),
                 ("off", "off (force disabled)"),
             ],
-        ).run()
+            default_value=current_wrappers,
+        )
         if wrappers:
             win_cfg["python_wrappers"] = str(wrappers)
 
@@ -305,8 +390,7 @@ def run_tui(config: Config, platform: PlatformInfo, config_path: Path) -> int:
         while True:
             roots_note = ", ".join(sorted(config.only)) if config.only else "(all enabled)"
             skip_note = ", ".join(sorted(config.skip)) if config.skip else "(none)"
-            choice = _dialog(
-                radiolist_dialog,
+            choice = _radio_select(
                 title="Configure",
                 text=(
                     f"Roots: {roots_note}\n"
@@ -330,7 +414,7 @@ def run_tui(config: Config, platform: PlatformInfo, config_path: Path) -> int:
                     ("windows", "Windows toolchain settings"),
                     ("back", "Back"),
                 ],
-            ).run()
+            )
             if not choice or choice == "back":
                 return
             if choice == "roots":
@@ -387,11 +471,17 @@ def run_tui(config: Config, platform: PlatformInfo, config_path: Path) -> int:
                 if build_text is not None:
                     config.global_cfg.build_root = _expand_path(str(build_text), config.global_cfg.repo_root)
 
+                prefix_base_display = "(default)"
+                prefix_base_default = ""
+                if config.global_cfg.prefix_base:
+                    prefix_base_path = _expand_path(str(config.global_cfg.prefix_base), config.global_cfg.repo_root)
+                    prefix_base_display = str(prefix_base_path)
+                    prefix_base_default = str(prefix_base_path)
                 prefix_text = _dialog(
                     input_dialog,
                     title="Paths",
-                    text=f"prefix_base (empty = default). Current: {config.global_cfg.prefix_base or '(default)'}",
-                    default=str(config.global_cfg.prefix_base or ""),
+                    text=f"prefix_base (empty = default). Current: {prefix_base_display}",
+                    default=prefix_base_default,
                 ).run()
                 if prefix_text is not None:
                     trimmed = str(prefix_text).strip()
@@ -399,11 +489,17 @@ def run_tui(config: Config, platform: PlatformInfo, config_path: Path) -> int:
 
                 if platform.os == "windows":
                     win_cfg = config.global_cfg.windows
+                    install_display = win_cfg.get("install_prefix") or ""
+                    try:
+                        if install_display:
+                            install_display = str(_expand_path(str(install_display), config.global_cfg.repo_root))
+                    except Exception:
+                        install_display = str(win_cfg.get("install_prefix") or "")
                     install_text = _dialog(
                         input_dialog,
                         title="Paths",
-                        text=f"windows.install_prefix (empty = unset). Current: {win_cfg.get('install_prefix') or '(unset)'}",
-                        default=str(win_cfg.get("install_prefix") or ""),
+                        text=f"windows.install_prefix (empty = unset). Current: {install_display or '(unset)'}",
+                        default=install_display,
                     ).run()
                     if install_text is not None:
                         trimmed = str(install_text).strip()
@@ -412,11 +508,17 @@ def run_tui(config: Config, platform: PlatformInfo, config_path: Path) -> int:
                         else:
                             win_cfg.pop("install_prefix", None)
 
+                    asan_display = win_cfg.get("asan_prefix") or ""
+                    try:
+                        if asan_display:
+                            asan_display = str(_expand_path(str(asan_display), config.global_cfg.repo_root))
+                    except Exception:
+                        asan_display = str(win_cfg.get("asan_prefix") or "")
                     asan_text = _dialog(
                         input_dialog,
                         title="Paths",
-                        text=f"windows.asan_prefix (empty = unset). Current: {win_cfg.get('asan_prefix') or '(unset)'}",
-                        default=str(win_cfg.get("asan_prefix") or ""),
+                        text=f"windows.asan_prefix (empty = unset). Current: {asan_display or '(unset)'}",
+                        default=asan_display,
                     ).run()
                     if asan_text is not None:
                         trimmed = str(asan_text).strip()
@@ -426,23 +528,30 @@ def run_tui(config: Config, platform: PlatformInfo, config_path: Path) -> int:
                             win_cfg.pop("asan_prefix", None)
                 continue
             if choice == "toggles":
-                dry_run = _pick_yes_no("Dry run", f"Dry run (print commands only)?\nCurrent: {'ON' if dry_run else 'OFF'}")
+                val = _pick_yes_no("Dry run", f"Dry run (print commands only)?\nCurrent: {'ON' if dry_run else 'OFF'}", default=dry_run)
+                if val is not None:
+                    dry_run = val
 
                 update_now = _pick_yes_no(
                     "Git update",
                     f"Update repos (git fetch/pull) on build?\nCurrent: {'OFF' if no_update else 'ON'}",
+                    default=not no_update,
                 )
-                no_update = not update_now
+                if update_now is not None:
+                    no_update = not update_now
 
                 fm = _pick_force_mode()
                 if fm is not None:
                     force, force_all = fm
 
                 if platform.os == "windows":
-                    no_ffmpeg = _pick_yes_no(
+                    val = _pick_yes_no(
                         "FFmpeg",
                         f"Disable FFmpeg (OpenImageIO ffmpeg plugin detection)?\nCurrent: {'ON' if no_ffmpeg else 'OFF'}",
+                        default=no_ffmpeg,
                     )
+                    if val is not None:
+                        no_ffmpeg = val
                     if no_ffmpeg:
                         config.global_cfg.build_ffmpeg = False
                         config.global_cfg.windows["build_ffmpeg"] = False
@@ -523,7 +632,7 @@ def run_tui(config: Config, platform: PlatformInfo, config_path: Path) -> int:
                 continue
 
             prompt = "Proceed with git fetch/pull for planned repos?" if update_repos else "Proceed with cloning missing planned repos?"
-            if not _pick_yes_no("Confirm", prompt):
+            if _pick_yes_no("Confirm", prompt, default=False) is not True:
                 continue
 
             try:
@@ -577,7 +686,7 @@ def run_tui(config: Config, platform: PlatformInfo, config_path: Path) -> int:
             summary_lines.append(f"MSVC runtime: {win_cfg.get('msvc_runtime', 'static')}")
             summary_lines.append(f"Python wrappers: {win_cfg.get('python_wrappers', 'auto')}")
 
-        if not _pick_yes_no("Confirm", "\n".join(summary_lines) + "\n\nProceed with build?"):
+        if _pick_yes_no("Confirm", "\n".join(summary_lines) + "\n\nProceed with build?", default=False) is not True:
             continue
 
         builder = _builder_for_action(

@@ -337,15 +337,29 @@ def _menu_paths(config: Config, platform: PlatformInfo, state: UiState) -> None:
         print(f"repo_root: {config.global_cfg.repo_root}")
         print(f"1) src_root: {config.global_cfg.src_root}")
         print(f"2) build_root: {config.global_cfg.build_root}")
-        print(f"3) prefix_base: {config.global_cfg.prefix_base or '(default)'}")
+        if config.global_cfg.prefix_base:
+            prefix_base_display = _expand_path(config.global_cfg.prefix_base, config.global_cfg.repo_root)
+            print(f"3) prefix_base: {prefix_base_display}")
+        else:
+            print("3) prefix_base: (default)")
         n = 3
         if platform.os == "windows":
             win_cfg = config.global_cfg.windows
             n += 1
-            print(f"{n}) windows.install_prefix: {win_cfg.get('install_prefix') or '(unset)'}")
+            install_prefix = win_cfg.get("install_prefix")
+            if install_prefix:
+                install_display = _expand_path(str(install_prefix), config.global_cfg.repo_root)
+                print(f"{n}) windows.install_prefix: {install_display}")
+            else:
+                print(f"{n}) windows.install_prefix: (unset)")
             n_install = n
             n += 1
-            print(f"{n}) windows.asan_prefix: {win_cfg.get('asan_prefix') or '(unset)'}")
+            asan_prefix = win_cfg.get("asan_prefix")
+            if asan_prefix:
+                asan_display = _expand_path(str(asan_prefix), config.global_cfg.repo_root)
+                print(f"{n}) windows.asan_prefix: {asan_display}")
+            else:
+                print(f"{n}) windows.asan_prefix: (unset)")
             n_asan = n
         else:
             n_install = -1

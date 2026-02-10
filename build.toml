@@ -5,7 +5,7 @@ build_root = "./developer/_build"
 # - suffix (legacy): Release=<prefix_base>, Debug=<prefix_base><debug_suffix>, ASAN=<prefix_base><asan_suffix>
 # - by-build-type: Release=<prefix_base>/Release, Debug=<prefix_base>/Debug, ASAN=<prefix_base>/ASAN
 prefix_layout = "by-build-type"
-prefix_base = "./developer"
+prefix_base = "./developer/install"
 # Build types can be narrowed via --build-types Debug,Release
 build_types = ["Debug", "Release", "ASAN"]
 # Global language and toolchain policy

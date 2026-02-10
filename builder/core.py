@@ -234,25 +234,28 @@ class Builder:
             win_cfg = cfg.windows
             layout = str(getattr(cfg, "prefix_layout", "suffix")).strip().lower()
             if layout == "by-build-type":
-                root = cfg.prefix_base or str(cfg.repo_root / "developer")
-                root = os.path.expanduser(os.path.expandvars(str(root)))
-                root_path = Path(root)
-                if not root_path.is_absolute():
-                    root_path = (cfg.repo_root / root_path).resolve()
+                def _resolve_prefix(raw: str) -> Path:
+                    expanded = os.path.expanduser(os.path.expandvars(str(raw)))
+                    path = Path(expanded)
+                    if not path.is_absolute():
+                        path = (cfg.repo_root / path).resolve()
+                    return path
 
-                base = win_cfg.get("install_prefix") or str(root_path / "install")
-                base = os.path.expanduser(os.path.expandvars(str(base)))
-                base_path = Path(base)
-                if not base_path.is_absolute():
-                    base_path = (cfg.repo_root / base_path).resolve()
+                base_raw = win_cfg.get("install_prefix") or cfg.prefix_base
+                if not base_raw:
+                    base_raw = str(cfg.repo_root / "developer" / "install")
+                base_path = _resolve_prefix(str(base_raw))
                 prefixes["Release"] = base_path
                 prefixes["Debug"] = base_path
                 if "ASAN" in cfg.build_types:
-                    asan_base = win_cfg.get("asan_prefix") or str(root_path / "asan")
-                    asan_base = os.path.expanduser(os.path.expandvars(str(asan_base)))
-                    asan_path = Path(asan_base)
-                    if not asan_path.is_absolute():
-                        asan_path = (cfg.repo_root / asan_path).resolve()
+                    asan_raw = win_cfg.get("asan_prefix")
+                    if asan_raw:
+                        asan_path = _resolve_prefix(str(asan_raw))
+                    else:
+                        if base_path.name.lower() == "install":
+                            asan_path = base_path.parent / "asan"
+                        else:
+                            asan_path = Path(f"{base_path}_ASAN")
                     prefixes["ASAN"] = asan_path
                 return prefixes
 

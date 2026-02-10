@@ -5,7 +5,7 @@ from pathlib import Path
 import shutil
 import os
 
-from .config import Config
+from .config import Config, _expand_path
 from .core import Builder
 from .platform import PlatformInfo
 
@@ -89,7 +89,12 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
     lines.append(f"  repo_root: {config.global_cfg.repo_root}")
     lines.append(f"  src_root: {config.global_cfg.src_root}")
     lines.append(f"  build_root: {config.global_cfg.build_root}")
-    lines.append(f"  prefix_base: {config.global_cfg.prefix_base or '(default)'}")
+    prefix_base = config.global_cfg.prefix_base
+    if prefix_base:
+        prefix_base_display = str(_expand_path(prefix_base, config.global_cfg.repo_root))
+    else:
+        prefix_base_display = "(default)"
+    lines.append(f"  prefix_base: {prefix_base_display}")
     for key in ("Release", "Debug", "ASAN"):
         prefix = builder.prefixes.get(key)
         if prefix:
