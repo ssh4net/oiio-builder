@@ -1,8 +1,11 @@
 [global]
-src_root = ".."
-build_root = "../_build_py"
-# Optional base prefix for Unix. If unset, defaults to ./_install/UBS under repo.
-prefix_base = "../_install/UBS"
+src_root = "./developer"
+build_root = "./developer/_build"
+# Prefix layout:
+# - suffix (legacy): Release=<prefix_base>, Debug=<prefix_base><debug_suffix>, ASAN=<prefix_base><asan_suffix>
+# - by-build-type: Release=<prefix_base>/Release, Debug=<prefix_base>/Debug, ASAN=<prefix_base>/ASAN
+prefix_layout = "by-build-type"
+prefix_base = "./developer"
 # Build types can be narrowed via --build-types Debug,Release
 build_types = ["Debug", "Release", "ASAN"]
 # Global language and toolchain policy
@@ -14,7 +17,7 @@ static_default = true
 pic = true
 # jobs = 0 means auto
 jobs = 0
-# Unix suffixes for Debug/ASAN prefixes
+# Unix suffixes for Debug/ASAN prefixes (used only when prefix_layout="suffix")
 debug_suffix = "d"
 asan_suffix = "asn"
 
@@ -63,8 +66,8 @@ no_update = true
 [windows]
 # generator: msvc, ninja-msvc, msvc-clang-cl, ninja-clang-cl
 # generator = "ninja-clang-cl"
-# install_prefix = "E:\\DVS"
-# asan_prefix = "E:\\DVS_ASAN"
+install_prefix = "./developer/install"
+asan_prefix = "./developer/asan"
 # debug_postfix = "d"
 build_ffmpeg = false  # disable FFmpeg (and OpenImageIO ffmpeg plugin) on Windows
 # msvc_runtime: static|dynamic (default: static => /MT, /MTd)

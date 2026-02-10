@@ -27,7 +27,12 @@ uv run build.py --build-types Debug,Release --only zlib-ng,libpng
 The builder reads `build.toml` from the repo root.
 
 Key options:
-- `prefix_base`: base install prefix on Unix. Debug/ASAN add `d`/`a` suffixes.
+- `src_root`: where repos are cloned (default in this repo: `./developer`).
+- `build_root`: where per-repo build dirs and stamps live (default: `./developer/_build`).
+- `prefix_layout`:
+  - `by-build-type`: per-config prefixes (Unix: `Release/Debug/ASAN` subdirs; Windows: `install` + `asan`).
+  - `suffix`: legacy Unix layout using `debug_suffix`/`asan_suffix`.
+- `prefix_base`: prefix root used by `prefix_layout` (default in this repo: `./developer`).
 - `build_types`: list of configs to build (`Debug`, `Release`, `ASAN`).
 - `use_libcxx`: default on macOS/Linux; set `false` to use libstdc++.
 - `build_*` toggles: enable/disable stacks (GL, EXR, image IO, etc.).
@@ -42,11 +47,13 @@ Key options:
 
 ## Prefix Rules
 
-- macOS/Linux:
-  - `prefix_base=/mnt/f/UBS` → Release: `/mnt/f/UBS`, Debug: `/mnt/f/UBSd`, ASAN: `/mnt/f/UBSa`
+- macOS/Linux (`prefix_layout="by-build-type"`):
+  - `prefix_base=/mnt/f/dev` → Release: `/mnt/f/dev/Release`, Debug: `/mnt/f/dev/Debug`, ASAN: `/mnt/f/dev/ASAN`
+- macOS/Linux (`prefix_layout="suffix"`):
+  - `prefix_base=/mnt/f/UBS` → Release: `/mnt/f/UBS`, Debug: `/mnt/f/UBSd`, ASAN: `/mnt/f/UBSasn`
 - Windows:
   - Debug and Release share one prefix (debug builds first).
-  - ASAN can use a separate prefix (e.g., `E:\\DVS_ASAN`).
+  - ASAN can use a separate prefix (e.g., `./developer/asan`).
 
 ## Common Commands
 
@@ -152,7 +159,7 @@ DOXYGEN_EXECUTABLE = "C:\\Program Files\\doxygen\\bin\\doxygen.exe"
 
 ## Notes
 
-- The builder uses stamps in `../_build_py/.stamps` to skip rebuilds when
+- The builder uses stamps in `./developer/_build/.stamps` (by default) to skip rebuilds when
   no repo/toolchain/flag changes are detected.
 - Uncommitted working tree changes are not detected yet (use `--force` if needed).
 - Optional repos (e.g., `yaml-cpp`, `pystring`, `pugixml`, `expat`) are skipped if missing.

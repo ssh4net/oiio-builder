@@ -232,6 +232,30 @@ class Builder:
         prefixes: dict[str, Path] = {}
         if self.platform.os == "windows":
             win_cfg = cfg.windows
+            layout = str(getattr(cfg, "prefix_layout", "suffix")).strip().lower()
+            if layout == "by-build-type":
+                root = cfg.prefix_base or str(cfg.repo_root / "developer")
+                root = os.path.expanduser(os.path.expandvars(str(root)))
+                root_path = Path(root)
+                if not root_path.is_absolute():
+                    root_path = (cfg.repo_root / root_path).resolve()
+
+                base = win_cfg.get("install_prefix") or str(root_path / "install")
+                base = os.path.expanduser(os.path.expandvars(str(base)))
+                base_path = Path(base)
+                if not base_path.is_absolute():
+                    base_path = (cfg.repo_root / base_path).resolve()
+                prefixes["Release"] = base_path
+                prefixes["Debug"] = base_path
+                if "ASAN" in cfg.build_types:
+                    asan_base = win_cfg.get("asan_prefix") or str(root_path / "asan")
+                    asan_base = os.path.expanduser(os.path.expandvars(str(asan_base)))
+                    asan_path = Path(asan_base)
+                    if not asan_path.is_absolute():
+                        asan_path = (cfg.repo_root / asan_path).resolve()
+                    prefixes["ASAN"] = asan_path
+                return prefixes
+
             base = win_cfg.get("install_prefix") or cfg.prefix_base
             if not base:
                 base = str(cfg.repo_root / "_install" / "WIN")
@@ -250,6 +274,18 @@ class Builder:
                 if not asan_path.is_absolute():
                     asan_path = (cfg.repo_root / asan_path).resolve()
                 prefixes["ASAN"] = asan_path
+            return prefixes
+
+        layout = str(getattr(cfg, "prefix_layout", "suffix")).strip().lower()
+        if layout == "by-build-type":
+            root = cfg.prefix_base or str(cfg.repo_root / "developer")
+            root = os.path.expanduser(os.path.expandvars(str(root)))
+            root_path = Path(root)
+            if not root_path.is_absolute():
+                root_path = (cfg.repo_root / root_path).resolve()
+            prefixes["Release"] = root_path / "Release"
+            prefixes["Debug"] = root_path / "Debug"
+            prefixes["ASAN"] = root_path / "ASAN"
             return prefixes
 
         base = cfg.prefix_base

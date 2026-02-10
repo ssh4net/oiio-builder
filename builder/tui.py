@@ -77,6 +77,19 @@ def run_tui(config: Config, platform: PlatformInfo, config_path: Path) -> int:
     def _pick_yes_no(title: str, text: str) -> bool:
         return bool(_dialog(yes_no_dialog, title=title, text=text).run())
 
+    def _pause_after_output(exit_code: int = 0) -> int | None:
+        """Avoid immediately re-opening the full-screen UI after printing lots of output.
+
+        Returning None means "continue in TUI"; returning an int means "exit TUI with this code".
+        """
+        try:
+            choice = input("Press Enter to return to the TUI menu, or type 'q' to quit: ").strip().lower()
+        except EOFError:
+            return None
+        if choice in {"q", "quit", "exit"}:
+            return int(exit_code)
+        return None
+
     def _pick_action() -> str:
         value = (
             _dialog(
@@ -152,12 +165,13 @@ def run_tui(config: Config, platform: PlatformInfo, config_path: Path) -> int:
                 label = _repo_label(probe, repo.name, found)
             values.append((repo.name, label))
 
+        default_roots = set(config.only) if config.only else {r.name for r in probe.repos if r.name not in config.skip}
         return _checkboxlist(
             title="Root repos",
             text="Select root repos to build (deps are added automatically).\n"
             "Tip: leave empty to build all enabled repos.",
             values=values,
-            default_values=set(config.only),
+            default_values=default_roots,
         )
 
     def _pick_skip(no_update: bool) -> set[str] | None:
@@ -471,7 +485,9 @@ def run_tui(config: Config, platform: PlatformInfo, config_path: Path) -> int:
 
         if action == "preflight":
             run_preflight(config, platform, no_update=no_update)
-            _dialog(message_dialog, title="Preflight", text="Preflight report printed to terminal output.").run()
+            code = _pause_after_output(0)
+            if code is not None:
+                return code
             continue
 
         if action == "list-repos":
@@ -481,7 +497,9 @@ def run_tui(config: Config, platform: PlatformInfo, config_path: Path) -> int:
             print("")
             for repo in builder.repos:
                 print(repo.name)
-            _dialog(message_dialog, title="Repos", text="Repo list printed to terminal output.").run()
+            code = _pause_after_output(0)
+            if code is not None:
+                return code
             continue
 
         if action == "print-prefixes":
@@ -493,7 +511,9 @@ def run_tui(config: Config, platform: PlatformInfo, config_path: Path) -> int:
                 value = builder.prefixes.get(key)
                 if value:
                     print(f"{key}: {value}")
-            _dialog(message_dialog, title="Prefixes", text="Prefixes printed to terminal output.").run()
+            code = _pause_after_output(0)
+            if code is not None:
+                return code
             continue
 
         if action in {"clone", "update"}:
@@ -527,7 +547,9 @@ def run_tui(config: Config, platform: PlatformInfo, config_path: Path) -> int:
                 _dialog(message_dialog, title="Git error", text=str(e) or e.__class__.__name__).run()
                 traceback.print_exc()
                 continue
-            _dialog(message_dialog, title="Git", text="Done.").run()
+            code = _pause_after_output(0)
+            if code is not None:
+                return code
             continue
 
         if action != "build":
@@ -572,4 +594,6 @@ def run_tui(config: Config, platform: PlatformInfo, config_path: Path) -> int:
             _dialog(message_dialog, title="Build failed", text=str(e) or e.__class__.__name__).run()
             traceback.print_exc()
             continue
-        _dialog(message_dialog, title="Build finished", text=f"Exit code: {rc}").run()
+        code = _pause_after_output(rc)
+        if code is not None:
+            return code

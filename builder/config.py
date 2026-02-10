@@ -32,6 +32,7 @@ class GlobalConfig:
     src_root: Path
     build_root: Path
     prefix_base: str | None
+    prefix_layout: str  # "suffix" (legacy) or "by-build-type"
     build_types: list[str]
     cxx_standard: int
     cxx_extensions: bool
@@ -137,6 +138,15 @@ def load_config(path: Path) -> Config:
         prefix_base = os.path.expanduser(prefix_base)
         prefix_base = prefix_base.strip() or None
 
+    prefix_layout_raw = global_data.get("prefix_layout", "suffix")
+    prefix_layout = str(prefix_layout_raw).strip().lower().replace("_", "-")
+    if prefix_layout in {"suffix", "legacy", "legacy-suffix"}:
+        prefix_layout = "suffix"
+    elif prefix_layout in {"by-build-type", "by-buildtype", "per-build-type", "per-buildtype"}:
+        prefix_layout = "by-build-type"
+    else:
+        raise ValueError(f"Invalid [global].prefix_layout={prefix_layout_raw!r} (expected 'suffix' or 'by-build-type')")
+
     build_types = global_data.get("build_types", ["Debug", "Release", "ASAN"])
     build_types = [v.capitalize() if v.lower() != "asan" else "ASAN" for v in build_types]
 
@@ -151,6 +161,7 @@ def load_config(path: Path) -> Config:
         src_root=src_root,
         build_root=build_root,
         prefix_base=prefix_base,
+        prefix_layout=prefix_layout,
         build_types=build_types,
         cxx_standard=int(global_data.get("cxx_standard", 20)),
         cxx_extensions=bool(global_data.get("cxx_extensions", False)),
