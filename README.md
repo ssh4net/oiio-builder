@@ -32,7 +32,7 @@ Key options:
 - `prefix_layout`:
   - `by-build-type`: per-config prefixes (Unix: `Release/Debug/ASAN` subdirs; Windows: `install` + `asan`).
   - `suffix`: legacy Unix layout using `debug_suffix`/`asan_suffix`.
-- `prefix_base`: prefix root used by `prefix_layout` (default in this repo: `./developer`).
+- `prefix_base`: prefix root used by `prefix_layout` (default in this repo: `./developer/install`).
 - `build_types`: list of configs to build (`Debug`, `Release`, `ASAN`).
 - `use_libcxx`: default on macOS/Linux; set `false` to use libstdc++.
 - `build_*` toggles: enable/disable stacks (GL, EXR, image IO, etc.).
@@ -79,19 +79,6 @@ uv run build.py --build-types Debug --only OpenImageIO --no-ffmpeg
 
 # Skip certain repos
 uv run build.py --skip libwebp,libheif
-```
-
-## TUI (optional)
-
-The interactive UI is optional and intended for quick local iteration:
-- `--tui`: wizard-style console UI (no full-screen redraw)
-- `--tui-dialog`: dialog-based UI (requires `prompt_toolkit`)
-
-```bash
-uv run build.py --tui
-
-uv pip install prompt_toolkit
-uv run build.py --tui-dialog
 ```
 
 ## Platform Examples

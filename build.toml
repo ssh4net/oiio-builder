@@ -324,9 +324,10 @@ deps = ["imath", "libdeflate", "openjph", "zlib-ng", "pybind11"]
 [[repos]]
 name = "expat"
 dir = "expat"
-dir_candidates = ["expat/expat", "libexpat/expat", "expat", "libexpat"]
+dir_candidates = ["libexpat"]
 url = "https://github.com/libexpat/libexpat.git"
 build_system = "cmake"
+source_subdir = "expat"
 #optional = true
 
 [[repos]]
