@@ -383,6 +383,47 @@ class Builder:
             )
         return toolchain
 
+    def _ensure_ffmpeg_posix_line_endings(self, src_dir: Path) -> None:
+        if self.platform.os == "windows":
+            return
+
+        probe_paths = [
+            src_dir / "configure",
+            src_dir / "libavcodec" / "bitstream_filters.c",
+            src_dir / "libavcodec" / "allcodecs.c",
+            src_dir / "libavcodec" / "Makefile",
+        ]
+        files_with_cr: list[Path] = []
+        checked = 0
+        for probe in probe_paths:
+            if not probe.exists():
+                continue
+            checked += 1
+            if b"\r" in probe.read_bytes():
+                files_with_cr.append(probe)
+
+        if checked == 0 or not files_with_cr:
+            return
+
+        rel_paths = [str(path.relative_to(src_dir)) for path in files_with_cr]
+        preview = ", ".join(rel_paths[:3])
+        if len(rel_paths) > 3:
+            preview += f", +{len(rel_paths) - 3} more"
+
+        fix_cmds = [
+            f"git -C {src_dir} config core.autocrlf false",
+            f"git -C {src_dir} config core.eol lf",
+            f"git -C {src_dir} reset --hard HEAD",
+        ]
+        fix_block = "\n".join(f"  {cmd}" for cmd in fix_cmds)
+        raise RuntimeError(
+            "FFmpeg checkout uses CRLF line endings on a POSIX host. "
+            "This breaks configure (symptom: eval: ...\\r=yes: not found).\n"
+            f"Detected in: {preview}\n"
+            "Normalize line endings and retry:\n"
+            f"{fix_block}"
+        )
+
     def _env_for_build(self, build_type: str, prefix: Path) -> dict[str, str]:
         env = dict(self.config.global_cfg.env)
         if self.platform.os == "windows":
@@ -411,6 +452,40 @@ class Builder:
             seen.add(normalized)
             deduped_paths.append(path_item)
         env["PKG_CONFIG_PATH"] = os.pathsep.join(deduped_paths)
+
+        if shutil.which("ccache"):
+            fallback_cache_dir = self.config.global_cfg.build_root / ".ccache"
+            fallback_tmp_dir = self.config.global_cfg.build_root / ".ccache-tmp"
+
+            def _ensure_writable(path: Path) -> bool:
+                try:
+                    path.mkdir(parents=True, exist_ok=True)
+                    probe = path / ".oiio_builder_probe"
+                    probe.write_text("ok", encoding="utf-8")
+                    probe.unlink()
+                    return True
+                except OSError:
+                    return False
+
+            ccache_tmp = env.get("CCACHE_TEMPDIR") or os.environ.get("CCACHE_TEMPDIR")
+            if not ccache_tmp:
+                ccache_tmp = f"/run/user/{os.getuid()}/ccache-tmp"
+            if not _ensure_writable(Path(ccache_tmp)):
+                if _ensure_writable(fallback_tmp_dir):
+                    env["CCACHE_TEMPDIR"] = str(fallback_tmp_dir)
+                else:
+                    env["CCACHE_DISABLE"] = "1"
+
+            ccache_dir = env.get("CCACHE_DIR") or os.environ.get("CCACHE_DIR")
+            if not ccache_dir:
+                if _ensure_writable(fallback_cache_dir):
+                    env["CCACHE_DIR"] = str(fallback_cache_dir)
+            elif not _ensure_writable(Path(ccache_dir)):
+                if _ensure_writable(fallback_cache_dir):
+                    env["CCACHE_DIR"] = str(fallback_cache_dir)
+                else:
+                    env["CCACHE_DISABLE"] = "1"
+
         return env
 
     def _windows_runtime_mode(self) -> str:
@@ -952,12 +1027,13 @@ class Builder:
             args += ["-DBROTLI_DISABLE_TESTS=ON", "-DBROTLI_BUILD_TOOLS=OFF"]
         elif name == "highway":
             args += [
-                "-DHWY_ENABLE_TESTS=OFF",
+                "-DHWY_ENABLE_TESTS=ON",
                 "-DHWY_ENABLE_EXAMPLES=OFF",
                 "-DHWY_ENABLE_CONTRIB=ON",
                 "-DHWY_FORCE_STATIC_LIBS=ON",
                 "-DHWY_SYSTEM_GTEST=ON",
                 "-DHWY_ENABLE_INSTALL=ON",
+		"-DBUILD_TESTING=ON",
             ]
         elif name == "lcms2" and not recipe_applied:
             args += [
@@ -1163,6 +1239,21 @@ class Builder:
         values["USE_PYTHON"] = "ON"
         # Always embed plugins for consistent single-binary plugin loading across platforms.
         values["EMBEDPLUGINS"] = "ON"
+
+        # Pugixml: use external only when it's part of the planned build and present in the prefix.
+        # Otherwise, let OIIO fall back to its internal copy.
+        pugixml_planned = any(repo.name == "pugixml" for repo in self.repos)
+        pugixml_config_dir = ctx.install_prefix / "lib" / "cmake" / "pugixml"
+        pugixml_config_found = any(
+            (pugixml_config_dir / name).exists() for name in ("pugixml-config.cmake", "pugixmlConfig.cmake")
+        )
+        pugixml_header_found = (ctx.install_prefix / "include" / "pugixml.hpp").exists()
+        if self.platform.os == "windows":
+            pugixml_lib_found = bool(list((ctx.install_prefix / "lib").glob("pugixml*.lib")))
+        else:
+            pugixml_lib_found = bool(list((ctx.install_prefix / "lib").glob("libpugixml.*")))
+        pugixml_found = pugixml_config_found or (pugixml_header_found and pugixml_lib_found)
+        values["USE_EXTERNAL_PUGIXML"] = "ON" if (pugixml_planned and pugixml_found) else "OFF"
         required = ["GIF", "JXL", "LibRaw", "libuhdr", "Freetype"]
         if ffmpeg_enabled:
             required.insert(0, "FFmpeg")
@@ -1801,8 +1892,14 @@ endif()
             add_windows_library(["swscale"])
             add_windows_library(["avutil"])
 
+            # minizip-ng deps (PPMD)
+            add_windows_library(["ppmd"])
+
+            # Freetype deps (HarfBuzz)
+            add_windows_library(["harfbuzz"])
+
             # System libs needed by static deps (minizip-ng, FFmpeg, etc.)
-            for syslib in ("bcrypt.lib", "ws2_32.lib", "secur32.lib"):
+            for syslib in ("bcrypt.lib", "ncrypt.lib", "crypt32.lib", "ws2_32.lib", "secur32.lib"):
                 add_entry(syslib)
             # `ucrt(d).lib` are the import libraries for the UCRT DLL and should
             # not be forced for `/MT` builds (it causes CRT mixing).
@@ -1833,15 +1930,48 @@ endif()
             add_lib("libswresample.a")
             add_lib("libswscale.a")
             add_lib("libavutil.a")
+            if self.platform.os == "linux" and self._ffmpeg_enabled():
+                # FFmpeg static libs may reference system hwaccel/display libs
+                # (e.g. vdpau/x11/drm) via transitive symbols.
+                for syslib in ("vdpau", "X11", "drm", "xcb", "Xau", "Xdmcp", "pthread", "atomic"):
+                    add_entry(syslib)
+
+            # minizip-ng deps (PPMD)
+            add_lib("libppmd.a")
+
+            # Freetype deps (HarfBuzz)
+            add_lib("libharfbuzz.a")
 
         # OpenMP (libomp)
         omp_root = self.config.global_cfg.env.get("OpenMP_ROOT") or os.environ.get("OpenMP_ROOT")
+        omp_added = False
         if omp_root:
-            for candidate in ("libomp.dylib", "libomp.a"):
+            for candidate in ("libomp.dylib", "libomp.a", "libomp.so", "libiomp5.so", "libgomp.so"):
                 path = Path(omp_root) / "lib" / candidate
                 if path.exists():
                     add_entry(str(path))
+                    omp_added = True
                     break
+
+        if self.platform.os == "linux" and not omp_added:
+            for path in (
+                Path("/usr/lib/x86_64-linux-gnu/libiomp5.so"),
+                Path("/usr/lib/x86_64-linux-gnu/libomp.so"),
+                Path("/usr/lib/x86_64-linux-gnu/libomp.so.5"),
+                Path("/usr/lib/llvm-20/lib/libomp.so"),
+                Path("/usr/lib/x86_64-linux-gnu/libgomp.so.1"),
+            ):
+                if path.exists():
+                    add_entry(str(path))
+                    omp_added = True
+                    break
+
+        libraw_openmp_value = str(self.config.global_cfg.libraw_enable_openmp).strip().lower()
+        libraw_openmp_enabled = libraw_openmp_value in {"1", "on", "true", "yes"}
+        if self.platform.os == "linux" and libraw_openmp_enabled and not omp_added:
+            # Last-resort fallback when LibRaw was compiled with OpenMP but no
+            # absolute runtime path was discovered.
+            add_entry("omp")
 
         # iconv (system)
         if (libdir / "libiconv.a").exists():
@@ -2665,29 +2795,19 @@ endif()
         if self.dry_run:
             return
 
-        cfg_path = prefix / "lib" / "cmake" / "libheif" / "libheif-config.cmake"
-        if not cfg_path.exists():
+        cmake_dir = prefix / "lib" / "cmake" / "libheif"
+        if not cmake_dir.exists():
             return
 
-        try:
-            text = cfg_path.read_text(encoding="utf-8")
-        except OSError:
+        cfg_paths = [cmake_dir / "libheif-config.cmake", cmake_dir / "libheifConfig.cmake"]
+        cfg_paths = [p for p in cfg_paths if p.exists()]
+        if not cfg_paths:
             return
 
-        if "AOM::aom" not in text:
-            return
-        if "find_dependency(AOM" in text or "find_package(AOM" in text:
-            return
-
-        lines = text.splitlines()
-        insert_at = 0
-        for idx, line in enumerate(lines):
-            if "libheif-targets.cmake" in line or "libheifTargets.cmake" in line:
-                insert_at = idx
-                break
-
+        marker = "# oiio-builder: libheif requires AOM"
         patch_lines = [
             "",
+            marker,
             "include(CMakeFindDependencyMacro)",
             "find_dependency(AOM CONFIG)",
             "if(NOT TARGET AOM::aom AND TARGET aom)",
@@ -2695,11 +2815,131 @@ endif()
             "endif()",
             "",
         ]
-        new_text = "\n".join(lines[:insert_at] + patch_lines + lines[insert_at:]) + "\n"
-        try:
-            cfg_path.write_text(new_text, encoding="utf-8")
-        except OSError:
+
+        for cfg_path in cfg_paths:
+            try:
+                text = cfg_path.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            if marker in text:
+                continue
+            if "AOM::aom" not in text:
+                continue
+
+            lines = text.splitlines()
+            insert_at: int | None = None
+            for idx, line in enumerate(lines):
+                if "Compute the installation prefix relative to this file." in line:
+                    insert_at = idx
+                    break
+            if insert_at is None:
+                for idx, line in enumerate(lines):
+                    if "libheif-targets.cmake" in line or "libheifTargets.cmake" in line:
+                        insert_at = idx
+                        break
+            if insert_at is None:
+                for idx, line in enumerate(lines):
+                    if line.lstrip().startswith("add_library("):
+                        insert_at = idx
+                        break
+            if insert_at is None:
+                insert_at = len(lines)
+
+            new_text = "\n".join(lines[:insert_at] + patch_lines + lines[insert_at:]) + "\n"
+            try:
+                cfg_path.write_text(new_text, encoding="utf-8")
+            except OSError:
+                continue
+
+    def _ensure_libheif_consumer_definitions(self, prefix: Path) -> None:
+        if self.dry_run:
             return
+
+        cmake_dir = prefix / "lib" / "cmake" / "libheif"
+        if not cmake_dir.exists():
+            return
+
+        removed_names = {"LIBHEIF_EXPORTS", "HAVE_VISIBILITY"}
+
+        def filter_defs(raw_defs: str) -> tuple[str, bool]:
+            defs = [d for d in raw_defs.split(";") if d]
+            filtered: list[str] = []
+            for d in defs:
+                name = d.split("=", 1)[0]
+                if name in removed_names:
+                    continue
+                filtered.append(d)
+            if filtered == defs:
+                return raw_defs, False
+            return ";".join(filtered), True
+
+        def patch_property_line(line: str) -> tuple[str, bool]:
+            needle = 'INTERFACE_COMPILE_DEFINITIONS "'
+            start = line.find(needle)
+            if start < 0:
+                return line, False
+            start_defs = start + len(needle)
+            end_defs = line.find('"', start_defs)
+            if end_defs < 0:
+                return line, False
+            raw_defs = line[start_defs:end_defs]
+            new_defs, changed = filter_defs(raw_defs)
+            if not changed:
+                return line, False
+            return line[:start_defs] + new_defs + line[end_defs:], True
+
+        def patch_standalone_quoted_line(line: str) -> tuple[str, bool]:
+            stripped = line.lstrip()
+            if not stripped.startswith('"'):
+                return line, False
+            start = line.find('"')
+            end = line.find('"', start + 1)
+            if start < 0 or end < 0:
+                return line, False
+            raw_defs = line[start + 1 : end]
+            new_defs, changed = filter_defs(raw_defs)
+            if not changed:
+                return line, False
+            return line[: start + 1] + new_defs + line[end:], True
+
+        for path in sorted(cmake_dir.glob("*.cmake")):
+            try:
+                text = path.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            if "INTERFACE_COMPILE_DEFINITIONS" not in text:
+                continue
+            if not any(name in text for name in removed_names):
+                continue
+
+            changed = False
+            out_lines: list[str] = []
+            pending_defs_line = False
+            for line in text.splitlines():
+                if pending_defs_line:
+                    pending_defs_line = False
+                    line, line_changed = patch_standalone_quoted_line(line)
+                    if line_changed:
+                        changed = True
+                    out_lines.append(line)
+                    continue
+
+                line, line_changed = patch_property_line(line)
+                if line_changed:
+                    changed = True
+                    out_lines.append(line)
+                    continue
+
+                if "INTERFACE_COMPILE_DEFINITIONS" in line:
+                    pending_defs_line = True
+                out_lines.append(line)
+
+            if not changed:
+                continue
+            try:
+                path.write_text("\n".join(out_lines) + "\n", encoding="utf-8")
+            except OSError:
+                continue
 
     def _ensure_openjph_alias(self, prefix: Path) -> None:
         libdir = prefix / "lib"
@@ -2969,6 +3209,10 @@ endif()
             self._ensure_libdeflate_alias(install_prefix, build_type)
         if "openjph" in repo.deps:
             self._ensure_openjph_windows_alias(install_prefix, build_type)
+        if "libheif" in repo.deps:
+            self._ensure_aom_package(install_prefix, build_type)
+            self._ensure_libheif_aom_dependency(install_prefix)
+            self._ensure_libheif_consumer_definitions(install_prefix)
 
         if repo.name == "glew":
             self._patch_glew_macos(src_dir)
@@ -3046,6 +3290,7 @@ endif()
             configure = src_dir / "configure"
             if not configure.exists():
                 raise RuntimeError(f"Missing configure script for {repo.name}: {configure}")
+            self._ensure_ffmpeg_posix_line_endings(src_dir)
             cmd = [str(configure)]
             cmd.extend(self._ffmpeg_configure_args(ctx))
             print_cmd("configure command", cmd)
@@ -3440,6 +3685,7 @@ endif()
             self._ensure_freetype_harfbuzz_compat(install_prefix, build_type)
         if repo.name == "libheif":
             self._ensure_libheif_aom_dependency(install_prefix)
+            self._ensure_libheif_consumer_definitions(install_prefix)
 
         if not self.dry_run:
             self._write_stamp(repo, ctx, deps_heads, cflags, cxxflags)

@@ -22,6 +22,7 @@ def main() -> int:
             "  uv run build.py --preflight\n"
             "  uv run build.py --build-types Debug,Release\n"
             "  uv run build.py --build-types Debug,ASAN\n"
+            "  uv run build.py --build-types Debug,Release --jobs 8\n"
             "  uv run build.py --build-types Debug --only OpenImageIO\n"
             "  uv run build.py --build-types Debug --only OpenImageIO --no-ffmpeg\n"
             "  uv run build.py --build-types Debug --force\n"
@@ -35,6 +36,12 @@ def main() -> int:
         help="Path to build.toml",
     )
     parser.add_argument("--build-types", help="Comma-separated: Debug,Release,ASAN")
+    parser.add_argument(
+        "--jobs",
+        type=int,
+        default=None,
+        help="Parallel build jobs. 0 means auto (overrides config)",
+    )
     parser.add_argument("--only", help="Comma-separated repo names")
     parser.add_argument("--skip", help="Comma-separated repo names")
     parser.add_argument("--no-update", action="store_true", help="Skip git fetch/pull (overrides config)")
@@ -65,6 +72,11 @@ def main() -> int:
 
     if args.build_types:
         config.build_types = _parse_build_types(args.build_types)
+
+    if args.jobs is not None:
+        if args.jobs < 0:
+            raise SystemExit("--jobs must be >= 0")
+        config.global_cfg.jobs = args.jobs
 
     if args.no_ffmpeg:
         config.global_cfg.build_ffmpeg = False

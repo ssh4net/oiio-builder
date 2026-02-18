@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-STAMP_REVISION = "1"
+STAMP_REVISION = "2"
 
 
 def cmake_args(builder, _ctx) -> list[str]:
     if builder.platform.os != "windows":
-        return []
+        # Avoid unresolved NUMA symbols leaking from static libx265.a into
+        # downstream links (e.g. libheif tests) when libnuma isn't linked.
+        return ["-DENABLE_LIBNUMA=OFF"]
 
     runtime_mode = str(builder.config.global_cfg.windows.get("msvc_runtime", "static")).strip().lower()
     if runtime_mode in {"", "static", "mt", "multithreaded"}:

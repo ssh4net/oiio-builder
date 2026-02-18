@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-STAMP_REVISION = "2"
+STAMP_REVISION = "3"
 
 
 def cmake_args(builder, ctx) -> list[str]:
@@ -33,7 +33,7 @@ def cmake_args(builder, ctx) -> list[str]:
                 f"-DLCMS2_LIBRARY={lcms_lib}",
                 f"-DLCMS2_INCLUDE_DIR={include_dir}",
             ]
-    if builder.platform.os == "macos" and builder._resolve_openjpeg_build_codec() == "ON":
+    if builder.platform.os in {"macos", "linux"} and builder._resolve_openjpeg_build_codec() == "ON":
         args += [
             f"-DCMAKE_EXE_LINKER_FLAGS_INIT=-L{ctx.install_prefix / 'lib'}",
             f"-DCMAKE_SHARED_LINKER_FLAGS_INIT=-L{ctx.install_prefix / 'lib'}",

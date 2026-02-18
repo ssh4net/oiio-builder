@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-STAMP_REVISION = "3"
+STAMP_REVISION = "4"
 
 
 def cmake_args(builder, ctx) -> list[str]:
@@ -11,6 +11,7 @@ def cmake_args(builder, ctx) -> list[str]:
         "-Dtiff-tools=ON",
         "-Dtiff-docs=OFF",
         "-Dtiff-contrib=OFF",
+        "-Dlerc=OFF",
         "-Dwebp=OFF",
         "-DJPEG_SUPPORT=ON",
         "-DJPEG_DUAL_MODE_8_12=ON",
