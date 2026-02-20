@@ -1,0 +1,7 @@
+[cmake.cache]
+BUILD_TESTING = false
+NB_TEST = false
+# The orchestrator clones repos without --recursive; disable submodule deps and rely on
+# the separately-built robin-map package (tsl-robin-map) instead.
+NB_USE_SUBMODULE_DEPS = false
+NB_CREATE_INSTALL_RULES = true

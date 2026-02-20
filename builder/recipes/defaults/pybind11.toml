@@ -1,0 +1,4 @@
+[cmake.cache]
+PYBIND11_TEST = false
+PYBIND11_INSTALL = true
+

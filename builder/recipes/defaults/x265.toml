@@ -1,0 +1,5 @@
+[cmake.cache]
+ENABLE_SHARED = false
+ENABLE_CLI = false
+ENABLE_TESTS = false
+

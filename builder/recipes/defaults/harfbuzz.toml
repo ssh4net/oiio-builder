@@ -1,0 +1,8 @@
+[cmake.cache]
+HB_BUILD_TESTS = false
+HB_BUILD_UTILS = false
+HB_BUILD_SUBSET = false
+HB_HAVE_GLIB = false
+HB_HAVE_ICU = false
+HB_HAVE_FREETYPE = false
+

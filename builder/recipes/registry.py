@@ -4,16 +4,33 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
-from . import lcms2, libheif, libjxl, libtiff, libultrahdr, openexr, openjpeg, x265
+from . import (
+    kvazaar,
+    lcms2,
+    libde265,
+    libheif,
+    libjxl,
+    libtiff,
+    libultrahdr,
+    opencolorio,
+    openexr,
+    openjpeg,
+    openjph,
+    x265,
+)
 
 _RECIPES: dict[str, ModuleType] = {
+    "kvazaar": kvazaar,
     "lcms2": lcms2,
+    "libde265": libde265,
     "libheif": libheif,
     "libjxl": libjxl,
     "libtiff": libtiff,
     "libultrahdr": libultrahdr,
+    "OpenColorIO": opencolorio,
     "openexr": openexr,
     "openjpeg": openjpeg,
+    "openjph": openjph,
     "x265": x265,
 }
 

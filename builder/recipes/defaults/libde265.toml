@@ -1,0 +1,4 @@
+[cmake.cache]
+ENABLE_SDL = false
+ENABLE_DECODER = false
+ENABLE_ENCODER = false

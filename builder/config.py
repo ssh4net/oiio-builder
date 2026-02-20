@@ -34,6 +34,7 @@ class GlobalConfig:
     prefix_base: str | None
     prefix_layout: str  # "suffix" (legacy) or "by-build-type"
     build_types: list[str]
+    preferred_repo_order: list[str]
     cxx_standard: int
     cxx_extensions: bool
     use_libcxx: bool
@@ -125,10 +126,145 @@ def _expand_path(value: str, base: Path | None = None) -> Path:
     return path
 
 
+def _merge_config_table(base: dict[str, Any], override: dict[str, Any], *, context: str) -> dict[str, Any]:
+    """Shallow-merge two TOML tables, with special handling for nested `env` tables."""
+    merged: dict[str, Any] = dict(base)
+    for key, value in override.items():
+        if key == "env":
+            if value is None:
+                continue
+            if not isinstance(value, dict):
+                raise TypeError(f"{context}.env: expected table, got {type(value).__name__}")
+            base_env = merged.get("env", {})
+            if base_env is None:
+                base_env = {}
+            if not isinstance(base_env, dict):
+                raise TypeError(f"{context}.env: base value is not a table")
+            env_merged = dict(base_env)
+            env_merged.update(value)
+            merged["env"] = env_merged
+            continue
+        merged[key] = value
+    return merged
+
+
+def _validate_user_override_keys(user_table: dict[str, Any], *, allowed: set[str], context: str) -> None:
+    unknown = sorted(key for key in user_table.keys() if key not in allowed)
+    if unknown:
+        names_str = ", ".join(unknown)
+        raise ValueError(f"Unknown key(s) in {context}: {names_str}")
+
+
 def load_config(path: Path) -> Config:
     data = tomllib.loads(path.read_text(encoding="utf-8"))
     repo_root = path.parent
+    if not isinstance(data, dict):
+        raise TypeError(f"{path}: expected TOML table at top-level")
+
     global_data = data.get("global", {})
+    if global_data is None:
+        global_data = {}
+    if not isinstance(global_data, dict):
+        raise TypeError(f"{path}: [global] must be a table")
+
+    windows_section = data.get("windows", {})
+    if windows_section is None:
+        windows_section = {}
+    if not isinstance(windows_section, dict):
+        raise TypeError(f"{path}: [windows] must be a table")
+
+    # Optional local overrides (gitignored).
+    user_path = repo_root / "build.user.toml"
+    if user_path.exists():
+        user_data = tomllib.loads(user_path.read_text(encoding="utf-8"))
+        if user_data is None:
+            user_data = {}
+        if not isinstance(user_data, dict):
+            raise TypeError(f"{user_path}: expected TOML table at top-level")
+
+        user_global = user_data.get("global", {})
+        if user_global is None:
+            user_global = {}
+        if not isinstance(user_global, dict):
+            raise TypeError(f"{user_path}: [global] must be a table")
+
+        allowed_global_keys = {
+            "src_root",
+            "build_root",
+            "prefix_base",
+            "prefix_layout",
+            "build_types",
+            "preferred_repo_order",
+            "cxx_standard",
+            "cxx_extensions",
+            "use_libcxx",
+            "use_lld",
+            "static_default",
+            "pic",
+            "jobs",
+            "debug_suffix",
+            "asan_suffix",
+            "env",
+            "no_update",
+            # Group toggles
+            "build_gl_stack",
+            "build_imageio_stack",
+            "build_exr_stack",
+            "build_gtest",
+            "build_libjxl",
+            "build_libuhdr",
+            "build_ocio",
+            "build_libraw",
+            "build_libheif",
+            "build_aom",
+            "build_libde265",
+            "build_x265",
+            "build_kvazaar",
+            "build_webp",
+            "build_ptex",
+            "build_pybind11",
+            "build_ffmpeg",
+            "build_oiio",
+            "openimageio_patch_png_include",
+            # Repo-specific switches
+            "openjpeg_build_codec",
+            "ocio_build_apps",
+            "libjxl_enable_tools",
+            "libraw_enable_examples",
+            "libraw_enable_openmp",
+            "xz_use_autotools",
+            "lcms2_use_autotools",
+            # Toolchain overrides
+            "cc",
+            "cxx",
+            "ld",
+            "ar",
+            "ranlib",
+        }
+        _validate_user_override_keys(user_global, allowed=allowed_global_keys, context=f"{user_path}:[global]")
+        global_data = _merge_config_table(global_data, user_global, context=f"{user_path}:[global]")
+
+        user_windows = user_data.get("windows", {})
+        if user_windows is None:
+            user_windows = {}
+        if not isinstance(user_windows, dict):
+            raise TypeError(f"{user_path}: [windows] must be a table")
+
+        allowed_windows_keys = {
+            "generator",
+            "vs_generator",
+            "install_prefix",
+            "asan_prefix",
+            "debug_postfix",
+            "build_ffmpeg",
+            "msvc_runtime",
+            "python_wrappers",
+            "clangcl_extra_flags",
+            "clangcl_extra_flags_append",
+            "env",
+        }
+        _validate_user_override_keys(user_windows, allowed=allowed_windows_keys, context=f"{user_path}:[windows]")
+        windows_section = _merge_config_table(windows_section, user_windows, context=f"{user_path}:[windows]")
 
     src_root = _expand_path(global_data.get("src_root", ".."), repo_root)
     build_root = _expand_path(global_data.get("build_root", "./_build"), repo_root)
@@ -150,11 +286,17 @@ def load_config(path: Path) -> Config:
     build_types = global_data.get("build_types", ["Debug", "Release", "ASAN"])
     build_types = [v.capitalize() if v.lower() != "asan" else "ASAN" for v in build_types]
 
+    preferred_repo_order_raw = global_data.get("preferred_repo_order", [])
+    if preferred_repo_order_raw is None:
+        preferred_repo_order_raw = []
+    if not isinstance(preferred_repo_order_raw, list) or any(not isinstance(item, str) for item in preferred_repo_order_raw):
+        raise TypeError("[global].preferred_repo_order must be a list[str]")
+    preferred_repo_order = [item.strip() for item in preferred_repo_order_raw if item.strip()]
+
     openjpeg_build_codec = global_data.get("openjpeg_build_codec")
     if isinstance(openjpeg_build_codec, str) and not openjpeg_build_codec.strip():
         openjpeg_build_codec = None
 
-    windows_section = data.get("windows", {})
     windows_env = {str(k): str(v) for k, v in windows_section.get("env", {}).items()}
     global_cfg = GlobalConfig(
         repo_root=repo_root,
@@ -163,6 +305,7 @@ def load_config(path: Path) -> Config:
         prefix_base=prefix_base,
         prefix_layout=prefix_layout,
         build_types=build_types,
+        preferred_repo_order=preferred_repo_order,
         cxx_standard=int(global_data.get("cxx_standard", 20)),
         cxx_extensions=bool(global_data.get("cxx_extensions", False)),
         use_libcxx=bool(global_data.get("use_libcxx", True)),
@@ -230,5 +373,11 @@ def load_config(path: Path) -> Config:
                 group=entry.get("group"),
             )
         )
+
+    known_repos = {repo.name for repo in repos}
+    unknown_order = sorted(name for name in global_cfg.preferred_repo_order if name not in known_repos)
+    if unknown_order:
+        names_str = ", ".join(unknown_order)
+        raise ValueError(f"Unknown repo name(s) in [global].preferred_repo_order: {names_str}")
 
     return Config(global_cfg=global_cfg, repos=repos)

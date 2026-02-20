@@ -1,0 +1,6 @@
+[cmake.cache]
+ZSTD_BUILD_PROGRAMS = true
+ZSTD_BUILD_TESTS = false
+ZSTD_BUILD_SHARED = false
+ZSTD_BUILD_STATIC = true
+

@@ -1,0 +1,3 @@
+[cmake.cache]
+TSL_ROBIN_MAP_ENABLE_INSTALL = true
+

@@ -1,0 +1,7 @@
+[cmake.cache]
+ZLIB_COMPAT = true
+WITH_GTEST = false
+WITH_FUZZERS = false
+WITH_BENCHMARKS = false
+WITH_BENCHMARK_APPS = false
+

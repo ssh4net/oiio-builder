@@ -1,0 +1,7 @@
+[cmake.cache]
+FMT_DOC = false
+FMT_TEST = false
+FMT_FUZZ = false
+FMT_CUDA_TEST = false
+FMT_INSTALL = true
+

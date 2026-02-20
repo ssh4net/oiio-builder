@@ -1,0 +1,7 @@
+[cmake.cache]
+# glew-cmake ignores BUILD_SHARED_LIBS; keep the stack static and avoid building
+# the DLL target (which can be finicky with MSBuild+clang-cl toolchains).
+glew-cmake_BUILD_SHARED = false
+glew-cmake_BUILD_STATIC = true
+ONLY_LIBS = true
+

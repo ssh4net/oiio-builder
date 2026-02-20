@@ -1,0 +1,5 @@
+[cmake.cache]
+OJPH_ENABLE_TIFF_SUPPORT = true
+OJPH_BUILD_STREAM_EXPAND = true
+BUILD_TESTING = false
+

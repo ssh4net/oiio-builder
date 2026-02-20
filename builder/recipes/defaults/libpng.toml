@@ -1,0 +1,5 @@
+[cmake.cache]
+PNG_SHARED = false
+PNG_STATIC = true
+PNG_TESTS = false
+

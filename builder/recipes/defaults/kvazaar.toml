@@ -1,0 +1,4 @@
+[cmake.cache]
+BUILD_SHARED_LIBS = false
+BUILD_TESTS = false
+BUILD_KVAZAAR_BINARY = false

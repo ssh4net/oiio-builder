@@ -62,6 +62,16 @@ def main() -> int:
         ),
     )
     parser.add_argument("--force-all", action="store_true", help="Force rebuild all repos in this run, ignore stamps")
+    parser.add_argument(
+        "--reinstall",
+        action="store_true",
+        help=(
+            "Force reinstall selected repos (install step only when up-to-date). "
+            "With --only, reinstalls only explicitly listed repos; "
+            "without --only, same as --reinstall-all."
+        ),
+    )
+    parser.add_argument("--reinstall-all", action="store_true", help="Force reinstall all repos in this run")
     parser.add_argument("--preflight", action="store_true", help="Run tool/repo checks and exit")
     parser.add_argument("--list-repos", action="store_true", help="List configured repos")
     parser.add_argument("--print-prefixes", action="store_true", help="Print install prefixes and exit")
@@ -103,6 +113,8 @@ def main() -> int:
         no_update=no_update,
         force=args.force,
         force_all=args.force_all,
+        reinstall=args.reinstall,
+        reinstall_all=args.reinstall_all,
     )
 
     if args.list_repos:
@@ -127,6 +139,8 @@ def main() -> int:
             args.no_ffmpeg,
             args.force,
             args.force_all,
+            args.reinstall,
+            args.reinstall_all,
             args.update,
             args.no_update,
             args.dry_run,

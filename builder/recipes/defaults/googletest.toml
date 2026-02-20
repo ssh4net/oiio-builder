@@ -1,0 +1,6 @@
+[cmake.cache]
+INSTALL_GTEST = true
+BUILD_GMOCK = false
+gtest_build_tests = false
+gtest_build_samples = false
+

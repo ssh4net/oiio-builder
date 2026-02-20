@@ -1,0 +1,5 @@
+[cmake.cache]
+GLFW_BUILD_EXAMPLES = true
+GLFW_BUILD_TESTS = false
+GLFW_BUILD_DOCS = false
+

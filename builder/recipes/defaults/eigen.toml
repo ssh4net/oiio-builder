@@ -1,0 +1,16 @@
+[cmake.cache]
+# Keep Eigen's install lightweight: headers + CMake package, no tests/docs/demos.
+BUILD_TESTING = false
+EIGEN_BUILD_TESTING = false
+EIGEN_BUILD_DOC = false
+EIGEN_BUILD_DEMOS = false
+EIGEN_BUILD_BTL = false
+EIGEN_BUILD_SPBENCH = false
+
+# Install package metadata for consumers (CMake config + pkg-config).
+EIGEN_BUILD_CMAKE_PACKAGE = true
+EIGEN_BUILD_PKGCONFIG = true
+
+# Avoid building Eigen's optional BLAS/LAPACK targets in this stack.
+EIGEN_BUILD_BLAS = false
+EIGEN_BUILD_LAPACK = false

@@ -1,0 +1,5 @@
+[cmake.cache]
+IMATH_BUILD_TESTS = false
+IMATH_BUILD_SHARED_LIBS = false
+PYTHON = false
+

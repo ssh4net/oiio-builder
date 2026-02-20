@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-STAMP_REVISION = "2"
+STAMP_REVISION = "3"
 
 
 def cmake_args(builder, _ctx) -> list[str]:
@@ -43,3 +43,13 @@ def patch_source(_builder, src_dir: Path) -> None:
 
     if text != original_text:
         cmake_lists.write_text(text, encoding="utf-8")
+
+    # clang-cl builds x265 with CMAKE_CXX_STANDARD (from the builder) which is
+    # typically >= 17. The upstream md5 implementation still uses `register`,
+    # which is ill-formed in C++17+ and breaks with warnings-as-errors.
+    md5_cpp = src_dir / "common" / "md5.cpp"
+    if md5_cpp.exists():
+        md5_text = md5_cpp.read_text(encoding="utf-8", errors="replace")
+        md5_patched = md5_text.replace("register uint32_t a, b, c, d;", "uint32_t a, b, c, d;")
+        if md5_patched != md5_text:
+            md5_cpp.write_text(md5_patched, encoding="utf-8")

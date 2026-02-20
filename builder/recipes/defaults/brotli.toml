@@ -1,0 +1,4 @@
+[cmake.cache]
+BROTLI_DISABLE_TESTS = true
+BROTLI_BUILD_TOOLS = false
+

@@ -1,0 +1,7 @@
+[cmake.cache]
+ENABLE_SHARED = false
+ENABLE_STATIC = true
+WITH_JPEG7 = true
+WITH_JPEG8 = true
+REQUIRE_SIMD = true
+

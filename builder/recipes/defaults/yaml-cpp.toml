@@ -1,0 +1,4 @@
+[cmake.cache]
+YAML_BUILD_SHARED_LIBS = false
+YAML_CPP_INSTALL = true
+

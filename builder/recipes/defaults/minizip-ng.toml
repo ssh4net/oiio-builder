@@ -1,0 +1,11 @@
+[cmake.cache]
+MZ_COMPAT = false
+MZ_BUILD_TESTS = false
+MZ_FORCE_FETCH_LIBS = false
+MZ_ZLIB = true
+MZ_BZIP2 = false
+MZ_LZMA = false
+MZ_ZSTD = false
+MZ_LIBCOMP = false
+MZ_OPENSSL = false
+

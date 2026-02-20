@@ -2,7 +2,7 @@ import os
 import shlex
 import subprocess
 import sys
-from typing import Iterable
+from pathlib import Path
 
 
 def format_cmd(cmd: list[str]) -> str:
@@ -90,11 +90,55 @@ def print_cmd(label: str, cmd: list[str]) -> None:
         print(f"{label}: {text}", flush=True)
 
 
-def run(cmd: list[str], cwd: str | None = None, env: dict[str, str] | None = None, dry_run: bool = False) -> None:
+def run(
+    cmd: list[str],
+    cwd: str | None = None,
+    env: dict[str, str] | None = None,
+    dry_run: bool = False,
+    log_path: str | None = None,
+) -> None:
     if dry_run:
         print(f"[dry-run] {format_cmd(cmd)}")
         return
     merged_env = os.environ.copy()
     if env:
         merged_env.update(env)
-    subprocess.run(cmd, cwd=cwd, env=merged_env, check=True)
+
+    if not log_path:
+        subprocess.run(cmd, cwd=cwd, env=merged_env, check=True)
+        return
+
+    log_file_path = Path(log_path)
+    log_file_path.parent.mkdir(parents=True, exist_ok=True)
+
+    header = f"$ {format_cmd(cmd)}\n"
+    if cwd:
+        header = f"$ (cd {cwd}) {format_cmd(cmd)}\n"
+
+    with log_file_path.open("wb") as f:
+        f.write(header.encode("utf-8", errors="replace"))
+        f.flush()
+
+        proc = subprocess.Popen(
+            cmd,
+            cwd=cwd,
+            env=merged_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        assert proc.stdout is not None
+
+        stdout_buffer = getattr(sys.stdout, "buffer", None)
+        for chunk in iter(proc.stdout.readline, b""):
+            if stdout_buffer is not None:
+                stdout_buffer.write(chunk)
+                stdout_buffer.flush()
+            else:
+                sys.stdout.write(chunk.decode(errors="replace"))
+                sys.stdout.flush()
+            f.write(chunk)
+
+        ret = proc.wait()
+        if ret != 0:
+            print(f"[error] Command failed (exit {ret}). Log: {log_file_path}", file=sys.stderr, flush=True)
+            raise subprocess.CalledProcessError(ret, cmd)

@@ -34,16 +34,43 @@ Key options:
   - `suffix`: legacy Unix layout using `debug_suffix`/`asan_suffix`.
 - `prefix_base`: prefix root used by `prefix_layout` (default in this repo: `./developer/install`).
 - `build_types`: list of configs to build (`Debug`, `Release`, `ASAN`).
+- `preferred_repo_order`: optional list of repo names that influences build order when multiple repos are ready (deps still win).
 - `use_libcxx`: default on macOS/Linux; set `false` to use libstdc++.
 - `build_*` toggles: enable/disable stacks (GL, EXR, image IO, etc.).
 - `windows.generator`: choose one of `msvc`, `ninja-msvc`, `msvc-clang-cl`, `ninja-clang-cl`.
+- `windows.vs_generator`: optional CMake generator name override for `windows.generator=msvc`/`msvc-clang-cl` (e.g. `Visual Studio 18 2026` with CMake 4.2+).
 - `windows.install_prefix`: single prefix for Debug+Release on Windows.
 - `windows.asan_prefix`: optional separate prefix for ASAN.
 - `windows.build_ffmpeg`: defaults to `false` (native FFmpeg build is disabled on Windows; see below).
 - `windows.msvc_runtime`: `static` (default, `/MT`/`/MTd`) or `dynamic` (`/MD`/`/MDd`).
 - `windows.python_wrappers`: `auto` (default), `on`, `off` for OpenColorIO/OpenEXR Python bindings.
   `auto` enables wrappers only when `windows.msvc_runtime=dynamic`.
+- `windows.clangcl_extra_flags`: clang-cl x86_64 baseline extra flags (default if unset: `-msse4.1`).
+- `windows.clangcl_extra_flags_append`: extra clang-cl x86_64 flags appended to the baseline (default: empty).
 - `windows.env`: tool overrides for Windows (e.g. `PKG_CONFIG_EXECUTABLE`, `DOXYGEN_EXECUTABLE`).
+
+### Repo Defaults and Local Overrides
+
+Repo graphs and global policy live in `build.toml`, but per-repo default CMake cache settings live in
+tracked files under `builder/recipes/defaults/<repo>.toml`.
+
+Local overrides are read from `build.user.toml` (gitignored) and merged on top of `build.toml`
+(CLI flags still win). You can override `[global]`, `[windows]`, and per-repo CMake cache settings.
+
+```toml
+[global]
+prefix_base = "./developer/install" # example
+
+[windows]
+generator = "msvc"
+vs_generator = "Visual Studio 18 2026"
+
+[[repo_overrides]]
+name = "libpng"
+
+[repo_overrides.cmake.cache]
+PNG_TESTS = true
+```
 
 ## Prefix Rules
 
@@ -54,6 +81,16 @@ Key options:
 - Windows:
   - Debug and Release share one prefix (debug builds first).
   - ASAN can use a separate prefix (e.g., `./developer/asan`).
+
+## Install Markers (Prefix Retargeting)
+
+The builder writes per-repo install markers under:
+
+`<prefix>/.oiio-builder/install-stamps/<repo>/<build_type>.json`
+
+If a repo is up-to-date but its marker is missing or mismatched (for example: you changed `prefix_base` or deleted/moved a
+prefix directory), the builder automatically re-runs the repo install step instead of skipping it.
+Use `--reinstall` / `--reinstall-all` to force reinstall even when markers are present.
 
 ## Common Commands
 
@@ -70,6 +107,10 @@ uv run build.py --print-prefixes
 # Force rebuild
 uv run build.py --force          # with --only: forces only selected repos
 uv run build.py --force-all      # forces all repos in this run
+
+# Force reinstall (install step only when up-to-date)
+uv run build.py --reinstall         # with --only: reinstalls only selected repos
+uv run build.py --reinstall-all     # reinstalls all repos in this run
 
 # Build only specific repos
 uv run build.py --only libjpeg-turbo,libpng,openjpeg
@@ -137,7 +178,7 @@ DOXYGEN_EXECUTABLE = "C:\\Program Files\\doxygen\\bin\\doxygen.exe"
 
 ## Troubleshooting
 
-- **Rebuild not triggered after local edits**: stamps track dependency fingerprints (git heads + builder patch revisions), but not uncommitted working tree changes. Use `--force --only <repo>` for targeted rebuilds or `--force-all` for a clean run.
+- **Rebuild not triggered after local edits**: stamps track dependency fingerprints and applied per-repo option layers, but not uncommitted working tree changes. Use `--force --only <repo>` for targeted rebuilds or `--force-all` for a clean run.
 - **Missing optional repos**: `yaml-cpp`, `pystring`, `expat`, `pugixml`, `libxml2` are skipped if not present. On Windows, `libiconv` is expected via `external/vcpkg-export-libiconv.zip`.
 - **OpenMP not found (macOS/Linux)**: set `OpenMP_ROOT` in `build.toml` or environment.
 - **ASAN failures on Windows**: prefer clang-cl and ensure the MSVC AddressSanitizer component is installed.

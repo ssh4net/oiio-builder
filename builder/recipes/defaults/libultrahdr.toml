@@ -1,0 +1,5 @@
+[cmake.cache]
+UHDR_BUILD_DEPS = false
+UHDR_BUILD_TESTS = false
+UHDR_BUILD_BENCHMARK = false
+

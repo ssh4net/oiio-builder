@@ -1,0 +1,6 @@
+[cmake.cache]
+LIBXML2_WITH_LZMA = true
+LIBXML2_WITH_PYTHON = false
+LIBXML2_WITH_TESTS = false
+LIBXML2_WITH_PROGRAMS = false
+

@@ -1,0 +1,8 @@
+[cmake.cache]
+ENABLE_SHARED_LIB = false
+ENABLE_STATIC_LIB = true
+ENABLE_APP = false
+ENABLE_EXAMPLES = false
+ENABLE_DOCS = false
+ENABLE_LIB_ONLY = true
+

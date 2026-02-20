@@ -1,0 +1,7 @@
+[cmake.cache]
+ENABLE_TESTS = false
+ENABLE_EXAMPLES = false
+ENABLE_TOOLS = false
+ENABLE_DOCS = false
+ENABLE_SHARED = false
+

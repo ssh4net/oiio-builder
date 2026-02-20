@@ -7,11 +7,47 @@ build_root = "./developer/_build"
 prefix_layout = "by-build-type"
 prefix_base = "./developer/install"
 # Build types can be narrowed via --build-types Debug,Release
-build_types = ["Debug", "Release", "ASAN"]
+# build_types = ["Debug", "Release", "ASAN"]
+build_types = ["Debug", "Release"]
+
+# Preferred order when multiple repos are ready to build (does not override deps).
+preferred_repo_order = [
+  "googletest",
+  "fmt",
+  "zlib-ng",
+  "libdeflate",
+  "xz",
+  "zstd",
+  "bzip2",
+  "brotli",
+  "pugixml",
+  "libjpeg-turbo",
+  "glfw",
+  "glew",
+  "freeglut",
+  "giflib",
+  "jasper",
+  "expat",
+  "yaml-cpp",
+  "harfbuzz",
+  "robinmap",
+  "eigen",
+  "imath",
+  "pystring",
+  "nanobind",
+  "pybind11",
+  "lcms2",
+  "aom",
+  "libde265",
+  "x265",
+  "kvazaar",
+  "libwebp",
+  "LibRaw",
+]
 # Global language and toolchain policy
 cxx_standard = 20
 cxx_extensions = false
-use_libcxx = true
+use_libcxx = false
 use_lld = true
 static_default = true
 pic = true
@@ -25,7 +61,7 @@ asan_suffix = "asn"
 build_gl_stack = true
 build_imageio_stack = true
 build_exr_stack = true
-build_gtest = false
+build_gtest = true
 build_libjxl = true
 build_libuhdr = true
 build_ocio = true
@@ -66,6 +102,13 @@ no_update = true
 [windows]
 # generator: msvc, ninja-msvc, msvc-clang-cl, ninja-clang-cl
 # generator = "ninja-clang-cl"
+# Visual Studio generator override (e.g. for VS 2026 with CMake 4.2+):
+# vs_generator = "Visual Studio 18 2026"
+# clang-cl (x86_64): extra compiler flags to apply globally when using a clang-cl generator.
+# - `clangcl_extra_flags` overrides the baseline (default if unset: "-msse4.1")
+# - `clangcl_extra_flags_append` appends extra flags (default: "")
+# Example: enable AVX2 + required sub-features:
+# clangcl_extra_flags_append = "-mavx2 -mbmi -mbmi2 -mlzcnt"
 install_prefix = "./developer/install"
 asan_prefix = "./developer/asan"
 # debug_postfix = "d"
@@ -79,6 +122,8 @@ build_ffmpeg = false  # disable FFmpeg (and OpenImageIO ffmpeg plugin) on Window
 # python_wrappers = "auto"
 
 [windows.env]
+# OpenMP (libomp) for clang-cl builds (e.g. when libraw_enable_openmp="ON"):
+# OpenMP_ROOT = "C:/LLVM"
 # FFmpeg on Windows:
 # - The builder does not build FFmpeg natively on Windows.
 # - Install/copy an MSVC-built static FFmpeg into the same prefix used by this script
@@ -280,6 +325,7 @@ name = "highway"
 dir = "highway"
 url = "https://github.com/google/highway.git"
 build_system = "cmake"
+deps = ["googletest"]
 
 [[repos]]
 name = "lcms2"
@@ -299,6 +345,14 @@ deps = ["zlib-ng", "libpng", "brotli", "bzip2", "harfbuzz"]
 name = "harfbuzz"
 dir = "harfbuzz"
 url = "https://github.com/harfbuzz/harfbuzz.git"
+build_system = "cmake"
+
+[[repos]]
+name = "eigen"
+dir = "eigen"
+url = "https://gitlab.com/libeigen/eigen.git"
+ref = "3.4"
+ref_type = "branch"
 build_system = "cmake"
 
 [[repos]]
@@ -364,6 +418,13 @@ dir = "pystring"
 url = "https://github.com/imageworks/pystring.git"
 build_system = "cmake"
 #optional = true
+
+[[repos]]
+name = "nanobind"
+dir = "nanobind"
+url = "https://github.com/wjakob/nanobind.git"
+build_system = "cmake"
+deps = ["robinmap"]
 
 [[repos]]
 name = "pybind11"

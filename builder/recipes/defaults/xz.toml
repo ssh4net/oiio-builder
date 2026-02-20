@@ -1,0 +1,3 @@
+[cmake.cache]
+BUILD_SHARED_LIBS = false
+
