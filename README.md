@@ -2,6 +2,52 @@
 
 This repo provides a cross-platform Python builder that mirrors the behavior of the existing Bash stack script. It clones/updates repos, builds static libraries (or system/dynamic where needed), and installs into per-config prefixes on macOS/Linux or a shared prefix on Windows.
 
+## Prerequisites
+
+Tools the builder expects to find (or be explicitly pointed at via config/env):
+- `git`
+- `cmake`
+- `ninja` (for Ninja-based generators)
+- `pkg-config` (we recommend `pkgconf`)
+- `doxygen`
+- OpenMP runtime (`libomp`) when enabling OpenMP (for example: `libraw_enable_openmp="ON"`). On Windows this commonly comes from an LLVM install.
+- `nasm`/`yasm` on x86_64
+- Python 3.11+ (uses `tomllib`)
+
+We recommend using `uv` (Astral) to create the virtual environment and run commands in a reproducible way, but any Python 3.11+ venv works. The builder itself is stdlib-only (no mandatory pip dependencies).
+
+Windows notes:
+- Doxygen and LLVM can be installed from official/prebuilt installers (common layout: `C:\\Program Files\\doxygen\\...`, `C:\\LLVM\\...`).
+- `pkg-config` can be obtained via vcpkg (the builder does not use vcpkg itself, but it is useful for tools and for a few Windows-only imports like `libiconv`). You can point `PKG_CONFIG_EXECUTABLE` at the vcpkg-installed `pkgconf.exe`, or `vcpkg export pkgconf --zip` and unpack it anywhere on disk.
+
+## Installation (Step-by-Step)
+
+1. Install the prerequisites above (via Homebrew/apt/choco/winget/etc.).
+2. Clone this repo and enter it.
+3. Create a Python environment (recommended: `uv`):
+   ```bash
+   uv venv
+   ```
+4. Optional: if you want `sphinx-build` available (docs tooling), install it into the venv:
+   ```bash
+   uv pip install sphinx
+   ```
+5. (Optional, recommended) Create `build.user.toml` for local overrides (gitignored). Example for Windows tool paths:
+   ```toml
+   [windows.env]
+   PKG_CONFIG_EXECUTABLE = "E:/vcpkg/installed/x64-windows/tools/pkgconf/pkgconf.exe"
+   DOXYGEN_EXECUTABLE = "C:/Program Files/doxygen/bin/doxygen.exe"
+   OpenMP_ROOT = "C:/LLVM" # provides <OpenMP_ROOT>/lib/libomp.lib
+   ```
+6. Run a preflight check:
+   ```bash
+   uv run build.py --preflight
+   ```
+7. Build:
+   ```bash
+   uv run build.py --build-types Debug,Release
+   ```
+
 ## Quick Start
 
 ```bash
@@ -37,6 +83,8 @@ Key options:
 - `preferred_repo_order`: optional list of repo names that influences build order when multiple repos are ready (deps still win).
 - `use_libcxx`: default on macOS/Linux; set `false` to use libstdc++.
 - `build_*` toggles: enable/disable stacks (GL, EXR, image IO, etc.).
+- `build_qt6`: build a minimal **static Qt6** stack into the prefix (for consumers like OpenImageIO `iv` and GPUpad).
+- `build_dng_sdk`: build Adobe DNG SDK + XMP (via `DNG-CMake`) into the prefix (optional; disabled by default).
 - `windows.generator`: choose one of `msvc`, `ninja-msvc`, `msvc-clang-cl`, `ninja-clang-cl`.
 - `windows.vs_generator`: optional CMake generator name override for `windows.generator=msvc`/`msvc-clang-cl` (e.g. `Visual Studio 18 2026` with CMake 4.2+).
 - `windows.install_prefix`: single prefix for Debug+Release on Windows.
@@ -169,6 +217,58 @@ Example:
 vcpkg export libiconv:x64-windows-static --zip --output=vcpkg-export-libiconv
 ```
 
+### Qt6 (static, optional)
+
+Enable Qt6 builds by setting `build_qt6 = true` (recommended: in `build.user.toml`):
+```toml
+[global]
+build_qt6 = true
+```
+
+What it builds (static):
+- `qtbase`, `qtdeclarative`, `qtquickcontrols2`, `qtshadertools`, `qtmultimedia`, `qtimageformats`, `qtsvg` (+ `qtwayland` on Linux)
+
+Build only Qt6:
+```bash
+uv run build.py --build-types Debug,Release --only Qt6
+```
+
+Skip Qt6 (build everything else):
+```bash
+uv run build.py --build-types Debug,Release --skip Qt6
+```
+
+Windows: OpenSSL import (required)
+- Default expected path: `external/vcpkg-export-openssl.zip`
+- Override: `OPENSSL_VCPKG_EXPORT_ZIP` in `[windows.env]` (or process env)
+
+Example:
+```bat
+vcpkg export openssl:x64-windows-static --zip --output=vcpkg-export-openssl
+```
+
+Linux notes (XCB + Wayland)
+- Qt is configured to build both XCB and Wayland QPA backends (`-qpa xcb;wayland`), so you need the relevant system development packages and `wayland-scanner` in `PATH`.
+
+### Adobe DNG SDK + XMP (optional)
+
+This enables LibRaw's optional Adobe DNG SDK integration (`USE_DNGSDK`) by building the SDK via `DNG-CMake` and linking it into `libraw`.
+
+Enable it (recommended: in `build.user.toml`):
+```toml
+[global]
+build_dng_sdk = true
+```
+
+Provide the Adobe DNG SDK sources (the builder does not vendor them):
+- Default search: `external/dng_sdk_1_7_1_0.zip` (also `*.tar.gz` / extracted dir)
+- Override: set `DNGSDK_ARCHIVE` to an archive path or extracted directory
+
+Build a minimal set:
+```bash
+uv run build.py --build-types Debug,Release --only dng-sdk,libraw,OpenImageIO
+```
+
 ### Tool overrides (Windows)
 ```toml
 [windows.env]
@@ -179,6 +279,9 @@ DOXYGEN_EXECUTABLE = "C:\\Program Files\\doxygen\\bin\\doxygen.exe"
 ## Troubleshooting
 
 - **Rebuild not triggered after local edits**: stamps track dependency fingerprints and applied per-repo option layers, but not uncommitted working tree changes. Use `--force --only <repo>` for targeted rebuilds or `--force-all` for a clean run.
+- **uv cache permission issues**: set `UV_CACHE_DIR` to a writable directory (e.g. `UV_CACHE_DIR=/tmp/uv-cache`).
+- **Qt6 static link errors mentioning `Brotli*` symbols**: rebuild `brotli` (or re-run `Qt6`) so the prefix has an `unofficial-brotli` CMake package shim.
+- **OpenImageIO link errors mentioning `g_unicode_*` / `g_bytes_*` from `libharfbuzz.a`**: rebuild `harfbuzz` (and `freetype`) so HarfBuzz is built without GLib integration for static linking.
 - **Missing optional repos**: `yaml-cpp`, `pystring`, `expat`, `pugixml`, `libxml2` are skipped if not present. On Windows, `libiconv` is expected via `external/vcpkg-export-libiconv.zip`.
 - **OpenMP not found (macOS/Linux)**: set `OpenMP_ROOT` in `build.toml` or environment.
 - **ASAN failures on Windows**: prefer clang-cl and ensure the MSVC AddressSanitizer component is installed.

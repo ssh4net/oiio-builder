@@ -69,6 +69,8 @@ class GlobalConfig:
     build_pybind11: bool = True
     build_ffmpeg: bool = True
     build_oiio: bool = True
+    build_qt6: bool = False
+    build_dng_sdk: bool = False
     openimageio_patch_png_include: bool = True
     # Repo-specific feature toggles
     openjpeg_build_codec: str | None = None
@@ -225,6 +227,8 @@ def load_config(path: Path) -> Config:
             "build_pybind11",
             "build_ffmpeg",
             "build_oiio",
+            "build_qt6",
+            "build_dng_sdk",
             "openimageio_patch_png_include",
             # Repo-specific switches
             "openjpeg_build_codec",
@@ -337,6 +341,8 @@ def load_config(path: Path) -> Config:
         build_pybind11=bool(global_data.get("build_pybind11", True)),
         build_ffmpeg=bool(global_data.get("build_ffmpeg", True)),
         build_oiio=bool(global_data.get("build_oiio", True)),
+        build_qt6=bool(global_data.get("build_qt6", False)),
+        build_dng_sdk=bool(global_data.get("build_dng_sdk", False)),
         openimageio_patch_png_include=bool(global_data.get("openimageio_patch_png_include", True)),
         openjpeg_build_codec=openjpeg_build_codec,
         ocio_build_apps=str(global_data.get("ocio_build_apps", "OFF")),

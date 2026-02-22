@@ -5,14 +5,17 @@ from types import ModuleType
 from typing import Any
 
 from . import (
+    dng_sdk,
     kvazaar,
     lcms2,
+    libraw,
     libde265,
     libheif,
     libjxl,
     libtiff,
     libultrahdr,
     opencolorio,
+    openimageio,
     openexr,
     openjpeg,
     openjph,
@@ -20,14 +23,17 @@ from . import (
 )
 
 _RECIPES: dict[str, ModuleType] = {
+    "dng-sdk": dng_sdk,
     "kvazaar": kvazaar,
     "lcms2": lcms2,
+    "libraw": libraw,
     "libde265": libde265,
     "libheif": libheif,
     "libjxl": libjxl,
     "libtiff": libtiff,
     "libultrahdr": libultrahdr,
     "OpenColorIO": opencolorio,
+    "OpenImageIO": openimageio,
     "openexr": openexr,
     "openjpeg": openjpeg,
     "openjph": openjph,

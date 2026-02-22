@@ -253,6 +253,8 @@ class Builder:
         }
         exr_repos = {"imath", "openjph", "openexr"}
         ocio_repos = {"minizip-ng", "OpenColorIO"}
+        qt_repos = {"pcre2", "openssl", "Qt6"}
+        dng_repos = {"dng-sdk"}
 
         def enabled(repo: RepoConfig) -> bool:
             if repo.name == "ffmpeg" and self.platform.os == "windows":
@@ -264,6 +266,12 @@ class Builder:
                     )
                 return False
             if repo.name == "libiconv" and self.platform.os != "windows":
+                return False
+            if repo.name in qt_repos and not getattr(cfg, "build_qt6", False):
+                return False
+            if repo.name == "openssl" and self.platform.os != "windows":
+                return False
+            if repo.name in dng_repos and not getattr(cfg, "build_dng_sdk", False):
                 return False
             if repo.name in gl_repos and not cfg.build_gl_stack:
                 return False
@@ -1182,6 +1190,9 @@ class Builder:
         pugixml_found = pugixml_config_found or (pugixml_header_found and pugixml_lib_found)
         values["USE_EXTERNAL_PUGIXML"] = "ON" if (pugixml_planned and pugixml_found) else "OFF"
         required = ["GIF", "JXL", "LibRaw", "libuhdr", "Freetype"]
+        if cfg.build_qt6:
+            required.insert(0, "Qt6")
+            required.insert(1, "OpenGL")
         if ffmpeg_enabled:
             required.insert(0, "FFmpeg")
         args.append(f"-DOpenImageIO_REQUIRED_DEPS={';'.join(required)}")
@@ -2273,9 +2284,47 @@ endif()
                 return matches[0]
         return default
 
+    def _openssl_export_zip(self, env: dict[str, str] | None = None) -> Path:
+        cfg = self.config.global_cfg
+        default = cfg.repo_root / "external" / "vcpkg-export-openssl.zip"
+        override = None
+        if env:
+            override = env.get("OPENSSL_VCPKG_EXPORT_ZIP") or env.get("VCPKG_OPENSSL_EXPORT_ZIP")
+        if not override and self.platform.os == "windows":
+            override = (
+                cfg.windows_env.get("OPENSSL_VCPKG_EXPORT_ZIP")
+                or cfg.windows_env.get("VCPKG_OPENSSL_EXPORT_ZIP")
+                or cfg.env.get("OPENSSL_VCPKG_EXPORT_ZIP")
+                or cfg.env.get("VCPKG_OPENSSL_EXPORT_ZIP")
+                or os.environ.get("OPENSSL_VCPKG_EXPORT_ZIP")
+                or os.environ.get("VCPKG_OPENSSL_EXPORT_ZIP")
+            )
+        if override:
+            path = Path(os.path.expandvars(override)).expanduser()
+            if not path.is_absolute():
+                path = (cfg.repo_root / path).resolve()
+            return path
+
+        external_dir = cfg.repo_root / "external"
+        if default.exists():
+            return default
+        if external_dir.is_dir():
+            matches = sorted(external_dir.glob("vcpkg-export-openssl*.zip"))
+            if matches:
+                return matches[0]
+        return default
+
     def _maybe_skip_missing(self, repo: RepoConfig, path: Path) -> bool:
         if repo.name == "libiconv" and self.platform.os == "windows":
             zip_path = self._libiconv_export_zip()
+            if zip_path.exists():
+                return False
+            if repo.optional:
+                print(f"[skip] {repo.name}: missing vcpkg export zip at {zip_path}")
+                return True
+            return False
+        if repo.name == "openssl" and self.platform.os == "windows":
+            zip_path = self._openssl_export_zip()
             if zip_path.exists():
                 return False
             if repo.optional:
@@ -2479,8 +2528,42 @@ endif()
 set(HarfBuzz_LIBRARY HarfBuzz::HarfBuzz)
 set(HarfBuzz_LIBRARIES HarfBuzz::HarfBuzz)
 """
-        version_text = """\
-set(PACKAGE_VERSION "1.0.0")
+        hb_version = ""
+        pc_candidates = [
+            prefix / "lib" / "pkgconfig" / "harfbuzz.pc",
+            prefix / "share" / "pkgconfig" / "harfbuzz.pc",
+        ]
+        for candidate in pc_candidates:
+            if not candidate.exists():
+                continue
+            try:
+                for line in candidate.read_text(encoding="utf-8", errors="replace").splitlines():
+                    if not line.startswith("Version:"):
+                        continue
+                    hb_version = line.partition(":")[2].strip()
+                    break
+            except OSError:
+                hb_version = ""
+            if hb_version:
+                break
+        if not hb_version:
+            header = prefix / "include" / "harfbuzz" / "hb-version.h"
+            if header.exists():
+                try:
+                    m = re.search(
+                        r'^\\s*#\\s*define\\s+HB_VERSION_STRING\\s+\\"([^\\"]+)\\"',
+                        header.read_text(encoding="utf-8", errors="replace"),
+                        flags=re.MULTILINE,
+                    )
+                    if m:
+                        hb_version = m.group(1)
+                except OSError:
+                    hb_version = ""
+        if not hb_version:
+            hb_version = "1.0.0"
+
+        version_text = f"""\
+set(PACKAGE_VERSION "{hb_version}")
 if(PACKAGE_FIND_VERSION VERSION_GREATER PACKAGE_VERSION)
   set(PACKAGE_VERSION_COMPATIBLE FALSE)
 else()
@@ -2605,6 +2688,210 @@ endif()
             except OSError:
                 return
         for name in ("BZip2ConfigVersion.cmake", "bzip2-config-version.cmake"):
+            try:
+                (cmake_dir / name).write_text(version_text, encoding="utf-8")
+            except OSError:
+                return
+
+    def _ensure_unofficial_brotli_package(self, prefix: Path, build_type: str) -> None:
+        if self.dry_run:
+            return
+
+        include_dir = prefix / "include"
+        if not (include_dir / "brotli" / "decode.h").exists():
+            return
+
+        libdir = prefix / "lib"
+        if not libdir.exists():
+            return
+
+        debug_postfix = str(self.config.global_cfg.windows.get("debug_postfix", "d"))
+
+        def _pick_lib_pair(stem: str) -> tuple[Path | None, Path | None]:
+            release_lib: Path | None = None
+            debug_lib: Path | None = None
+
+            if self.platform.os == "windows":
+                release_candidates = [
+                    libdir / f"{stem}.lib",
+                    libdir / f"lib{stem}.lib",
+                    libdir / f"{stem}-static.lib",
+                    libdir / f"lib{stem}-static.lib",
+                    libdir / f"{stem}static.lib",
+                    libdir / f"lib{stem}static.lib",
+                ]
+                debug_candidates = [
+                    libdir / f"{stem}{debug_postfix}.lib",
+                    libdir / f"lib{stem}{debug_postfix}.lib",
+                    libdir / f"{stem}-static{debug_postfix}.lib",
+                    libdir / f"lib{stem}-static{debug_postfix}.lib",
+                    libdir / f"{stem}static{debug_postfix}.lib",
+                    libdir / f"lib{stem}static{debug_postfix}.lib",
+                ]
+                release_lib = next((candidate for candidate in release_candidates if candidate.exists()), None)
+                debug_lib = next((candidate for candidate in debug_candidates if candidate.exists()), None)
+
+                if release_lib is None or debug_lib is None:
+                    matches = sorted(libdir.glob(f"*{stem}*.lib"))
+                    if matches:
+                        if release_lib is None:
+                            release_lib = next(
+                                (m for m in matches if not m.stem.lower().endswith(debug_postfix.lower())),
+                                None,
+                            ) or matches[0]
+                        if debug_lib is None:
+                            debug_lib = next(
+                                (m for m in matches if m.stem.lower().endswith(debug_postfix.lower())),
+                                None,
+                            ) or release_lib
+            else:
+                release_candidates = [
+                    libdir / f"lib{stem}.a",
+                    libdir / f"lib{stem}-static.a",
+                    libdir / f"lib{stem}_static.a",
+                    libdir / f"lib{stem}.so",
+                    libdir / f"lib{stem}.dylib",
+                ]
+                debug_candidates = [
+                    libdir / f"lib{stem}d.a",
+                    libdir / f"lib{stem}_d.a",
+                    libdir / f"lib{stem}.a",
+                ]
+                release_lib = next((candidate for candidate in release_candidates if candidate.exists()), None)
+                debug_lib = next((candidate for candidate in debug_candidates if candidate.exists()), None)
+                if release_lib is None and debug_lib is None:
+                    matches = sorted(libdir.glob(f"lib{stem}*"))
+                    preferred = [m for m in matches if m.suffix in {".a", ".so", ".dylib"}]
+                    if preferred:
+                        release_lib = preferred[0]
+                        debug_lib = preferred[0]
+
+            return release_lib, debug_lib
+
+        common_release, common_debug = _pick_lib_pair("brotlicommon")
+        dec_release, dec_debug = _pick_lib_pair("brotlidec")
+        enc_release, enc_debug = _pick_lib_pair("brotlienc")
+        if not common_release and not common_debug:
+            return
+        if not dec_release and not dec_debug:
+            return
+        if not enc_release and not enc_debug:
+            return
+
+        def _default_for_pair(release: Path | None, debug: Path | None) -> Path | None:
+            chosen = release or debug
+            if build_type == "Debug" and debug is not None:
+                chosen = debug
+            return chosen
+
+        common_default = _default_for_pair(common_release, common_debug)
+        dec_default = _default_for_pair(dec_release, dec_debug)
+        enc_default = _default_for_pair(enc_release, enc_debug)
+        if common_default is None or dec_default is None or enc_default is None:
+            return
+
+        cmake_dir = libdir / "cmake" / "unofficial-brotli"
+        try:
+            cmake_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return
+
+        version = ""
+        pc_candidates = [
+            prefix / "lib" / "pkgconfig" / "libbrotlidec.pc",
+            prefix / "share" / "pkgconfig" / "libbrotlidec.pc",
+        ]
+        for candidate in pc_candidates:
+            if not candidate.exists():
+                continue
+            try:
+                for line in candidate.read_text(encoding="utf-8", errors="replace").splitlines():
+                    if not line.startswith("Version:"):
+                        continue
+                    version = line.partition(":")[2].strip()
+                    break
+            except OSError:
+                version = ""
+            if version:
+                break
+        if not version:
+            version = "1.0.0"
+
+        include_path = include_dir.as_posix()
+
+        def _posix(path: Path | None) -> str:
+            return path.as_posix() if path is not None else ""
+
+        config_text = f"""\
+set(unofficial-brotli_FOUND TRUE)
+set(unofficial-brotli_VERSION "{version}")
+
+set(_unofficial_brotli_include_dir "{include_path}")
+
+if(NOT TARGET unofficial::brotli::brotlicommon)
+  add_library(unofficial::brotli::brotlicommon UNKNOWN IMPORTED)
+  set_target_properties(unofficial::brotli::brotlicommon PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES "{include_path}"
+    IMPORTED_LOCATION "{common_default.as_posix()}"
+  )
+  if(EXISTS "{_posix(common_release)}")
+    set_property(TARGET unofficial::brotli::brotlicommon PROPERTY IMPORTED_LOCATION_RELEASE "{_posix(common_release)}")
+  endif()
+  if(EXISTS "{_posix(common_debug)}")
+    set_property(TARGET unofficial::brotli::brotlicommon PROPERTY IMPORTED_LOCATION_DEBUG "{_posix(common_debug)}")
+  endif()
+  if(NOT WIN32)
+    set_property(TARGET unofficial::brotli::brotlicommon APPEND PROPERTY INTERFACE_LINK_LIBRARIES m)
+  endif()
+endif()
+
+if(NOT TARGET unofficial::brotli::brotlidec)
+  add_library(unofficial::brotli::brotlidec UNKNOWN IMPORTED)
+  set_target_properties(unofficial::brotli::brotlidec PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES "{include_path}"
+    IMPORTED_LOCATION "{dec_default.as_posix()}"
+  )
+  if(EXISTS "{_posix(dec_release)}")
+    set_property(TARGET unofficial::brotli::brotlidec PROPERTY IMPORTED_LOCATION_RELEASE "{_posix(dec_release)}")
+  endif()
+  if(EXISTS "{_posix(dec_debug)}")
+    set_property(TARGET unofficial::brotli::brotlidec PROPERTY IMPORTED_LOCATION_DEBUG "{_posix(dec_debug)}")
+  endif()
+  set_property(TARGET unofficial::brotli::brotlidec APPEND PROPERTY INTERFACE_LINK_LIBRARIES unofficial::brotli::brotlicommon)
+endif()
+
+if(NOT TARGET unofficial::brotli::brotlienc)
+  add_library(unofficial::brotli::brotlienc UNKNOWN IMPORTED)
+  set_target_properties(unofficial::brotli::brotlienc PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES "{include_path}"
+    IMPORTED_LOCATION "{enc_default.as_posix()}"
+  )
+  if(EXISTS "{_posix(enc_release)}")
+    set_property(TARGET unofficial::brotli::brotlienc PROPERTY IMPORTED_LOCATION_RELEASE "{_posix(enc_release)}")
+  endif()
+  if(EXISTS "{_posix(enc_debug)}")
+    set_property(TARGET unofficial::brotli::brotlienc PROPERTY IMPORTED_LOCATION_DEBUG "{_posix(enc_debug)}")
+  endif()
+  set_property(TARGET unofficial::brotli::brotlienc APPEND PROPERTY INTERFACE_LINK_LIBRARIES unofficial::brotli::brotlicommon)
+endif()
+"""
+        version_text = f"""\
+set(PACKAGE_VERSION "{version}")
+if(PACKAGE_FIND_VERSION VERSION_GREATER PACKAGE_VERSION)
+  set(PACKAGE_VERSION_COMPATIBLE FALSE)
+else()
+  set(PACKAGE_VERSION_COMPATIBLE TRUE)
+  if(PACKAGE_FIND_VERSION STREQUAL PACKAGE_VERSION)
+    set(PACKAGE_VERSION_EXACT TRUE)
+  endif()
+endif()
+"""
+        for name in ("unofficial-brotliConfig.cmake", "unofficial-brotli-config.cmake"):
+            try:
+                (cmake_dir / name).write_text(config_text, encoding="utf-8")
+            except OSError:
+                return
+        for name in ("unofficial-brotliConfigVersion.cmake", "unofficial-brotli-config-version.cmake"):
             try:
                 (cmake_dir / name).write_text(version_text, encoding="utf-8")
             except OSError:
@@ -3232,6 +3519,47 @@ endif()
                 st = zip_path.stat()
                 payload["vcpkg_export_zip_size"] = int(st.st_size)
                 payload["vcpkg_export_zip_mtime"] = int(st.st_mtime)
+        if repo.name == "openssl" and self.platform.os == "windows":
+            zip_path = self._openssl_export_zip()
+            payload["vcpkg_export_zip"] = str(zip_path)
+            if zip_path.exists():
+                st = zip_path.stat()
+                payload["vcpkg_export_zip_size"] = int(st.st_size)
+                payload["vcpkg_export_zip_mtime"] = int(st.st_mtime)
+        if repo.build_system == "qt6":
+            qt_submodules = [
+                "qtbase",
+                "qtdeclarative",
+                "qtquickcontrols2",
+                "qtshadertools",
+                "qtmultimedia",
+                "qtimageformats",
+                "qtsvg",
+            ]
+            if self.platform.os == "linux":
+                qt_submodules.append("qtwayland")
+            payload["qt6"] = {
+                "submodules": qt_submodules,
+                "mode": "debug" if ctx.build_type == "Debug" else "release",
+                "opengl": "desktop" if self.platform.os in {"linux", "macos"} else "default",
+                "qpa": ("xcb;wayland" if self.platform.os == "linux" else "default"),
+                "qpa_default": ("xcb" if self.platform.os == "linux" else "default"),
+                "ssl": ("openssl-linked" if self.platform.os in {"linux", "windows"} else "default"),
+                "static_runtime": (self.platform.os == "windows"),
+                "system_libs": {
+                    "pcre": "system",
+                    "zlib": "system",
+                    "freetype": "system",
+                    "harfbuzz": "system",
+                    "libpng": "system",
+                    "libjpeg": "system",
+                    "tiff": "system",
+                    "webp": "system",
+                },
+                "disabled_features": ["gstreamer", "pipewire"],
+                "feature_ffmpeg": (self.platform.os != "windows" and self._ffmpeg_enabled()),
+                "pkg_config_use_static_libs": True,
+            }
         return payload
 
     def _dep_fingerprint(self, dep: str, build_type: str) -> str | None:
@@ -3265,6 +3593,8 @@ endif()
         if repo.name == "bzip2":
             self._ensure_bzip2_alias(install_prefix, build_type)
             self._ensure_bzip2_package(install_prefix, build_type)
+        if repo.name == "brotli":
+            self._ensure_unofficial_brotli_package(install_prefix, build_type)
         if repo.name == "aom":
             self._ensure_aom_package(install_prefix, build_type)
         if repo.name == "pystring":
@@ -3613,6 +3943,260 @@ endif()
             print_cmd("install command", install_cmd)
             banner(f"{repo.name} ({build_type}) - install")
             run(install_cmd, cwd=str(build_dir), env=env, dry_run=self.dry_run, log_path=str(self._repo_log_path(repo.name, build_type, "install")))
+        elif repo.build_system == "qt6":
+            configure = src_dir / ("configure.bat" if self.platform.os == "windows" else "configure")
+            if not configure.exists():
+                raise RuntimeError(f"Missing Qt configure script for {repo.name}: {configure}")
+
+            # Qt's WrapBrotli finder prefers a vcpkg-style `unofficial-brotli` package, otherwise it
+            # falls back to pkg-config. Static builds may miss `libbrotlicommon` in the pkg-config
+            # branch, so provide a tiny config shim when brotli is present in the prefix.
+            self._ensure_unofficial_brotli_package(install_prefix, build_type)
+
+            # Rebuild from a clean build tree to avoid confusing incremental states.
+            if not self.dry_run:
+                if build_dir.exists():
+                    shutil.rmtree(build_dir, ignore_errors=True)
+                build_dir.mkdir(parents=True, exist_ok=True)
+            else:
+                build_dir.mkdir(parents=True, exist_ok=True)
+
+            qt_submodules = [
+                "qtbase",
+                "qtdeclarative",
+                "qtquickcontrols2",
+                "qtshadertools",
+                "qtmultimedia",
+                "qtimageformats",
+                "qtsvg",
+            ]
+            if self.platform.os == "linux":
+                qt_submodules.append("qtwayland")
+
+            def _qt_submodule_initialized(name: str) -> bool:
+                path = ctx.src_dir / name
+                if not path.is_dir():
+                    return False
+                # A non-initialized git submodule usually exists as an empty directory.
+                if (path / ".git").exists():
+                    return True
+                if (path / "CMakeLists.txt").exists():
+                    return True
+                try:
+                    next(path.iterdir())
+                except StopIteration:
+                    return False
+                return True
+
+            missing_submodules = [name for name in qt_submodules if not _qt_submodule_initialized(name)]
+
+            if missing_submodules:
+                init_repo = src_dir / ("init-repository.bat" if self.platform.os == "windows" else "init-repository")
+                if init_repo.exists():
+                    banner(f"{repo.name} ({build_type}) - init submodules")
+                    init_cmd: list[str] = []
+                    if self.platform.os == "windows":
+                        init_cmd = [
+                            "cmd",
+                            "/c",
+                            str(init_repo),
+                            f"--module-subset={','.join(qt_submodules)}",
+                            "--no-optional-deps",
+                        ]
+                    else:
+                        init_cmd = [
+                            str(init_repo),
+                            f"--module-subset={','.join(qt_submodules)}",
+                            "--no-optional-deps",
+                        ]
+                    if self.no_update:
+                        # We still need to fetch at least once to clone missing Qt submodules.
+                        # `init-repository --no-fetch` would prevent bringing in new submodules.
+                        print(
+                            "[note] Qt6: missing submodules require fetching; ignoring no_update for init-repository.",
+                            flush=True,
+                        )
+                    print_cmd("init-repository command", init_cmd)
+                    run(
+                        init_cmd,
+                        cwd=str(src_dir),
+                        env=env,
+                        dry_run=self.dry_run,
+                        log_path=str(self._repo_log_path(repo.name, build_type, "init-submodules")),
+                    )
+
+            if self.platform.os == "linux" and "qtwayland" in qt_submodules:
+                if not shutil.which("wayland-scanner"):
+                    raise RuntimeError(
+                        "Qt6: wayland-scanner not found. Install Wayland development tools (wayland-scanner) to build qtwayland."
+                    )
+
+            pulse_ok = False
+            alsa_ok = False
+            if self.platform.os == "linux":
+                pulse_ok = subprocess.run(["pkg-config", "--exists", "libpulse"], env=env, check=False).returncode == 0
+                alsa_ok = subprocess.run(["pkg-config", "--exists", "alsa"], env=env, check=False).returncode == 0
+                if self._ffmpeg_enabled() and not pulse_ok and not alsa_ok:
+                    print(
+                        "[note] Qt6: neither libpulse nor alsa dev packages were found via pkg-config. "
+                        "QtMultimedia audio backends may be limited.",
+                        flush=True,
+                    )
+
+            qt_args: list[str] = [
+                "-prefix",
+                str(install_prefix),
+                "-extprefix",
+                str(install_prefix),
+                "-opensource",
+                "-confirm-license",
+                "-static",
+                "-nomake",
+                "tests",
+                "-nomake",
+                "examples",
+                "-cmake-generator",
+                "Ninja",
+                "-submodules",
+                ",".join(qt_submodules),
+                "-system-pcre",
+                "-system-zlib",
+                "-system-freetype",
+                "-system-harfbuzz",
+                "-system-libpng",
+                "-system-libjpeg",
+                "-system-tiff",
+                "-system-webp",
+                "-no-feature-gstreamer",
+                "-no-feature-pipewire",
+            ]
+
+            if build_type == "Debug":
+                qt_args.append("-debug")
+            else:
+                qt_args.append("-release")
+
+            if self.platform.os in {"linux", "macos"}:
+                qt_args.extend(["-opengl", "desktop"])
+
+            if self.platform.os == "linux":
+                qt_args.extend(["-qpa", "xcb;wayland", "-default-qpa", "xcb"])
+                qt_args.append("-no-gtk")
+
+            if self.platform.os in {"linux", "windows"}:
+                qt_args.append("-openssl-linked")
+            if self.platform.os == "windows":
+                qt_args.extend(["-static-runtime", "-no-schannel"])
+
+            if self._ffmpeg_enabled():
+                if self.platform.os == "linux":
+                    if pulse_ok:
+                        qt_args.append("-feature-ffmpeg")
+                    else:
+                        print(
+                            "[note] Qt6: libpulse dev package not found via pkg-config; "
+                            "QtMultimedia FFmpeg backend cannot be enabled on Linux. "
+                            "Install libpulse development files to enable FFmpeg, or disable FFmpeg for QtMultimedia.",
+                            flush=True,
+                        )
+                elif self.platform.os != "windows":
+                    qt_args.append("-feature-ffmpeg")
+
+            cmake_args: list[str] = [
+                f"-DCMAKE_BUILD_TYPE={build_type}",
+                "-DCMAKE_FIND_PACKAGE_TARGETS_GLOBAL=TRUE",
+                f"-DCMAKE_PREFIX_PATH={install_prefix}",
+                f"-DCMAKE_INCLUDE_PATH={install_prefix / 'include'}",
+                f"-DCMAKE_LIBRARY_PATH={install_prefix / 'lib'}",
+                "-DPKG_CONFIG_USE_STATIC_LIBS=ON",
+            ]
+            if self.config.global_cfg.pic:
+                cmake_args.append("-DCMAKE_POSITION_INDEPENDENT_CODE=ON")
+
+            cflags = self._base_flags(build_type)
+            cxxflags = self._base_flags(build_type)
+            if self.platform.os == "windows":
+                cmake_args.append("-DCMAKE_POLICY_DEFAULT_CMP0091=NEW")
+                runtime_mode = self._windows_runtime_mode()
+                if runtime_mode == "static":
+                    runtime = "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+                elif runtime_mode == "dynamic":
+                    runtime = "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+                else:
+                    runtime = str(self.config.global_cfg.windows.get("msvc_runtime"))
+                cmake_args.append(f"-DCMAKE_MSVC_RUNTIME_LIBRARY={runtime}")
+                cxxflags += " /bigobj"
+                cmake_args.append(f"-DOPENSSL_ROOT_DIR={install_prefix}")
+            if self.platform.os in {"macos", "linux"} and self.config.global_cfg.use_libcxx:
+                cxxflags += " -stdlib=libc++"
+            cmake_args.append(f"-DCMAKE_C_FLAGS_INIT={cflags}")
+            cmake_args.append(f"-DCMAKE_CXX_FLAGS_INIT={cxxflags}")
+
+            linker_flags = self._linker_flags_init()
+            if linker_flags:
+                cmake_args += [
+                    f"-DCMAKE_EXE_LINKER_FLAGS_INIT={linker_flags}",
+                    f"-DCMAKE_SHARED_LINKER_FLAGS_INIT={linker_flags}",
+                    f"-DCMAKE_MODULE_LINKER_FLAGS_INIT={linker_flags}",
+                ]
+
+            if self.toolchain:
+                if "cc" in self.toolchain:
+                    cmake_args.append(f"-DCMAKE_C_COMPILER={self.toolchain['cc']}")
+                if "cxx" in self.toolchain:
+                    cmake_args.append(f"-DCMAKE_CXX_COMPILER={self.toolchain['cxx']}")
+                if "ld" in self.toolchain:
+                    cmake_args.append(f"-DCMAKE_LINKER={self.toolchain['ld']}")
+                if "ar" in self.toolchain:
+                    cmake_args.append(f"-DCMAKE_AR={self.toolchain['ar']}")
+                if "ranlib" in self.toolchain:
+                    cmake_args.append(f"-DCMAKE_RANLIB={self.toolchain['ranlib']}")
+
+            if self.platform.os != "windows" and self._ffmpeg_enabled():
+                cmake_args.append(f"-DFFMPEG_DIR={install_prefix}")
+
+            full_cmd: list[str] = []
+            if self.platform.os == "windows":
+                full_cmd = ["cmd", "/c", str(configure)]
+            else:
+                full_cmd = [str(configure)]
+            full_cmd.extend(qt_args)
+            full_cmd.append("--")
+            full_cmd.extend(cmake_args)
+
+            print_cmd("configure command", full_cmd)
+            banner(f"{repo.name} ({build_type}) - configure")
+            run(
+                full_cmd,
+                cwd=str(build_dir),
+                env=env,
+                dry_run=self.dry_run,
+                log_path=str(self._repo_log_path(repo.name, build_type, "configure")),
+            )
+            if not self.dry_run:
+                cache = build_dir / "CMakeCache.txt"
+                if not cache.exists():
+                    raise RuntimeError(
+                        "Qt6: configure finished without generating CMakeCache.txt. "
+                        "This commonly means required git submodules were not initialized; "
+                        "re-run and allow -init-submodules to populate qtbase/qtdeclarative/etc."
+                    )
+
+            build_cmd = ["cmake", "--build", str(build_dir), "--config", build_type, "--parallel", str(self._jobs())]
+            print_cmd("build command", build_cmd)
+            banner(f"{repo.name} ({build_type}) - building")
+            run(build_cmd, cwd=str(build_dir), env=env, dry_run=self.dry_run, log_path=str(self._repo_log_path(repo.name, build_type, "build")))
+
+            install_cmd = ["cmake", "--install", str(build_dir), "--config", build_type, "--prefix", str(install_prefix)]
+            print_cmd("install command", install_cmd)
+            banner(f"{repo.name} ({build_type}) - install")
+            run(
+                install_cmd,
+                cwd=str(build_dir),
+                env=env,
+                dry_run=self.dry_run,
+                log_path=str(self._repo_log_path(repo.name, build_type, "install")),
+            )
         elif repo.build_system == "libiconv":
             if self.platform.os != "windows":
                 raise RuntimeError("libiconv build system is only supported on Windows")
@@ -3800,6 +4384,216 @@ endif()
                         "set(Iconv_INCLUDE_DIRS \"${_iconv_incdir}\")",
                         "set(Iconv_LIBRARY \"${_iconv_lib_release}\")",
                         "set(Iconv_LIBRARIES \"${_iconv_lib_release};${_charset_lib_release}\")",
+                        "",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+        elif repo.build_system == "openssl":
+            if self.platform.os != "windows":
+                raise RuntimeError("openssl build system is only supported on Windows")
+            build_dir.mkdir(parents=True, exist_ok=True)
+
+            zip_path = self._openssl_export_zip(env)
+            if not zip_path.exists():
+                raise RuntimeError(f"Missing openssl vcpkg export zip: {zip_path}")
+
+            banner(f"{repo.name} ({build_type}) - stage")
+            print(f"vcpkg export zip: {zip_path}", flush=True)
+
+            import zipfile
+
+            export_dir = build_dir / "_openssl_vcpkg_export"
+            marker = export_dir / ".zipstamp"
+            st = zip_path.stat()
+            stamp = f"{zip_path}|{int(st.st_size)}|{int(st.st_mtime)}"
+
+            if self.dry_run:
+                print(f"[dry-run] extract -> {export_dir}", flush=True)
+                return ("rebuilt" if had_stamp else "built"), ""
+
+            if marker.exists() and marker.read_text(encoding="utf-8").strip() == stamp:
+                pass
+            else:
+                if export_dir.exists():
+                    shutil.rmtree(export_dir, ignore_errors=True)
+                export_dir.mkdir(parents=True, exist_ok=True)
+                with zipfile.ZipFile(zip_path) as zf:
+                    export_abs = export_dir.resolve()
+                    for info in zf.infolist():
+                        name = info.filename
+                        if not name or name.endswith("/"):
+                            continue
+                        dest = export_dir / name
+                        dest_abs = dest.resolve()
+                        if export_abs not in dest_abs.parents and dest_abs != export_abs:
+                            raise RuntimeError(f"Refusing to extract outside destination: {name}")
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        with zf.open(info) as src_f, open(dest, "wb") as dst_f:
+                            shutil.copyfileobj(src_f, dst_f)
+                marker.write_text(stamp, encoding="utf-8")
+
+            def _find_export_root(base: Path) -> Path:
+                if (base / "installed").is_dir():
+                    return base
+                for child in base.iterdir():
+                    if child.is_dir() and (child / "installed").is_dir():
+                        return child
+                raise RuntimeError(f"Unexpected vcpkg export layout under {base}")
+
+            export_root = _find_export_root(export_dir)
+            installed_dir = export_root / "installed"
+
+            triplet_candidates = [
+                p
+                for p in installed_dir.iterdir()
+                if p.is_dir() and p.name != "vcpkg" and (p / "include" / "openssl" / "ssl.h").exists()
+            ]
+            if not triplet_candidates:
+                raise RuntimeError(
+                    f"vcpkg export zip does not contain installed/<triplet>/include/openssl/ssl.h: {zip_path}"
+                )
+
+            def _triplet_score(path: Path) -> tuple[int, str]:
+                name = path.name.lower()
+                score = 0
+                if "static" in name:
+                    score -= 10
+                bin_dir = path / "bin"
+                if bin_dir.is_dir() and any(bin_dir.glob("*.dll")):
+                    score += 5
+                return score, name
+
+            triplet_candidates.sort(key=_triplet_score)
+            triplet_dir = triplet_candidates[0]
+
+            include_src = triplet_dir / "include"
+            lib_src = triplet_dir / "lib"
+            debug_lib_src = triplet_dir / "debug" / "lib"
+            bin_src = triplet_dir / "bin"
+
+            def _pick_lib(dir_path: Path, stems: list[str]) -> Path | None:
+                for stem in stems:
+                    p = dir_path / stem
+                    if p.exists():
+                        return p
+                return None
+
+            ssl_release = _pick_lib(lib_src, ["libssl.lib", "ssl.lib"])
+            crypto_release = _pick_lib(lib_src, ["libcrypto.lib", "crypto.lib"])
+            ssl_debug = _pick_lib(debug_lib_src, ["libssl.lib", "ssl.lib"])
+            crypto_debug = _pick_lib(debug_lib_src, ["libcrypto.lib", "crypto.lib"])
+
+            required = [
+                include_src / "openssl" / "ssl.h",
+                ssl_release,
+                crypto_release,
+                ssl_debug,
+                crypto_debug,
+            ]
+            missing = [p for p in required if not p or not p.exists()]
+            if missing:
+                wanted = "\n".join(f"  - {p}" for p in missing)
+                raise RuntimeError(f"openssl vcpkg export is missing expected files:\n{wanted}")
+
+            debug_postfix = str(self.config.global_cfg.windows.get("debug_postfix", "d"))
+
+            def _add_debug_postfix(filename: str) -> str:
+                p = Path(filename)
+                suffixes = p.suffixes
+                if not suffixes:
+                    return filename + debug_postfix
+                base = filename
+                for suff in suffixes:
+                    if base.endswith(suff):
+                        base = base[: -len(suff)]
+                if base.endswith(debug_postfix):
+                    return filename
+                return base + debug_postfix + "".join(suffixes)
+
+            banner(f"{repo.name} ({build_type}) - install")
+
+            inc_dst = install_prefix / "include"
+            lib_dst = install_prefix / "lib"
+            bin_dst = install_prefix / "bin"
+            inc_dst.mkdir(parents=True, exist_ok=True)
+            lib_dst.mkdir(parents=True, exist_ok=True)
+            if bin_src.is_dir():
+                bin_dst.mkdir(parents=True, exist_ok=True)
+
+            for item in include_src.iterdir():
+                dest = inc_dst / item.name
+                if item.is_dir():
+                    shutil.copytree(item, dest, dirs_exist_ok=True)
+                elif item.is_file():
+                    shutil.copy2(item, dest)
+
+            for item in lib_src.iterdir():
+                if item.is_file() and item.suffix.lower() == ".lib":
+                    shutil.copy2(item, lib_dst / item.name)
+            for item in debug_lib_src.iterdir():
+                if item.is_file() and item.suffix.lower() == ".lib":
+                    shutil.copy2(item, lib_dst / _add_debug_postfix(item.name))
+
+            if bin_src.is_dir():
+                if any(bin_src.glob("*.dll")):
+                    print("[note] openssl export contains DLLs; prefer exporting a *-static triplet for a fully static prefix", flush=True)
+                for item in bin_src.iterdir():
+                    if item.is_file() and item.suffix.lower() in {".dll", ".pdb", ".exe"}:
+                        shutil.copy2(item, bin_dst / item.name)
+
+            cmake_dir = install_prefix / "lib" / "cmake" / "OpenSSL"
+            cmake_dir.mkdir(parents=True, exist_ok=True)
+
+            ssl_name = ssl_release.name if ssl_release else "libssl.lib"
+            crypto_name = crypto_release.name if crypto_release else "libcrypto.lib"
+            ssl_dbg_name = _add_debug_postfix(ssl_name)
+            crypto_dbg_name = _add_debug_postfix(crypto_name)
+
+            (cmake_dir / "OpenSSLConfig.cmake").write_text(
+                "\n".join(
+                    [
+                        "# Generated by oiio-builder (imported from vcpkg export)",
+                        "set(OpenSSL_FOUND TRUE)",
+                        "",
+                        "get_filename_component(_openssl_prefix \"${CMAKE_CURRENT_LIST_DIR}/../../..\" ABSOLUTE)",
+                        "set(OPENSSL_ROOT_DIR \"${_openssl_prefix}\")",
+                        "set(OPENSSL_INCLUDE_DIR \"${_openssl_prefix}/include\")",
+                        "set(OPENSSL_INCLUDE_DIRS \"${OPENSSL_INCLUDE_DIR}\")",
+                        "set(_openssl_libdir \"${_openssl_prefix}/lib\")",
+                        f"set(_openssl_debug_postfix \"{debug_postfix}\")",
+                        "",
+                        f"set(OPENSSL_SSL_LIBRARY \"${{_openssl_libdir}}/{ssl_name}\")",
+                        f"set(OPENSSL_CRYPTO_LIBRARY \"${{_openssl_libdir}}/{crypto_name}\")",
+                        "set(OPENSSL_LIBRARIES \"${OPENSSL_SSL_LIBRARY};${OPENSSL_CRYPTO_LIBRARY}\")",
+                        "",
+                        "if(NOT TARGET OpenSSL::Crypto)",
+                        "  add_library(OpenSSL::Crypto UNKNOWN IMPORTED)",
+                        "  set_property(TARGET OpenSSL::Crypto PROPERTY IMPORTED_CONFIGURATIONS \"RELEASE;DEBUG\")",
+                        "  set_target_properties(OpenSSL::Crypto PROPERTIES",
+                        "    INTERFACE_INCLUDE_DIRECTORIES \"${OPENSSL_INCLUDE_DIR}\"",
+                        f"    IMPORTED_LOCATION_RELEASE \"${{_openssl_libdir}}/{crypto_name}\"",
+                        f"    IMPORTED_LOCATION_DEBUG \"${{_openssl_libdir}}/{crypto_dbg_name}\"",
+                        "    MAP_IMPORTED_CONFIG_MINSIZEREL Release",
+                        "    MAP_IMPORTED_CONFIG_RELWITHDEBINFO Release",
+                        "    MAP_IMPORTED_CONFIG_ASAN Release",
+                        "  )",
+                        "endif()",
+                        "",
+                        "if(NOT TARGET OpenSSL::SSL)",
+                        "  add_library(OpenSSL::SSL UNKNOWN IMPORTED)",
+                        "  set_property(TARGET OpenSSL::SSL PROPERTY IMPORTED_CONFIGURATIONS \"RELEASE;DEBUG\")",
+                        "  set_target_properties(OpenSSL::SSL PROPERTIES",
+                        "    INTERFACE_INCLUDE_DIRECTORIES \"${OPENSSL_INCLUDE_DIR}\"",
+                        f"    IMPORTED_LOCATION_RELEASE \"${{_openssl_libdir}}/{ssl_name}\"",
+                        f"    IMPORTED_LOCATION_DEBUG \"${{_openssl_libdir}}/{ssl_dbg_name}\"",
+                        "    INTERFACE_LINK_LIBRARIES OpenSSL::Crypto",
+                        "    MAP_IMPORTED_CONFIG_MINSIZEREL Release",
+                        "    MAP_IMPORTED_CONFIG_RELWITHDEBINFO Release",
+                        "    MAP_IMPORTED_CONFIG_ASAN Release",
+                        "  )",
+                        "endif()",
                         "",
                     ]
                 )
@@ -4007,6 +4801,8 @@ endif()
             if self._maybe_skip_missing(repo, repo_dir):
                 continue
             if repo.name == "libiconv" and self.platform.os == "windows":
+                continue
+            if repo.name == "openssl" and self.platform.os == "windows":
                 continue
             ensure_repo(repo_dir, repo.url, repo.ref, repo.ref_type, update=not self.no_update, dry_run=self.dry_run)
 

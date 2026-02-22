@@ -47,7 +47,8 @@ preferred_repo_order = [
 # Global language and toolchain policy
 cxx_standard = 20
 cxx_extensions = false
-use_libcxx = false
+# use_libcxx = false in case of CUDA
+use_libcxx = true
 use_lld = true
 static_default = true
 pic = true
@@ -76,6 +77,8 @@ build_ptex = true
 build_pybind11 = true
 build_ffmpeg = true
 build_oiio = true
+build_qt6 = false
+build_dng_sdk = false
 openimageio_patch_png_include = true
 
 # Repo-specific switches (match shell script defaults)
@@ -140,6 +143,31 @@ name = "zlib-ng"
 dir = "zlib-ng"
 url = "https://github.com/zlib-ng/zlib-ng.git"
 build_system = "cmake"
+
+[[repos]]
+name = "pcre2"
+dir = "pcre2"
+url = "https://github.com/PCRE2Project/pcre2.git"
+build_system = "cmake"
+
+[[repos]]
+name = "openssl"
+dir = "openssl"
+# Windows-only: imported from a vcpkg export zip placed under `external/`.
+# Default expected path: `external/vcpkg-export-openssl.zip`
+# Override: set `OPENSSL_VCPKG_EXPORT_ZIP` in `[windows.env]` or the process env.
+url = ""
+build_system = "openssl"
+
+[[repos]]
+name = "Qt6"
+dir = "Qt6"
+dir_candidates = ["Qt6", "qt6", "qt", "Qt", "qt5", "Qt5"]
+url = "https://github.com/qt/qt5.git"
+ref = "v6.9.2"
+ref_type = "tag"
+build_system = "qt6"
+deps = ["pcre2", "zlib-ng", "libpng", "libjpeg-turbo", "libtiff", "libwebp", "freetype", "harfbuzz", "ffmpeg", "openssl"]
 
 [[repos]]
 name = "xz"
@@ -258,6 +286,14 @@ build_system = "cmake"
 deps = ["libdeflate"]
 
 [[repos]]
+name = "dng-sdk"
+dir = "DNG-CMake"
+dir_candidates = ["DNG-CMake", "dng-cmake", "dngsdk", "dng_sdk"]
+url = "https://github.com/ssh4net/DNG-CMake.git"
+build_system = "cmake"
+deps = ["zlib-ng", "libjpeg-turbo", "expat", "brotli", "highway", "libjxl"]
+
+[[repos]]
 name = "LibRaw"
 dir = "LibRaw"
 url = "https://github.com/LibRaw/LibRaw.git"
@@ -267,7 +303,7 @@ name = "libraw"
 dir = "LibRaw-cmake"
 url = "https://github.com/ssh4net/LibRaw-cmake.git"
 build_system = "cmake"
-deps = ["libjpeg-turbo", "lcms2", "zlib-ng", "jasper", "libxml2", "LibRaw"]
+deps = ["libjpeg-turbo", "lcms2", "zlib-ng", "dng-sdk", "jasper", "libxml2", "LibRaw"]
 
 [[repos]]
 name = "aom"
@@ -463,6 +499,7 @@ dir = "OpenImageIO"
 url = "https://github.com/AcademySoftwareFoundation/OpenImageIO.git"
 build_system = "cmake"
 deps = [
+  "Qt6",
   "zlib-ng",
   "libpng",
   "libjpeg-turbo",

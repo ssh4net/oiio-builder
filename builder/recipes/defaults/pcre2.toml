@@ -1,0 +1,6 @@
+[cmake.cache]
+PCRE2_BUILD_PCRE2_8 = true
+PCRE2_BUILD_PCRE2_16 = true
+PCRE2_BUILD_PCRE2_32 = false
+PCRE2_BUILD_TESTS = false
+PCRE2_SUPPORT_JIT = false

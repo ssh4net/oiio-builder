@@ -1,0 +1,15 @@
+[cmake.cache]
+# DNG-CMake: build libraries only by default (avoid extra build time).
+BUILD_DNG_VALIDATE = false
+BUILD_DOCUMENTATION = false
+
+# Prefer system deps from the prefix / CMAKE_PREFIX_PATH.
+DNG_BUNDLED_JPEG = false
+DNG_BUNDLED_JXL = false
+XMP_USE_SYSTEM_ZLIB = true
+XMP_USE_SYSTEM_BOOST = false
+
+# Keep initial integration minimal; can be overridden in build.user.toml.
+# Note: the Adobe DNG SDK sources include JPEG-XL support code by default.
+# If disabled, the build may require additional patching to avoid compiling JXL paths.
+DNG_WITH_JXL = true
