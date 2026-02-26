@@ -9,6 +9,7 @@ Tools the builder expects to find (or be explicitly pointed at via config/env):
 - `cmake`
 - `ninja` (for Ninja-based generators)
 - `pkg-config` (we recommend `pkgconf`)
+- `ccache` (optional, recommended on macOS/Linux)
 - `doxygen`
 - OpenMP runtime (`libomp`) when enabling OpenMP (for example: `libraw_enable_openmp="ON"`). On Windows this commonly comes from an LLVM install.
 - `nasm`/`yasm` on x86_64
@@ -19,6 +20,13 @@ We recommend using `uv` (Astral) to create the virtual environment and run comma
 Windows notes:
 - Doxygen and LLVM can be installed from official/prebuilt installers (common layout: `C:\\Program Files\\doxygen\\...`, `C:\\LLVM\\...`).
 - `pkg-config` can be obtained via vcpkg (the builder does not use vcpkg itself, but it is useful for tools and for a few Windows-only imports like `libiconv`). You can point `PKG_CONFIG_EXECUTABLE` at the vcpkg-installed `pkgconf.exe`, or `vcpkg export pkgconf --zip` and unpack it anywhere on disk.
+
+`ccache` install (optional, macOS/Linux):
+- Ubuntu/Debian: `sudo apt-get install ccache`
+- Fedora/RHEL: `sudo dnf install ccache`
+- Arch: `sudo pacman -S ccache`
+- macOS (Homebrew): `brew install ccache`
+- Verify: `ccache --version`
 
 ## Installation (Step-by-Step)
 
