@@ -14,6 +14,7 @@ build_types = ["Debug", "Release"]
 preferred_repo_order = [
   "googletest",
   "fmt",
+  "spdlog",
   "zlib-ng",
   "libdeflate",
   "xz",
@@ -21,6 +22,7 @@ preferred_repo_order = [
   "bzip2",
   "brotli",
   "pugixml",
+  "nativefiledialog-extended",
   "libjpeg-turbo",
   "glfw",
   "glew",
@@ -32,6 +34,7 @@ preferred_repo_order = [
   "harfbuzz",
   "robinmap",
   "eigen",
+  "LBFGSpp",
   "imath",
   "pystring",
   "nanobind",
@@ -266,6 +269,14 @@ build_system = "cmake"
 #optional = true
 
 [[repos]]
+name = "nativefiledialog-extended"
+dir = "nativefiledialog-extended"
+url = "https://github.com/btzy/nativefiledialog-extended.git"
+ref = "v1.3.0"
+ref_type = "tag"
+build_system = "cmake"
+
+[[repos]]
 name = "giflib"
 dir = "gif"
 dir_candidates = ["giflib", "giflib-*", "gif*"]
@@ -392,6 +403,13 @@ ref_type = "branch"
 build_system = "cmake"
 
 [[repos]]
+name = "LBFGSpp"
+dir = "LBFGSpp"
+url = "https://github.com/yixuan/LBFGSpp.git"
+build_system = "cmake"
+deps = ["eigen"]
+
+[[repos]]
 name = "imath"
 dir = "Imath"
 url = "https://github.com/AcademySoftwareFoundation/Imath.git"
@@ -479,6 +497,13 @@ name = "fmt"
 dir = "fmt"
 url = "https://github.com/fmtlib/fmt.git"
 build_system = "cmake"
+
+[[repos]]
+name = "spdlog"
+dir = "spdlog"
+url = "https://github.com/gabime/spdlog.git"
+build_system = "cmake"
+deps = ["fmt"]
 
 [[repos]]
 name = "OpenColorIO"

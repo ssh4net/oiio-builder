@@ -39,6 +39,16 @@ Windows notes:
    DOXYGEN_EXECUTABLE = "C:/Program Files/doxygen/bin/doxygen.exe"
    OpenMP_ROOT = "C:/LLVM" # provides <OpenMP_ROOT>/lib/libomp.lib
    ```
+   Example for ccache on Linux/macOS:
+   ```toml
+   [global]
+   use_ccache = true
+
+   [global.env]
+   CCACHE_DIR = "/tmp/ccache"        # pick a fast local filesystem
+   CCACHE_TEMPDIR = "/tmp/ccache-tmp"
+   CCACHE_MAXSIZE = "20G"
+   ```
 6. Run a preflight check:
    ```bash
    uv run build.py --preflight
@@ -46,6 +56,10 @@ Windows notes:
 7. Build:
    ```bash
    uv run build.py --build-types Debug,Release
+   ```
+   Parallel build types on macOS/Linux (splits `--jobs` across configs):
+   ```bash
+   uv run build.py --build-types Debug,Release --parallel-build-types
    ```
 
 ## Quick Start
@@ -82,6 +96,7 @@ Key options:
 - `build_types`: list of configs to build (`Debug`, `Release`, `ASAN`).
 - `preferred_repo_order`: optional list of repo names that influences build order when multiple repos are ready (deps still win).
 - `use_libcxx`: default on macOS/Linux; set `false` to use libstdc++.
+- `use_ccache`: enable `ccache` compiler launcher on macOS/Linux (default: `true`). Disable with `--no-ccache` or `use_ccache=false`. Configure cache paths via `[global.env]` (`CCACHE_DIR`, `CCACHE_TEMPDIR`, `CCACHE_MAXSIZE`, …).
 - `build_*` toggles: enable/disable stacks (GL, EXR, image IO, etc.).
 - `build_qt6`: build a minimal **static Qt6** stack into the prefix (for consumers like OpenImageIO `iv` and GPUpad).
 - `build_dng_sdk`: build Adobe DNG SDK + XMP (via `DNG-CMake`) into the prefix (optional; disabled by default).
@@ -226,7 +241,7 @@ build_qt6 = true
 ```
 
 What it builds (static):
-- `qtbase`, `qtdeclarative`, `qtquickcontrols2`, `qtshadertools`, `qtmultimedia`, `qtimageformats`, `qtsvg` (+ `qtwayland` on Linux)
+- `qtbase`, `qtdeclarative` (includes Quick Controls in Qt6), `qtshadertools`, `qtmultimedia`, `qtimageformats`, `qtsvg` (+ `qtwayland` on Linux)
 
 Build only Qt6:
 ```bash
@@ -280,6 +295,7 @@ DOXYGEN_EXECUTABLE = "C:\\Program Files\\doxygen\\bin\\doxygen.exe"
 
 - **Rebuild not triggered after local edits**: stamps track dependency fingerprints and applied per-repo option layers, but not uncommitted working tree changes. Use `--force --only <repo>` for targeted rebuilds or `--force-all` for a clean run.
 - **uv cache permission issues**: set `UV_CACHE_DIR` to a writable directory (e.g. `UV_CACHE_DIR=/tmp/uv-cache`).
+- **nativefiledialog-extended (Linux) missing/broken GTK deps**: the builder configures `nativefiledialog-extended` with the GTK3 backend (`NFD_PORTAL=OFF`). Install the `gtk+-3.0` development packages (and ensure `pkg-config` can resolve GTK). To use the portal backend instead, override `NFD_PORTAL=ON`.
 - **Qt6 static link errors mentioning `Brotli*` symbols**: rebuild `brotli` (or re-run `Qt6`) so the prefix has an `unofficial-brotli` CMake package shim.
 - **OpenImageIO link errors mentioning `g_unicode_*` / `g_bytes_*` from `libharfbuzz.a`**: rebuild `harfbuzz` (and `freetype`) so HarfBuzz is built without GLib integration for static linking.
 - **Missing optional repos**: `yaml-cpp`, `pystring`, `expat`, `pugixml`, `libxml2` are skipped if not present. On Windows, `libiconv` is expected via `external/vcpkg-export-libiconv.zip`.

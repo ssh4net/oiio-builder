@@ -2,8 +2,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .policy import imageio_enabled
+
 
 STAMP_REVISION = "1"
+
+
+def enabled(builder, _repo) -> bool:
+    cfg = builder.config.global_cfg
+    return imageio_enabled(builder) and bool(cfg.build_kvazaar)
 
 
 def patch_source(_builder, src_dir: Path) -> None:
@@ -29,4 +36,3 @@ def patch_source(_builder, src_dir: Path) -> None:
 
     if text != original_text:
         cmake_lists.write_text(text, encoding="utf-8")
-

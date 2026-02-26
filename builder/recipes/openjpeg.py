@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+from .policy import imageio_enabled
+
 STAMP_REVISION = "3"
+
+
+def enabled(builder, _repo) -> bool:
+    return imageio_enabled(builder)
 
 
 def cmake_args(builder, ctx) -> list[str]:

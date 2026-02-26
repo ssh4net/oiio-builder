@@ -72,6 +72,12 @@ def main() -> int:
         ),
     )
     parser.add_argument("--reinstall-all", action="store_true", help="Force reinstall all repos in this run")
+    parser.add_argument(
+        "--parallel-build-types",
+        action="store_true",
+        help="Build multiple configs in parallel (macOS/Linux only). Splits --jobs across build types.",
+    )
+    parser.add_argument("--no-ccache", action="store_true", help="Disable ccache compiler launcher (if installed)")
     parser.add_argument("--preflight", action="store_true", help="Run tool/repo checks and exit")
     parser.add_argument("--list-repos", action="store_true", help="List configured repos")
     parser.add_argument("--print-prefixes", action="store_true", help="Print install prefixes and exit")
@@ -87,6 +93,8 @@ def main() -> int:
         if args.jobs < 0:
             raise SystemExit("--jobs must be >= 0")
         config.global_cfg.jobs = args.jobs
+    if args.no_ccache:
+        config.global_cfg.use_ccache = False
 
     if args.no_ffmpeg:
         config.global_cfg.build_ffmpeg = False
@@ -115,6 +123,7 @@ def main() -> int:
         force_all=args.force_all,
         reinstall=args.reinstall,
         reinstall_all=args.reinstall_all,
+        parallel_build_types=args.parallel_build_types,
     )
 
     if args.list_repos:

@@ -2,18 +2,80 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .policy import imageio_enabled
 
-STAMP_REVISION = "3"
+
+STAMP_REVISION = "4"
+
+
+def enabled(builder, _repo) -> bool:
+    cfg = builder.config.global_cfg
+    return imageio_enabled(builder) and bool(cfg.build_libraw)
 
 
 def cmake_args(builder, ctx) -> list[str]:
     cfg = builder.config.global_cfg
     if not getattr(cfg, "build_dng_sdk", False):
         return []
-    return [
+    args: list[str] = [
         "-DENABLE_DNGSDK=ON",
         f"-DDNGSDK_ROOT={ctx.install_prefix}",
     ]
+
+    if builder.platform.os != "windows":
+        return args
+
+    lib_dir = (ctx.install_prefix / "lib").resolve()
+    debug_postfix = str(cfg.windows.get("debug_postfix", "d"))
+    is_debug = ctx.build_type == "Debug"
+
+    def _pick(stems: list[str]) -> Path | None:
+        candidates: list[Path] = []
+        if is_debug:
+            for stem in stems:
+                candidates.extend(
+                    [
+                        lib_dir / f"{stem}{debug_postfix}.lib",
+                        lib_dir / f"lib{stem}{debug_postfix}.lib",
+                        lib_dir / f"{stem}.lib",
+                        lib_dir / f"lib{stem}.lib",
+                    ]
+                )
+        else:
+            for stem in stems:
+                candidates.extend(
+                    [
+                        lib_dir / f"{stem}.lib",
+                        lib_dir / f"lib{stem}.lib",
+                        lib_dir / f"{stem}{debug_postfix}.lib",
+                        lib_dir / f"lib{stem}{debug_postfix}.lib",
+                    ]
+                )
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+
+        matches: list[Path] = []
+        for stem in stems:
+            matches.extend(sorted(lib_dir.glob(f"{stem}*.lib")))
+            matches.extend(sorted(lib_dir.glob(f"lib{stem}*.lib")))
+        return matches[0] if matches else None
+
+    mapping = {
+        "JXL_LIBRARY": ["jxl"],
+        "JXL_THREADS_LIBRARY": ["jxl_threads"],
+        "JXL_CMS_LIBRARY": ["jxl_cms"],
+        "HWY_LIBRARY": ["hwy"],
+        "BROTLI_COMMON_LIBRARY": ["brotlicommon"],
+        "BROTLI_DEC_LIBRARY": ["brotlidec"],
+        "BROTLI_ENC_LIBRARY": ["brotlienc"],
+    }
+    for var, stems in mapping.items():
+        path = _pick(stems)
+        if path is not None:
+            args.append(f"-D{var}={path}")
+
+    return args
 
 
 def patch_source(_builder, src_dir: Path) -> None:

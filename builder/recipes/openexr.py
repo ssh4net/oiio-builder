@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import re
 
+from .policy import exr_enabled
+
 STAMP_REVISION = "3"
+
+
+def enabled(builder, _repo) -> bool:
+    return exr_enabled(builder)
 
 
 def patch_source(builder, src_dir) -> None:
@@ -70,3 +76,7 @@ def patch_source(builder, src_dir) -> None:
         if re.search(pattern, text):
             text = re.sub(pattern, replacement, text, count=1)
     cmake_file.write_text(text, encoding="utf-8")
+
+
+def post_install(builder, install_prefix, build_type: str) -> None:
+    builder._make_openexr_pc_override(install_prefix, build_type)

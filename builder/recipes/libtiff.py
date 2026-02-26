@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .policy import imageio_enabled
+
 STAMP_REVISION = "4"
+
+
+def enabled(builder, _repo) -> bool:
+    return imageio_enabled(builder)
 
 
 def cmake_args(builder, ctx) -> list[str]:

@@ -2,8 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .policy import exr_enabled
+
 
 STAMP_REVISION = "1"
+
+
+def enabled(builder, _repo) -> bool:
+    return exr_enabled(builder)
 
 
 def _patch_file(path: Path, *, needle: str, replacement: str, marker: str) -> None:
@@ -57,3 +63,8 @@ def patch_source(_builder, src_dir: Path) -> None:
             marker=app_marker,
         )
 
+
+def post_install(builder, install_prefix, build_type: str) -> None:
+    if build_type == "Debug":
+        builder._ensure_openjph_alias(install_prefix)
+    builder._ensure_openjph_windows_alias(install_prefix, build_type)

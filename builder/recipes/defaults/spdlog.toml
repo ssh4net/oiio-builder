@@ -1,0 +1,16 @@
+[cmake.cache]
+SPDLOG_BUILD_EXAMPLES = false
+SPDLOG_BUILD_TESTS = false
+SPDLOG_BUILD_BENCH = false
+SPDLOG_INSTALL = true
+
+# Use the stack's fmt (built from fmtlib/fmt) instead of the bundled copy.
+SPDLOG_FMT_EXTERNAL = true
+
+# Keep library builds consistent across platforms.
+SPDLOG_BUILD_SHARED = false
+SPDLOG_WCHAR_SUPPORT = true
+
+# Prefer fmt over std::format even on C++20+ toolchains.
+SPDLOG_USE_STD_FORMAT = false
+

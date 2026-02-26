@@ -41,6 +41,7 @@ class GlobalConfig:
     use_lld: bool
     static_default: bool
     pic: bool
+    use_ccache: bool
     jobs: int
     debug_suffix: str
     asan_suffix: str
@@ -203,6 +204,7 @@ def load_config(path: Path) -> Config:
             "use_lld",
             "static_default",
             "pic",
+            "use_ccache",
             "jobs",
             "debug_suffix",
             "asan_suffix",
@@ -316,6 +318,7 @@ def load_config(path: Path) -> Config:
         use_lld=bool(global_data.get("use_lld", True)),
         static_default=bool(global_data.get("static_default", True)),
         pic=bool(global_data.get("pic", True)),
+        use_ccache=bool(global_data.get("use_ccache", True)),
         jobs=int(global_data.get("jobs", 0)),
         debug_suffix=str(global_data.get("debug_suffix", "d")),
         asan_suffix=str(global_data.get("asan_suffix", "a")),

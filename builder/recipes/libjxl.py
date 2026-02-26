@@ -5,6 +5,11 @@ import re
 STAMP_REVISION = "6"
 
 
+def enabled(builder, _repo) -> bool:
+    cfg = builder.config.global_cfg
+    return bool(cfg.build_libjxl)
+
+
 def cmake_args(builder, ctx) -> list[str]:
     cfg = builder.config.global_cfg
     enable_openexr = "ON" if cfg.build_exr_stack else "OFF"

@@ -2,6 +2,8 @@ import os
 import shlex
 import subprocess
 import sys
+import _thread
+import threading
 from pathlib import Path
 
 
@@ -20,6 +22,22 @@ _ANSI_YELLOW = "\033[33m"
 _ANSI_GRAY = "\033[90m"
 
 _ANSI_ENABLED = False
+
+_OUTPUT_LOCK: _thread.LockType | None = None
+
+
+def set_output_lock(lock: _thread.LockType | None) -> None:
+    global _OUTPUT_LOCK
+    _OUTPUT_LOCK = lock
+
+
+def _locked_print(*args: object, **kwargs: object) -> None:
+    lock = _OUTPUT_LOCK
+    if lock is None:
+        print(*args, **kwargs)
+        return
+    with lock:
+        print(*args, **kwargs)
 
 
 def _enable_windows_ansi() -> None:
@@ -70,24 +88,24 @@ def banner(title: str, *, color: str = "yellow", width: int = 54) -> None:
     line = "=" * width
     if supports_color():
         code = _ansi_color(color)
-        print()
-        print(f"{code}{line}{_ANSI_RESET}", flush=True)
-        print(f"{code}{_ANSI_BOLD} {title}{_ANSI_RESET}", flush=True)
-        print(f"{code}{line}{_ANSI_RESET}", flush=True)
+        _locked_print()
+        _locked_print(f"{code}{line}{_ANSI_RESET}", flush=True)
+        _locked_print(f"{code}{_ANSI_BOLD} {title}{_ANSI_RESET}", flush=True)
+        _locked_print(f"{code}{line}{_ANSI_RESET}", flush=True)
         return
 
-    print()
-    print(line, flush=True)
-    print(f" {title}", flush=True)
-    print(line, flush=True)
+    _locked_print()
+    _locked_print(line, flush=True)
+    _locked_print(f" {title}", flush=True)
+    _locked_print(line, flush=True)
 
 
 def print_cmd(label: str, cmd: list[str]) -> None:
     text = format_cmd(cmd)
     if supports_color():
-        print(f"{_ANSI_GRAY}{label}: {text}{_ANSI_RESET}", flush=True)
+        _locked_print(f"{_ANSI_GRAY}{label}: {text}{_ANSI_RESET}", flush=True)
     else:
-        print(f"{label}: {text}", flush=True)
+        _locked_print(f"{label}: {text}", flush=True)
 
 
 def run(
@@ -98,7 +116,7 @@ def run(
     log_path: str | None = None,
 ) -> None:
     if dry_run:
-        print(f"[dry-run] {format_cmd(cmd)}")
+        _locked_print(f"[dry-run] {format_cmd(cmd)}")
         return
     merged_env = os.environ.copy()
     if env:
@@ -130,15 +148,29 @@ def run(
 
         stdout_buffer = getattr(sys.stdout, "buffer", None)
         for chunk in iter(proc.stdout.readline, b""):
-            if stdout_buffer is not None:
-                stdout_buffer.write(chunk)
-                stdout_buffer.flush()
-            else:
-                sys.stdout.write(chunk.decode(errors="replace"))
-                sys.stdout.flush()
+            lock = _OUTPUT_LOCK
+            if lock is not None:
+                lock.acquire()
+            try:
+                if stdout_buffer is not None:
+                    stdout_buffer.write(chunk)
+                    stdout_buffer.flush()
+                else:
+                    sys.stdout.write(chunk.decode(errors="replace"))
+                    sys.stdout.flush()
+            finally:
+                if lock is not None:
+                    lock.release()
             f.write(chunk)
 
         ret = proc.wait()
         if ret != 0:
-            print(f"[error] Command failed (exit {ret}). Log: {log_file_path}", file=sys.stderr, flush=True)
+            lock = _OUTPUT_LOCK
+            if lock is not None:
+                lock.acquire()
+            try:
+                print(f"[error] Command failed (exit {ret}). Log: {log_file_path}", file=sys.stderr, flush=True)
+            finally:
+                if lock is not None:
+                    lock.release()
             raise subprocess.CalledProcessError(ret, cmd)

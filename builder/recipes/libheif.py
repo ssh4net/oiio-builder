@@ -4,6 +4,13 @@ from pathlib import Path
 
 STAMP_REVISION = "1"
 
+from .policy import imageio_enabled
+
+
+def enabled(builder, _repo) -> bool:
+    cfg = builder.config.global_cfg
+    return imageio_enabled(builder) and bool(cfg.build_libheif)
+
 
 def cmake_args(builder, ctx) -> list[str]:
     if builder.platform.os != "windows":
@@ -77,3 +84,8 @@ def patch_source(_builder, src_dir: Path) -> None:
 
     if text != original_text:
         cmake_file.write_text(text, encoding="utf-8")
+
+
+def post_install(builder, install_prefix, _build_type: str) -> None:
+    builder._ensure_libheif_aom_dependency(install_prefix)
+    builder._ensure_libheif_consumer_definitions(install_prefix)

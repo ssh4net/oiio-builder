@@ -1,0 +1,8 @@
+[cmake.cache]
+NFD_BUILD_TESTS = false
+NFD_BUILD_SDL2_TESTS = false
+NFD_INSTALL = true
+
+[platform.linux.cmake.cache]
+# Use the GTK3 backend (portal disabled). Requires `gtk+-3.0` development packages.
+NFD_PORTAL = false

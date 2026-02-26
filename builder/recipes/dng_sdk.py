@@ -6,7 +6,12 @@ import os
 import shutil
 
 
-STAMP_REVISION = "6"
+STAMP_REVISION = "7"
+
+
+def enabled(builder, _repo) -> bool:
+    cfg = builder.config.global_cfg
+    return bool(getattr(cfg, "build_dng_sdk", False))
 
 
 @dataclass(frozen=True)
@@ -457,3 +462,32 @@ endif()
 
         if changed:
             xmp_config_in.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    # DNG-CMake carries a patch file (cmake/xmp_stream_io_cstring.patch) that
+    # adds <cstring>, but it can fail to apply as upstream XMP sources evolve.
+    # Clang/libstdc++ is strict enough that missing memcpy declarations become
+    # hard errors, so ensure the include is present.
+    xmp_stream_io = src_dir / "xmp" / "toolkit" / "source" / "XMPStream_IO.cpp"
+    if xmp_stream_io.exists():
+        text = xmp_stream_io.read_text(encoding="utf-8", errors="replace")
+        if "#include <cstring>" not in text and "#include <string.h>" not in text:
+            lines = text.splitlines()
+            insert_at = None
+            for idx, line in enumerate(lines):
+                if line.strip().startswith("#define TwoGB"):
+                    insert_at = idx
+                    break
+            if insert_at is None:
+                last_include = None
+                for idx, line in enumerate(lines):
+                    if line.lstrip().startswith("#include"):
+                        last_include = idx
+                if last_include is not None:
+                    insert_at = last_include + 1
+            if insert_at is None:
+                insert_at = 0
+            block = ["", "#include <cstring>", ""]
+            if insert_at > 0 and lines[insert_at - 1].strip() == "":
+                block = ["#include <cstring>", ""]
+            lines[insert_at:insert_at] = block
+            xmp_stream_io.write_text("\n".join(lines) + "\n", encoding="utf-8")

@@ -18,3 +18,7 @@ def cmake_args(_builder, _ctx) -> list[str]:
         "-DLCMS2_WITH_TIFF=OFF",
         "-DLCMS2_WITH_ZLIB=OFF",
     ]
+
+
+def post_install(builder, install_prefix, _build_type: str) -> None:
+    builder._prune_lcms2_shared_artifacts(install_prefix)

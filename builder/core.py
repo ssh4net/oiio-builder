@@ -1,19 +1,21 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, replace
 from pathlib import Path
 import json
 import os
 import re
 import shutil
 import subprocess
+import threading
 
 from .config import Config, RepoConfig
 from .git_ops import ensure_repo, git_head
 from .platform import PlatformInfo
 from .recipes import registry as recipe_registry
 from .repo_options import CMakeOptions, load_repo_defaults, load_user_overrides, render_cmake_options
-from .runner import banner, print_cmd, run
+from .runner import banner, print_cmd, run, set_output_lock
 from .stamps import compute_stamp, read_stamp, write_stamp
 from .topo import topo_sort
 
@@ -33,16 +35,20 @@ class BuildReport:
         self.order = order
         self.prefixes = prefixes
         self.entries: dict[tuple[str, str], tuple[str, str]] = {}
+        self._lock = threading.Lock()
 
     def record(self, build_type: str, repo: str, status: str, detail: str = "") -> None:
-        self.entries[(build_type, repo)] = (status, detail)
+        with self._lock:
+            self.entries[(build_type, repo)] = (status, detail)
 
     def render(self) -> str:
+        with self._lock:
+            entries = dict(self.entries)
         lines = ["", "=== Build Report ==="]
         for build_type in self.build_types:
             lines.append(f"{build_type}:")
             for repo in self.order:
-                entry = self.entries.get((build_type, repo))
+                entry = entries.get((build_type, repo))
                 if not entry:
                     continue
                 status, detail = entry
@@ -68,6 +74,7 @@ class Builder:
         force_all: bool = False,
         reinstall: bool = False,
         reinstall_all: bool = False,
+        parallel_build_types: bool = False,
     ) -> None:
         self.config = config
         self.platform = platform
@@ -80,6 +87,7 @@ class Builder:
         self.force_targets: set[str] = set()
         self.reinstall_targets: set[str] = set()
         self.toolchain = self._resolve_toolchain()
+        self._ccache_path = self._resolve_ccache()
         self.repos = self._filter_repos()
         if force and bool(self.config.only) and not self.force_all:
             self.force_targets = set(self.config.only)
@@ -96,6 +104,16 @@ class Builder:
         self._user_overrides_path = self.config.global_cfg.repo_root / "build.user.toml"
         self._repo_cmake_user_overrides = load_user_overrides(self._user_overrides_path)
         self._validate_user_overrides()
+
+        self.parallel_build_types = parallel_build_types
+        if self.parallel_build_types and self.platform.os == "windows":
+            raise SystemExit("--parallel-build-types is supported only on macOS/Linux.")
+        self._parallel_build_type_count = 1
+        self._output_lock = threading.Lock() if self.parallel_build_types else None
+        set_output_lock(self._output_lock)
+        self._repo_source_prepared: set[str] = set()
+        self._repo_source_prepare_locks: dict[str, threading.Lock] = {repo.name: threading.Lock() for repo in self.repos}
+        self._repo_exclusive_build_locks: dict[str, threading.Lock] = {repo.name: threading.Lock() for repo in self.repos}
 
     def _repo_log_path(self, repo_name: str, build_type: str, step: str) -> Path:
         safe_step = re.sub(r"[^A-Za-z0-9._-]+", "_", step).strip("._")
@@ -182,7 +200,6 @@ class Builder:
         path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
     def _filter_repos(self) -> list[RepoConfig]:
-        cfg = self.config.global_cfg
         configured_repos = [r for r in self.config.repos if r.enabled]
         by_name_configured = {repo.name: repo for repo in configured_repos}
         by_lower_configured: dict[str, list[str]] = {}
@@ -220,95 +237,10 @@ class Builder:
 
         repos = list(configured_repos)
 
-        # Apply group toggles to approximate the shell script behavior.
-        gl_repos = {"glfw", "freeglut", "glew"}
-        imageio_repos = {
-            "libjpeg-turbo",
-            "libpng",
-            "libtiff",
-            "openjpeg",
-            "jasper",
-            "giflib",
-            "pugixml",
-            "libwebp",
-            "ptex",
-            "libraw",
-            "LibRaw",
-            "aom",
-            "libde265",
-            "x265",
-            "kvazaar",
-            "libheif",
-            "bzip2",
-            "freetype",
-            "harfbuzz",
-            "libultrahdr",
-            "robinmap",
-            "fmt",
-            "eigen",
-            "pybind11",
-            "nanobind",
-            "ffmpeg",
-            "OpenImageIO",
-        }
-        exr_repos = {"imath", "openjph", "openexr"}
-        ocio_repos = {"minizip-ng", "OpenColorIO"}
-        qt_repos = {"pcre2", "openssl", "Qt6"}
-        dng_repos = {"dng-sdk"}
-
         def enabled(repo: RepoConfig) -> bool:
-            if repo.name == "ffmpeg" and self.platform.os == "windows":
-                if self._ffmpeg_enabled() and not self.dry_run:
-                    print(
-                        "[skip] ffmpeg: native build step is disabled on Windows; "
-                        "prebuilt FFmpeg is consumed via FFmpeg_ROOT/FFMPEG_ROOT or <src_root>/ffmpeg",
-                        flush=True,
-                    )
-                return False
-            if repo.name == "libiconv" and self.platform.os != "windows":
-                return False
-            if repo.name in qt_repos and not getattr(cfg, "build_qt6", False):
-                return False
-            if repo.name == "openssl" and self.platform.os != "windows":
-                return False
-            if repo.name in dng_repos and not getattr(cfg, "build_dng_sdk", False):
-                return False
-            if repo.name in gl_repos and not cfg.build_gl_stack:
-                return False
-            if repo.name in imageio_repos and not cfg.build_imageio_stack:
-                return False
-            if repo.name in exr_repos and not cfg.build_exr_stack:
-                return False
-            if repo.name == "googletest" and not cfg.build_gtest:
-                return False
-            if repo.name == "libjxl" and not cfg.build_libjxl:
-                return False
-            if repo.name == "libultrahdr" and not cfg.build_libuhdr:
-                return False
-            if repo.name in ocio_repos and not cfg.build_ocio:
-                return False
-            if repo.name == "libraw" and not cfg.build_libraw:
-                return False
-            if repo.name == "libheif" and not cfg.build_libheif:
-                return False
-            if repo.name == "aom" and not cfg.build_aom:
-                return False
-            if repo.name == "libde265" and not cfg.build_libde265:
-                return False
-            if repo.name == "x265" and not cfg.build_x265:
-                return False
-            if repo.name == "kvazaar" and not cfg.build_kvazaar:
-                return False
-            if repo.name == "libwebp" and not cfg.build_webp:
-                return False
-            if repo.name == "ptex" and not cfg.build_ptex:
-                return False
-            if repo.name == "pybind11" and not cfg.build_pybind11:
-                return False
-            if repo.name == "ffmpeg" and not self._ffmpeg_enabled():
-                return False
-            if repo.name == "OpenImageIO" and not cfg.build_oiio:
-                return False
+            decision = recipe_registry.enabled(repo.name, self, repo)
+            if decision is not None:
+                return decision
             return True
 
         repos = [r for r in repos if enabled(r)]
@@ -447,6 +379,17 @@ class Builder:
                 return str(candidate)
         return None
 
+    def _resolve_ccache(self) -> str | None:
+        cfg = self.config.global_cfg
+        if self.platform.os == "windows":
+            return None
+        if not cfg.use_ccache:
+            return None
+        disabled = cfg.env.get("CCACHE_DISABLE") or os.environ.get("CCACHE_DISABLE")
+        if disabled and str(disabled).strip().lower() in {"1", "true", "yes", "on"}:
+            return None
+        return shutil.which("ccache")
+
     def _xcrun_find(self, name: str) -> str | None:
         try:
             out = subprocess.check_output(["xcrun", "--find", name], text=True).strip()
@@ -567,7 +510,7 @@ class Builder:
             deduped_paths.append(path_item)
         env["PKG_CONFIG_PATH"] = os.pathsep.join(deduped_paths)
 
-        if shutil.which("ccache"):
+        if self._ccache_path:
             fallback_cache_dir = self.config.global_cfg.build_root / ".ccache"
             fallback_tmp_dir = self.config.global_cfg.build_root / ".ccache-tmp"
 
@@ -581,24 +524,69 @@ class Builder:
                 except OSError:
                     return False
 
-            ccache_tmp = env.get("CCACHE_TEMPDIR") or os.environ.get("CCACHE_TEMPDIR")
-            if not ccache_tmp:
-                ccache_tmp = f"/run/user/{os.getuid()}/ccache-tmp"
-            if not _ensure_writable(Path(ccache_tmp)):
-                if _ensure_writable(fallback_tmp_dir):
+            def _normalize_env_path(value: str) -> Path:
+                expanded = os.path.expanduser(os.path.expandvars(value.strip()))
+                path = Path(expanded)
+                if not path.is_absolute():
+                    path = (self.config.global_cfg.repo_root / path).resolve()
+                return path
+
+            ccache_tmp_raw = env.get("CCACHE_TEMPDIR") or os.environ.get("CCACHE_TEMPDIR")
+            if ccache_tmp_raw:
+                ccache_tmp = _normalize_env_path(str(ccache_tmp_raw))
+                if _ensure_writable(ccache_tmp):
+                    env["CCACHE_TEMPDIR"] = str(ccache_tmp)
+                elif _ensure_writable(fallback_tmp_dir):
                     env["CCACHE_TEMPDIR"] = str(fallback_tmp_dir)
                 else:
                     env["CCACHE_DISABLE"] = "1"
 
-            ccache_dir = env.get("CCACHE_DIR") or os.environ.get("CCACHE_DIR")
-            if not ccache_dir:
-                if _ensure_writable(fallback_cache_dir):
-                    env["CCACHE_DIR"] = str(fallback_cache_dir)
-            elif not _ensure_writable(Path(ccache_dir)):
-                if _ensure_writable(fallback_cache_dir):
+            ccache_dir_raw = env.get("CCACHE_DIR") or os.environ.get("CCACHE_DIR")
+            if ccache_dir_raw:
+                ccache_dir = _normalize_env_path(str(ccache_dir_raw))
+                if _ensure_writable(ccache_dir):
+                    env["CCACHE_DIR"] = str(ccache_dir)
+                elif _ensure_writable(fallback_cache_dir):
                     env["CCACHE_DIR"] = str(fallback_cache_dir)
                 else:
                     env["CCACHE_DISABLE"] = "1"
+
+        return env
+
+    def _env_for_repo_build(self, repo: RepoConfig, build_type: str, prefix: Path) -> dict[str, str]:
+        env = self._env_for_build(build_type, prefix)
+
+        # nativefiledialog-extended (GTK/dbus) should use the system pkg-config
+        # graph. Mixing it with the builder prefix can break resolution when
+        # the system GTK stack pins exact harfbuzz submodule versions.
+        if self.platform.os == "linux" and repo.name == "nativefiledialog-extended":
+            override_dir = self.pkg_override_root / build_type
+            remove_norm = {
+                os.path.normcase(os.path.normpath(str(override_dir))),
+                os.path.normcase(os.path.normpath(str(prefix / "lib" / "pkgconfig"))),
+                os.path.normcase(os.path.normpath(str(prefix / "share" / "pkgconfig"))),
+            }
+            current = env.get("PKG_CONFIG_PATH", "")
+            if current:
+                items = current.split(os.pathsep)
+            else:
+                items = []
+            kept: list[str] = []
+            seen: set[str] = set()
+            for item in items:
+                if not item:
+                    continue
+                normalized = os.path.normcase(os.path.normpath(item))
+                if normalized in remove_norm:
+                    continue
+                if normalized in seen:
+                    continue
+                seen.add(normalized)
+                kept.append(item)
+            if kept:
+                env["PKG_CONFIG_PATH"] = os.pathsep.join(kept)
+            else:
+                env.pop("PKG_CONFIG_PATH", None)
 
         return env
 
@@ -770,6 +758,10 @@ class Builder:
         recipe_applied = recipe_args is not None
         if recipe_applied:
             args.extend(recipe_args)
+
+        if name == "nativefiledialog-extended" and self.platform.os == "linux":
+            # Keep system GTK/dbus pkg-config resolution isolated from the builder prefix.
+            args.append("-DPKG_CONFIG_USE_CMAKE_PREFIX_PATH=FALSE")
 
         if name == "libxml2":
             if self.platform.os == "windows":
@@ -1040,6 +1032,8 @@ class Builder:
                 "-DOPENEXR_FORCE_INTERNAL_IMATH=OFF",
                 "-DOPENEXR_FORCE_INTERNAL_DEFLATE=OFF",
                 "-DOPENEXR_FORCE_INTERNAL_OPENJPH=OFF",
+                "-DCMAKE_SKIP_RPATH=ON",
+                "-DCMAKE_SKIP_INSTALL_RPATH=ON",
             ]
         elif name == "libjxl" and not recipe_applied:
             enable_openexr = "ON" if cfg.build_exr_stack else "OFF"
@@ -1111,6 +1105,25 @@ class Builder:
                     f"-Dpystring_INCLUDE_DIR={pystring_include_dir}",
                     f"-Dpystring_LIBRARY={pystring_lib}",
                 ]
+
+                # OpenColorIO's Findminizip-ng.cmake may fall back to a library-name search
+                # that misses Debug-suffixed names on Windows (e.g. minizip-ngd.lib).
+                # Provide explicit hints to keep detection deterministic.
+                minizip_include_dir = ctx.install_prefix / "include" / "minizip-ng"
+                minizip_cmake_dir = ctx.install_prefix / "lib" / "cmake" / "minizip-ng"
+                release_minizip_lib = ctx.install_prefix / "lib" / "minizip-ng.lib"
+                debug_minizip_lib = ctx.install_prefix / "lib" / f"minizip-ng{debug_postfix}.lib"
+                minizip_lib = debug_minizip_lib if ctx.build_type == "Debug" else release_minizip_lib
+                if not minizip_lib.exists():
+                    candidates = sorted((ctx.install_prefix / "lib").glob("minizip-ng*.lib"))
+                    if candidates:
+                        minizip_lib = candidates[0]
+                args += [
+                    f"-Dminizip-ng_ROOT={ctx.install_prefix}",
+                    f"-Dminizip-ng_DIR={minizip_cmake_dir}",
+                    f"-Dminizip-ng_INCLUDE_DIR={minizip_include_dir}",
+                    f"-Dminizip-ng_LIBRARY={minizip_lib}",
+                ]
         elif name == "OpenImageIO":
             args.extend(self._oiio_cache_args(ctx))
 
@@ -1128,6 +1141,7 @@ class Builder:
             "EMBEDPLUGINS",
             "OIIO_BUILD_TOOLS",
             "OIIO_BUILD_TESTS",
+            "OIIO_IV_EXTRA_IV_LIBRARIES",
             "USE_PYTHON",
             "USE_JXL",
             "USE_FREETYPE",
@@ -1172,6 +1186,12 @@ class Builder:
 
         # Python is mandatory for OIIO in this setup.
         values["USE_PYTHON"] = "ON"
+
+        if self.platform.os == "linux" and cfg.build_qt6 and not values.get("OIIO_IV_EXTRA_IV_LIBRARIES"):
+            # Qt6 static DBus linkage on Linux may require systemd symbols
+            # via libdbus-1.a (_dbus_listen_systemd_sockets).
+            values["OIIO_IV_EXTRA_IV_LIBRARIES"] = "dbus-1;systemd"
+
         # Always embed plugins for consistent single-binary plugin loading across platforms.
         values["EMBEDPLUGINS"] = "ON"
 
@@ -2119,6 +2139,9 @@ endif()
             f"-DCMAKE_CXX_EXTENSIONS={'ON' if cfg.cxx_extensions else 'OFF'}",
             "-DPKG_CONFIG_USE_STATIC_LIBS=ON",
         ]
+        if self._ccache_path:
+            args.append(f"-DCMAKE_C_COMPILER_LAUNCHER={self._ccache_path}")
+            args.append(f"-DCMAKE_CXX_COMPILER_LAUNCHER={self._ccache_path}")
 
         if self.platform.os == "windows":
             # MSBuild + VS generators sometimes hit file timestamp races in the generated
@@ -2337,6 +2360,18 @@ endif()
             print(f"[skip] {repo.name}: missing optional source at {path}")
             return True
         return False
+
+    def _prepare_repo_source(self, repo: RepoConfig, src_dir: Path) -> None:
+        lock = self._repo_source_prepare_locks.get(repo.name)
+        if lock is None:
+            return
+        with lock:
+            if repo.name in self._repo_source_prepared:
+                return
+            if repo.name == "glew":
+                self._patch_glew_macos(src_dir)
+            recipe_registry.patch_source(repo.name, self, src_dir)
+            self._repo_source_prepared.add(repo.name)
 
     def _patch_glew_macos(self, src_dir: Path) -> None:
         if self.platform.os != "macos":
@@ -2912,6 +2947,45 @@ endif()
             text = freetype_cfg.read_text(encoding="utf-8")
         except OSError:
             return
+
+        compat_marker = "# oiio-builder: freetype mixed-target compatibility"
+        fatal_block = """\
+if(NOT _cmake_targets_defined STREQUAL "")
+  string(REPLACE ";" ", " _cmake_targets_defined_text "${_cmake_targets_defined}")
+  string(REPLACE ";" ", " _cmake_targets_not_defined_text "${_cmake_targets_not_defined}")
+  message(FATAL_ERROR "Some (but not all) targets in this export set were already defined.\\nTargets Defined: ${_cmake_targets_defined_text}\\nTargets not yet defined: ${_cmake_targets_not_defined_text}\\n")
+endif()
+"""
+        compat_block = f"""\
+if(NOT _cmake_targets_defined STREQUAL "")
+  {compat_marker}
+  if(TARGET Freetype::Freetype AND NOT TARGET freetype)
+    add_library(freetype INTERFACE IMPORTED)
+    set_property(TARGET freetype PROPERTY INTERFACE_LINK_LIBRARIES Freetype::Freetype)
+    unset(_cmake_targets_defined)
+    unset(_cmake_targets_not_defined)
+    unset(_cmake_expected_targets)
+    unset(CMAKE_IMPORT_FILE_VERSION)
+    cmake_policy(POP)
+    return()
+  elseif(TARGET freetype AND NOT TARGET Freetype::Freetype)
+    add_library(Freetype::Freetype INTERFACE IMPORTED)
+    set_property(TARGET Freetype::Freetype PROPERTY INTERFACE_LINK_LIBRARIES freetype)
+    unset(_cmake_targets_defined)
+    unset(_cmake_targets_not_defined)
+    unset(_cmake_expected_targets)
+    unset(CMAKE_IMPORT_FILE_VERSION)
+    cmake_policy(POP)
+    return()
+  endif()
+  string(REPLACE ";" ", " _cmake_targets_defined_text "${{_cmake_targets_defined}}")
+  string(REPLACE ";" ", " _cmake_targets_not_defined_text "${{_cmake_targets_not_defined}}")
+  message(FATAL_ERROR "Some (but not all) targets in this export set were already defined.\\nTargets Defined: ${{_cmake_targets_defined_text}}\\nTargets not yet defined: ${{_cmake_targets_not_defined_text}}\\n")
+endif()
+"""
+        if compat_marker not in text and fatal_block in text:
+            text = text.replace(fatal_block, compat_block, 1)
+
         marker = "# oiio-builder: freetype harfbuzz compatibility"
         needle = "# Compute the installation prefix relative to this file."
         if needle not in text:
@@ -2943,6 +3017,50 @@ endif()
             updated = text[:start] + shim + "\n" + text[end:]
         else:
             updated = text.replace(needle, shim + "\n" + needle, 1)
+
+        # Some FreeType exports record only libbrotlidec, but static Brotli decode
+        # also needs libbrotlicommon. Add it explicitly so static Qt links succeed.
+        libdir = prefix / "lib"
+        if self.platform.os == "windows":
+            common_candidates = [
+                libdir / "brotlicommon.lib",
+                libdir / "libbrotlicommon.lib",
+                libdir / "brotlicommond.lib",
+                libdir / "libbrotlicommond.lib",
+            ]
+        else:
+            common_candidates = [
+                libdir / "libbrotlicommon.a",
+                libdir / "libbrotlicommon-static.a",
+                libdir / "libbrotlicommon.so",
+                libdir / "libbrotlicommon.dylib",
+            ]
+        brotli_common = next((candidate for candidate in common_candidates if candidate.exists()), None)
+        if brotli_common is not None:
+            common_path = brotli_common.resolve().as_posix()
+            if common_path not in updated:
+                libs_key = 'INTERFACE_LINK_LIBRARIES "'
+                libs_start = updated.find(libs_key)
+                if libs_start != -1:
+                    libs_start += len(libs_key)
+                    libs_end = updated.find('"', libs_start)
+                    if libs_end != -1:
+                        libs_value = updated[libs_start:libs_end]
+                        if "brotlidec" in libs_value.lower():
+                            parts = [
+                                part
+                                for part in libs_value.split(";")
+                                if part and "brotlicommon" not in part.lower()
+                            ]
+                            insert_idx = None
+                            for idx, part in enumerate(parts):
+                                if "brotlidec" in part.lower():
+                                    insert_idx = idx + 1
+                            if insert_idx is None:
+                                parts.append(common_path)
+                            else:
+                                parts.insert(insert_idx, common_path)
+                            updated = updated[:libs_start] + ";".join(parts) + updated[libs_end:]
 
         try:
             freetype_cfg.write_text(updated, encoding="utf-8")
@@ -3530,7 +3648,6 @@ endif()
             qt_submodules = [
                 "qtbase",
                 "qtdeclarative",
-                "qtquickcontrols2",
                 "qtshadertools",
                 "qtmultimedia",
                 "qtimageformats",
@@ -3580,36 +3697,7 @@ endif()
         return None
 
     def _post_install_repo(self, repo: RepoConfig, install_prefix: Path, build_type: str) -> None:
-        if repo.name == "openexr":
-            self._make_openexr_pc_override(install_prefix, build_type)
-        if repo.name == "openjph" and build_type == "Debug":
-            self._ensure_openjph_alias(install_prefix)
-        if repo.name == "openjph":
-            self._ensure_openjph_windows_alias(install_prefix, build_type)
-        if repo.name == "libdeflate":
-            self._ensure_libdeflate_alias(install_prefix, build_type)
-        if repo.name == "lcms2":
-            self._prune_lcms2_shared_artifacts(install_prefix)
-        if repo.name == "bzip2":
-            self._ensure_bzip2_alias(install_prefix, build_type)
-            self._ensure_bzip2_package(install_prefix, build_type)
-        if repo.name == "brotli":
-            self._ensure_unofficial_brotli_package(install_prefix, build_type)
-        if repo.name == "aom":
-            self._ensure_aom_package(install_prefix, build_type)
-        if repo.name == "pystring":
-            self._ensure_pystring_package(install_prefix, build_type)
-        if repo.name == "harfbuzz":
-            self._ensure_harfbuzz_package(install_prefix, build_type)
-        if repo.name == "freetype":
-            self._ensure_freetype_harfbuzz_compat(install_prefix, build_type)
-        if repo.name == "libheif":
-            self._ensure_libheif_aom_dependency(install_prefix)
-            self._ensure_libheif_consumer_definitions(install_prefix)
-        if repo.name == "libpng":
-            self._ensure_png16_include_alias(install_prefix)
-        if repo.name == "OpenImageIO":
-            self._ensure_png16_include_alias(install_prefix)
+        recipe_registry.post_install(repo.name, self, install_prefix, build_type)
 
     def _cmake_cache_value(self, cache_path: Path, key: str) -> str | None:
         try:
@@ -3627,6 +3715,48 @@ endif()
             return value or None
         return None
 
+    def _cmake_cache_vars_referencing_prefix(self, cache_path: Path, prefix: str) -> list[str]:
+        """Return cache variable names whose values mention `prefix`.
+
+        Used when the install prefix changes and we need to reconfigure in-place
+        without reusing stale find_* cache results that still point at the old
+        prefix.
+        """
+        prefix = prefix.strip()
+        if not prefix:
+            return []
+
+        needle = prefix.replace("\\", "/")
+        needle_norm = needle.rstrip("/")
+        needles = {needle, needle_norm} if needle_norm else {needle}
+
+        try:
+            lines = cache_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return []
+
+        hits: set[str] = set()
+        for line in lines:
+            if not line or line.startswith(("//", "#")):
+                continue
+            colon = line.find(":")
+            if colon <= 0:
+                continue
+            eq = line.find("=", colon + 1)
+            if eq <= colon:
+                continue
+            name = line[:colon].strip()
+            if not name:
+                continue
+            value = line[eq + 1 :].strip()
+            if not value:
+                continue
+            value_norm = value.replace("\\", "/")
+            if any(n in value_norm for n in needles):
+                hits.add(name)
+
+        return sorted(hits)
+
     def _cmake_install_only(self, ctx: BuildContext, env: dict[str, str]) -> bool:
         if not (ctx.build_dir / "cmake_install.cmake").exists():
             return False
@@ -3641,6 +3771,14 @@ endif()
         if cached_prefix_norm and cached_prefix_norm != desired_prefix:
             cmd = ["cmake", "-S", str(ctx.src_dir), "-B", str(ctx.build_dir)]
             cmd.extend(self._cmake_generator_args())
+            stale_cache_vars = self._cmake_cache_vars_referencing_prefix(cache_path, cached_prefix or "")
+            if stale_cache_vars:
+                print(
+                    f"[note] {ctx.repo.name} ({ctx.build_type}) prefix changed; clearing {len(stale_cache_vars)} stale CMake cache entries",
+                    flush=True,
+                )
+                for name in stale_cache_vars:
+                    cmd.extend(["-U", name])
             cmake_args = self._cmake_common_args(ctx.repo, ctx)
             cmake_args.extend(self._repo_specific_args(ctx.repo, ctx))
             cmake_args.extend(self._expand_args(ctx.repo.cmake_args, ctx.build_type, ctx.install_prefix))
@@ -3824,7 +3962,7 @@ endif()
                 print(f"[skip] {repo.name} ({build_type}) up-to-date")
                 return "skipped", reason
 
-            env = self._env_for_build(build_type, install_prefix)
+            env = self._env_for_repo_build(repo, build_type, install_prefix)
             print(f"[reinstall] {repo.name} ({build_type}) -> {install_prefix} ({reinstall_reason})", flush=True)
             if self._install_only(repo, ctx, env):
                 self._post_install_repo(repo, install_prefix, build_type)
@@ -3836,7 +3974,7 @@ endif()
 
         banner(f"{repo.name} ({build_type})", color="cyan")
 
-        env = self._env_for_build(build_type, install_prefix)
+        env = self._env_for_repo_build(repo, build_type, install_prefix)
 
         # Prefix compatibility shims that some downstream projects rely on.
         # These are cheap no-ops if the relevant files don't exist yet.
@@ -3850,9 +3988,7 @@ endif()
             self._ensure_libheif_aom_dependency(install_prefix)
             self._ensure_libheif_consumer_definitions(install_prefix)
 
-        if repo.name == "glew":
-            self._patch_glew_macos(src_dir)
-        recipe_registry.patch_source(repo.name, self, src_dir)
+        self._prepare_repo_source(repo, src_dir)
         if repo.name == "libjxl":
             self._make_openexr_pc_override(install_prefix, build_type)
         if repo.name == "libjxl" and build_type == "Debug":
@@ -3964,7 +4100,6 @@ endif()
             qt_submodules = [
                 "qtbase",
                 "qtdeclarative",
-                "qtquickcontrols2",
                 "qtshadertools",
                 "qtmultimedia",
                 "qtimageformats",
@@ -4119,14 +4254,63 @@ endif()
                 cmake_args.append("-DCMAKE_POLICY_DEFAULT_CMP0091=NEW")
                 runtime_mode = self._windows_runtime_mode()
                 if runtime_mode == "static":
-                    runtime = "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+                    runtime = "MultiThreadedDebug" if build_type == "Debug" else "MultiThreaded"
                 elif runtime_mode == "dynamic":
-                    runtime = "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+                    runtime = "MultiThreadedDebugDLL" if build_type == "Debug" else "MultiThreadedDLL"
                 else:
                     runtime = str(self.config.global_cfg.windows.get("msvc_runtime"))
                 cmake_args.append(f"-DCMAKE_MSVC_RUNTIME_LIBRARY={runtime}")
                 cxxflags += " /bigobj"
                 cmake_args.append(f"-DOPENSSL_ROOT_DIR={install_prefix}")
+
+                # CMake's FindPNG module on Windows often misses libpng static
+                # names like libpng18_static[d].lib. Provide direct hints so
+                # Qt's WrapSystemPNG check can succeed when using -system-libpng.
+                lib_dir = install_prefix / "lib"
+                include_dir = install_prefix / "include"
+
+                def _pick_windows_png(debug: bool) -> Path | None:
+                    debug_candidates = [
+                        lib_dir / "libpng18_staticd.lib",
+                        lib_dir / "libpng16_staticd.lib",
+                        lib_dir / "libpngd.lib",
+                        lib_dir / "pngd.lib",
+                        lib_dir / "libpng18d.lib",
+                        lib_dir / "libpng16d.lib",
+                    ]
+                    release_candidates = [
+                        lib_dir / "libpng18_static.lib",
+                        lib_dir / "libpng16_static.lib",
+                        lib_dir / "libpng.lib",
+                        lib_dir / "png.lib",
+                        lib_dir / "libpng18.lib",
+                        lib_dir / "libpng16.lib",
+                    ]
+                    candidates = debug_candidates if debug else release_candidates
+                    for candidate in candidates:
+                        if candidate.exists():
+                            return candidate
+                    matches: list[Path] = []
+                    if debug:
+                        for pattern in ("libpng*d*.lib", "png*d*.lib"):
+                            matches.extend(sorted(lib_dir.glob(pattern)))
+                    else:
+                        for pattern in ("libpng*.lib", "png*.lib"):
+                            matches.extend(sorted(lib_dir.glob(pattern)))
+                    return matches[0] if matches else None
+
+                png_debug = _pick_windows_png(debug=True)
+                png_release = _pick_windows_png(debug=False)
+                if png_debug is None:
+                    png_debug = png_release
+                if png_release is None:
+                    png_release = png_debug
+                if png_debug is not None:
+                    cmake_args.append(f"-DPNG_LIBRARY_DEBUG={png_debug}")
+                if png_release is not None:
+                    cmake_args.append(f"-DPNG_LIBRARY_RELEASE={png_release}")
+                if (include_dir / "png.h").exists():
+                    cmake_args.append(f"-DPNG_PNG_INCLUDE_DIR={include_dir}")
             if self.platform.os in {"macos", "linux"} and self.config.global_cfg.use_libcxx:
                 cxxflags += " -stdlib=libc++"
             cmake_args.append(f"-DCMAKE_C_FLAGS_INIT={cflags}")
@@ -4180,6 +4364,13 @@ endif()
                         "Qt6: configure finished without generating CMakeCache.txt. "
                         "This commonly means required git submodules were not initialized; "
                         "re-run and allow -init-submodules to populate qtbase/qtdeclarative/etc."
+                    )
+                ninja_file = build_dir / "build.ninja"
+                if not ninja_file.exists():
+                    raise RuntimeError(
+                        "Qt6: configure did not generate build.ninja. "
+                        "Configuration likely failed even if configure.bat returned success. "
+                        f"Check: {self._repo_log_path(repo.name, build_type, 'configure')}"
                     )
 
             build_cmd = ["cmake", "--build", str(build_dir), "--config", build_type, "--parallel", str(self._jobs())]
@@ -4736,6 +4927,8 @@ endif()
                     run(
                         ["install", "gif2rgb", "gifbuild", "giffix", "giftext", "giftool", "gifclrmp", str(install_prefix / "bin")],
                         cwd=str(src_dir),
+                        dry_run=self.dry_run,
+                        log_path=str(self._repo_log_path(repo.name, build_type, "install-bin")),
                     )
                     print_cmd(
                         "install command",
@@ -4747,7 +4940,12 @@ endif()
                             str(install_prefix / "include" / "gif_lib.h"),
                         ],
                     )
-                    run(["install", "-m", "644", "gif_lib.h", str(install_prefix / "include" / "gif_lib.h")], cwd=str(src_dir))
+                    run(
+                        ["install", "-m", "644", "gif_lib.h", str(install_prefix / "include" / "gif_lib.h")],
+                        cwd=str(src_dir),
+                        dry_run=self.dry_run,
+                        log_path=str(self._repo_log_path(repo.name, build_type, "install-gif_lib_h")),
+                    )
                     if (src_dir / "gif_win32_compat.h").exists():
                         print_cmd(
                             "install command",
@@ -4762,11 +4960,23 @@ endif()
                         run(
                             ["install", "-m", "644", "gif_win32_compat.h", str(install_prefix / "include" / "gif_win32_compat.h")],
                             cwd=str(src_dir),
+                            dry_run=self.dry_run,
+                            log_path=str(self._repo_log_path(repo.name, build_type, "install-gif_win32_compat_h")),
                         )
                     print_cmd("install command", ["install", "-m", "644", "libgif.a", str(install_prefix / "lib" / "libgif.a")])
-                    run(["install", "-m", "644", "libgif.a", str(install_prefix / "lib" / "libgif.a")], cwd=str(src_dir))
+                    run(
+                        ["install", "-m", "644", "libgif.a", str(install_prefix / "lib" / "libgif.a")],
+                        cwd=str(src_dir),
+                        dry_run=self.dry_run,
+                        log_path=str(self._repo_log_path(repo.name, build_type, "install-libgif_a")),
+                    )
                     print_cmd("install command", ["install", "-m", "644", "libutil.a", str(install_prefix / "lib" / "libutil.a")])
-                    run(["install", "-m", "644", "libutil.a", str(install_prefix / "lib" / "libutil.a")], cwd=str(src_dir))
+                    run(
+                        ["install", "-m", "644", "libutil.a", str(install_prefix / "lib" / "libutil.a")],
+                        cwd=str(src_dir),
+                        dry_run=self.dry_run,
+                        log_path=str(self._repo_log_path(repo.name, build_type, "install-libutil_a")),
+                    )
         else:
             raise RuntimeError(f"Unsupported build_system: {repo.build_system}")
 
@@ -4780,7 +4990,117 @@ endif()
 
     def _jobs(self) -> int:
         cfg = self.config.global_cfg
-        return cfg.jobs if cfg.jobs > 0 else os.cpu_count() or 4
+        jobs = cfg.jobs if cfg.jobs > 0 else os.cpu_count() or 4
+        if self.parallel_build_types and self._parallel_build_type_count > 1:
+            return max(1, jobs // self._parallel_build_type_count)
+        return jobs
+
+    def _resolved_repo_config_for_build(self, repo: RepoConfig, src_dir: Path) -> RepoConfig:
+        # Decide build system for xz/lcms2 based on config and source layout.
+        if repo.name == "xz":
+            cmake_lists = src_dir / "CMakeLists.txt"
+            build_system = "autotools" if (self.config.global_cfg.xz_use_autotools or not cmake_lists.exists()) else "cmake"
+            return replace(repo, build_system=build_system)
+        if repo.name == "lcms2":
+            cmake_lists = src_dir / "CMakeLists.txt"
+            build_system = "autotools" if (self.config.global_cfg.lcms2_use_autotools or not cmake_lists.exists()) else "cmake"
+            return replace(repo, build_system=build_system)
+        return repo
+
+    def _repo_requires_exclusive_build(self, repo: RepoConfig) -> bool:
+        if self.platform.os == "windows":
+            return False
+        return repo.build_system in {"giflib", "qt6"}
+
+    def _run_build_type(
+        self,
+        build_type: str,
+        order: list[str],
+        repos_by_name: dict[str, RepoConfig],
+        report: BuildReport,
+        cancel_event: threading.Event,
+    ) -> None:
+        for idx, repo_name in enumerate(order):
+            if cancel_event.is_set():
+                for remaining in order[idx:]:
+                    report.record(build_type, remaining, "canceled", "canceled")
+                return
+            repo = repos_by_name[repo_name]
+            src_dir = self.repo_paths.get(repo.name, self._resolve_repo_dir(repo))
+            if self._maybe_skip_missing(repo, src_dir):
+                report.record(build_type, repo.name, "missing", "not-found")
+                continue
+
+            deps_heads: dict[str, str | None] = {}
+            for dep in repo.deps:
+                if dep not in repos_by_name:
+                    continue
+                if dep not in self.repo_paths:
+                    continue
+                deps_heads[dep] = self._dep_fingerprint(dep, build_type)
+
+            repo_for_build = self._resolved_repo_config_for_build(repo, src_dir)
+
+            try:
+                if self.parallel_build_types and self._repo_requires_exclusive_build(repo_for_build):
+                    lock = self._repo_exclusive_build_locks[repo.name]
+                    with lock:
+                        status, detail = self._build_repo(repo_for_build, build_type, deps_heads)
+                else:
+                    status, detail = self._build_repo(repo_for_build, build_type, deps_heads)
+                report.record(build_type, repo.name, status, detail)
+            except Exception as exc:
+                message = str(exc).splitlines()[0] if str(exc) else exc.__class__.__name__
+                report.record(build_type, repo.name, "failed", message)
+                cancel_event.set()
+                for remaining in order[idx + 1 :]:
+                    report.record(build_type, remaining, "canceled", "canceled")
+                raise
+
+    def _run_parallel_build_types(
+        self,
+        build_types: list[str],
+        order: list[str],
+        repos_by_name: dict[str, RepoConfig],
+        report: BuildReport,
+    ) -> None:
+        # Parallel build types require distinct install prefixes to avoid file races.
+        by_prefix: dict[str, list[str]] = {}
+        for build_type in build_types:
+            prefix = self.prefixes.get(build_type)
+            if not prefix:
+                continue
+            normalized = os.path.normcase(os.path.normpath(str(prefix)))
+            by_prefix.setdefault(normalized, []).append(build_type)
+        conflicts = [(types, self.prefixes[types[0]]) for types in by_prefix.values() if len(types) > 1]
+        if conflicts:
+            lines = ["--parallel-build-types requires unique install prefixes per build type."]
+            for types, prefix in conflicts:
+                lines.append(f"  {', '.join(types)} -> {prefix}")
+            lines.append("Use prefix_layout='by-build-type' or set distinct debug_suffix/asan_suffix.")
+            raise SystemExit("\n".join(lines))
+
+        cancel_event = threading.Event()
+        self._parallel_build_type_count = max(1, len(build_types))
+        try:
+            with ThreadPoolExecutor(max_workers=len(build_types)) as executor:
+                futures = {
+                    executor.submit(self._run_build_type, build_type, order, repos_by_name, report, cancel_event): build_type
+                    for build_type in build_types
+                }
+                first_exc: BaseException | None = None
+                for future in as_completed(futures):
+                    try:
+                        future.result()
+                    except BaseException as exc:
+                        if first_exc is None:
+                            first_exc = exc
+                            cancel_event.set()
+                report.print()
+                if first_exc is not None:
+                    raise first_exc
+        finally:
+            self._parallel_build_type_count = 1
 
     def run(self) -> int:
         deps_map = {repo.name: repo.deps for repo in self.repos}
@@ -4806,38 +5126,17 @@ endif()
                 continue
             ensure_repo(repo_dir, repo.url, repo.ref, repo.ref_type, update=not self.no_update, dry_run=self.dry_run)
 
-        for build_type in build_types:
-            for repo_name in order:
-                repo = repos_by_name[repo_name]
-                src_dir = self.repo_paths.get(repo.name, self._resolve_repo_dir(repo))
-                if self._maybe_skip_missing(repo, src_dir):
-                    report.record(build_type, repo.name, "missing", "not-found")
-                    continue
-                deps_heads: dict[str, str | None] = {}
-                for dep in repo.deps:
-                    if dep not in repos_by_name:
-                        continue
-                    if dep not in self.repo_paths:
-                        continue
-                    deps_heads[dep] = self._dep_fingerprint(dep, build_type)
-                # Decide build system for xz/lcms2 based on config and source layout.
-                if repo.name == "xz":
-                    cmake_lists = src_dir / "CMakeLists.txt"
-                    repo.build_system = (
-                        "autotools" if (self.config.global_cfg.xz_use_autotools or not cmake_lists.exists()) else "cmake"
-                    )
-                if repo.name == "lcms2":
-                    cmake_lists = src_dir / "CMakeLists.txt"
-                    repo.build_system = (
-                        "autotools" if (self.config.global_cfg.lcms2_use_autotools or not cmake_lists.exists()) else "cmake"
-                    )
-                try:
-                    status, detail = self._build_repo(repo, build_type, deps_heads)
-                    report.record(build_type, repo.name, status, detail)
-                except Exception as exc:
-                    message = str(exc).splitlines()[0] if str(exc) else exc.__class__.__name__
-                    report.record(build_type, repo.name, "failed", message)
-                    report.print()
-                    raise
+        if self.parallel_build_types and self.platform.os in {"macos", "linux"} and len(build_types) > 1:
+            self._run_parallel_build_types(build_types, order, repos_by_name, report)
+            return 0
+
+        cancel_event = threading.Event()
+        self._parallel_build_type_count = 1
+        try:
+            for build_type in build_types:
+                self._run_build_type(build_type, order, repos_by_name, report, cancel_event)
+        except Exception:
+            report.print()
+            raise
         report.print()
         return 0

@@ -2,8 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .policy import ocio_enabled
+
 
 STAMP_REVISION = "1"
+
+
+def enabled(builder, _repo) -> bool:
+    return ocio_enabled(builder)
 
 
 def patch_source(_builder, src_dir: Path) -> None:
@@ -23,4 +29,3 @@ def patch_source(_builder, src_dir: Path) -> None:
 
     if text != original:
         cpu_file.write_text(text, encoding="utf-8")
-

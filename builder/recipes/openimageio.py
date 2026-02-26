@@ -2,6 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .policy import imageio_enabled
+
+
+def enabled(builder, _repo) -> bool:
+    cfg = builder.config.global_cfg
+    return imageio_enabled(builder) and bool(cfg.build_oiio)
+
 
 def patch_source(builder, src_dir: Path) -> None:
     cfg = builder.config.global_cfg
@@ -91,3 +98,7 @@ def patch_source(builder, src_dir: Path) -> None:
         return
 
     find_libraw.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def post_install(builder, install_prefix, _build_type: str) -> None:
+    builder._ensure_png16_include_alias(install_prefix)
