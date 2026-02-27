@@ -4590,6 +4590,14 @@ endif()
                 cxxflags += " /bigobj"
                 cmake_args.append(f"-DOPENSSL_ROOT_DIR={install_prefix}")
 
+                # Qt's configure performs internal try_compile checks that may use
+                # Debug flags even for a Release configure. Without explicit Debug
+                # flag overrides, CMake's default /RTC1 can mix with our injected
+                # /O2 from CMAKE_*_FLAGS_INIT and fail with D8016.
+                if build_type != "Debug":
+                    cmake_args.append("-DCMAKE_C_FLAGS_DEBUG=/Od /Zi")
+                    cmake_args.append("-DCMAKE_CXX_FLAGS_DEBUG=/Od /Zi /bigobj")
+
                 # CMake's FindPNG module on Windows often misses libpng static
                 # names like libpng18_static[d].lib. Provide direct hints so
                 # Qt's WrapSystemPNG check can succeed when using -system-libpng.
