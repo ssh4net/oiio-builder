@@ -89,3 +89,4 @@ def patch_source(_builder, src_dir: Path) -> None:
 def post_install(builder, install_prefix, _build_type: str) -> None:
     builder._ensure_libheif_aom_dependency(install_prefix)
     builder._ensure_libheif_consumer_definitions(install_prefix)
+    builder._ensure_libheif_windows_multiconfig_compat(install_prefix)

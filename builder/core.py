@@ -1065,6 +1065,7 @@ class Builder:
                 elif runtime_mode in {"dynamic", "md", "multithreadeddll"}:
                     args.append("-DEXPAT_MSVC_STATIC_CRT=OFF")
         elif name == "OpenColorIO":
+            self._ensure_ppmd_package(ctx.install_prefix, ctx.build_type)
             ocio_build_python = "ON"
             if self.platform.os == "windows":
                 wrappers_enabled, reason = self._windows_python_wrappers_enabled()
@@ -1134,6 +1135,7 @@ class Builder:
         ffmpeg_enabled = self._ffmpeg_enabled()
         args: list[str] = []
         self._ensure_bzip2_alias(ctx.install_prefix, ctx.build_type)
+        self._ensure_ppmd_package(ctx.install_prefix, ctx.build_type)
         self._ensure_freetype_harfbuzz_compat(ctx.install_prefix, ctx.build_type)
         cache_path = cfg.src_root / "OpenImageIO" / "build" / "CMakeCache.txt"
         allow = {
@@ -1377,6 +1379,26 @@ class Builder:
         jxl_threads_library = _pick_library(["jxl_threads"])
         if jxl_threads_library is not None:
             args.append(f"-DJXL_THREADS_LIBRARY={jxl_threads_library.as_posix()}")
+
+        # DNG-CMake's package fallback logic may search only non-debug names
+        # (e.g. hwy, brotlicommon) on Windows. Provide explicit paths so
+        # Debug-only prefixes with *d.lib names resolve correctly.
+        if self.platform.os == "windows" and cfg.build_dng_sdk:
+            jxl_cms_library = _pick_library(["jxl_cms"])
+            if jxl_cms_library is not None:
+                args.append(f"-DJXL_CMS_LIBRARY={jxl_cms_library.as_posix()}")
+            hwy_library = _pick_library(["hwy"])
+            if hwy_library is not None:
+                args.append(f"-DHWY_LIBRARY={hwy_library.as_posix()}")
+            brotli_common_library = _pick_library(["brotlicommon"])
+            if brotli_common_library is not None:
+                args.append(f"-DBROTLI_COMMON_LIBRARY={brotli_common_library.as_posix()}")
+            brotli_dec_library = _pick_library(["brotlidec"])
+            if brotli_dec_library is not None:
+                args.append(f"-DBROTLI_DEC_LIBRARY={brotli_dec_library.as_posix()}")
+            brotli_enc_library = _pick_library(["brotlienc"])
+            if brotli_enc_library is not None:
+                args.append(f"-DBROTLI_ENC_LIBRARY={brotli_enc_library.as_posix()}")
 
         gif_include = include_dir if (include_dir / "gif_lib.h").exists() else None
         gif_library = _pick_library(["gif", "giflib", "libgif"])
@@ -2932,6 +2954,181 @@ endif()
             except OSError:
                 return
 
+    def _ensure_ppmd_package(self, prefix: Path, build_type: str) -> None:
+        if self.dry_run:
+            return
+
+        libdir = prefix / "lib"
+        if not libdir.exists():
+            return
+
+        include_candidates = [
+            (prefix / "include" / "minizip-ng").resolve(),
+            (prefix / "include").resolve(),
+        ]
+        include_dir = next((candidate for candidate in include_candidates if candidate.exists()), None)
+
+        release_lib: Path | None = None
+        debug_lib: Path | None = None
+        debug_postfix = str(self.config.global_cfg.windows.get("debug_postfix", "d"))
+
+        if self.platform.os == "windows":
+            release_candidates = [
+                libdir / "ppmd.lib",
+                libdir / "libppmd.lib",
+            ]
+            debug_candidates = [
+                libdir / f"ppmd{debug_postfix}.lib",
+                libdir / f"libppmd{debug_postfix}.lib",
+                libdir / "ppmdd.lib",
+                libdir / "libppmdd.lib",
+            ]
+            release_lib = next((candidate for candidate in release_candidates if candidate.exists()), None)
+            debug_lib = next((candidate for candidate in debug_candidates if candidate.exists()), None)
+
+            if release_lib is None or debug_lib is None:
+                matches = sorted(libdir.glob("*ppmd*.lib"))
+                if matches:
+                    if release_lib is None:
+                        release_lib = next(
+                            (m for m in matches if not m.stem.lower().endswith(debug_postfix.lower())),
+                            None,
+                        ) or matches[0]
+                    if debug_lib is None:
+                        debug_lib = next(
+                            (m for m in matches if m.stem.lower().endswith(debug_postfix.lower()) or m.stem.lower().endswith("d")),
+                            None,
+                        ) or release_lib
+        else:
+            release_candidates = [
+                libdir / "libppmd.a",
+                libdir / "libppmd.so",
+                libdir / "libppmd.dylib",
+            ]
+            debug_candidates = [
+                libdir / "libppmdd.a",
+                libdir / "libppmd_d.a",
+                libdir / "libppmd.a",
+            ]
+            release_lib = next((candidate for candidate in release_candidates if candidate.exists()), None)
+            debug_lib = next((candidate for candidate in debug_candidates if candidate.exists()), None)
+            if release_lib is None and debug_lib is None:
+                matches = sorted(libdir.glob("libppmd*"))
+                if matches:
+                    release_lib = matches[0]
+                    debug_lib = matches[0]
+
+        default_lib = debug_lib if build_type == "Debug" and debug_lib is not None else release_lib
+        if default_lib is None:
+            default_lib = release_lib or debug_lib
+        if default_lib is None:
+            return
+
+        cmake_dir = libdir / "cmake" / "PPMD"
+        try:
+            cmake_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return
+
+        include_path = include_dir.as_posix() if include_dir is not None else ""
+        default_path = default_lib.as_posix()
+        release_path = release_lib.as_posix() if release_lib is not None else ""
+        debug_path = debug_lib.as_posix() if debug_lib is not None else ""
+
+        include_prop = f'    INTERFACE_INCLUDE_DIRECTORIES "{include_path}"\n' if include_path else ""
+        config_text = f"""\
+set(PPMD_FOUND TRUE)
+
+if(NOT TARGET PPMD::PPMD)
+  add_library(PPMD::PPMD UNKNOWN IMPORTED)
+  set_target_properties(PPMD::PPMD PROPERTIES
+{include_prop}    IMPORTED_LOCATION "{default_path}"
+  )
+  if(EXISTS "{release_path}")
+    set_property(TARGET PPMD::PPMD PROPERTY IMPORTED_LOCATION_RELEASE "{release_path}")
+  endif()
+  if(EXISTS "{debug_path}")
+    set_property(TARGET PPMD::PPMD PROPERTY IMPORTED_LOCATION_DEBUG "{debug_path}")
+  endif()
+endif()
+
+set(PPMD_LIBRARY PPMD::PPMD)
+set(PPMD_LIBRARIES PPMD::PPMD)
+"""
+        version_text = """\
+set(PACKAGE_VERSION "1.0.0")
+if(PACKAGE_FIND_VERSION VERSION_GREATER PACKAGE_VERSION)
+  set(PACKAGE_VERSION_COMPATIBLE FALSE)
+else()
+  set(PACKAGE_VERSION_COMPATIBLE TRUE)
+  if(PACKAGE_FIND_VERSION STREQUAL PACKAGE_VERSION)
+    set(PACKAGE_VERSION_EXACT TRUE)
+  endif()
+endif()
+"""
+
+        for name in ("PPMDConfig.cmake", "ppmd-config.cmake"):
+            try:
+                (cmake_dir / name).write_text(config_text, encoding="utf-8")
+            except OSError:
+                return
+        for name in ("PPMDConfigVersion.cmake", "ppmd-config-version.cmake"):
+            try:
+                (cmake_dir / name).write_text(version_text, encoding="utf-8")
+            except OSError:
+                return
+
+    def _ensure_dng_sdk_lcms2_compat(self, prefix: Path, _build_type: str) -> None:
+        if self.dry_run:
+            return
+
+        config_path = prefix / "lib" / "cmake" / "dng_sdk" / "dng_sdk-config.cmake"
+        if not config_path.exists():
+            return
+
+        try:
+            text = config_path.read_text(encoding="utf-8")
+        except OSError:
+            return
+
+        marker_begin = "# OIIO_BUILDER_LCMS2_LOCATION_FALLBACK_BEGIN"
+        marker_end = "# OIIO_BUILDER_LCMS2_LOCATION_FALLBACK_END"
+        if marker_begin in text and marker_end in text:
+            return
+
+        lines = text.splitlines()
+        insert_at = next(
+            (
+                idx
+                for idx, line in enumerate(lines)
+                if "if((_dng_lcms2_release OR _dng_lcms2_debug) AND NOT TARGET dng_sdk::lcms2)" in line
+            ),
+            None,
+        )
+        if insert_at is None:
+            return
+
+        block = [
+            "        # OIIO_BUILDER_LCMS2_LOCATION_FALLBACK_BEGIN",
+            "        # Some installs expose only one configuration for lcms2::lcms2.",
+            "        # Mirror the available location so imported targets are valid",
+            "        # across single- and multi-config generators.",
+            "        if(NOT _dng_lcms2_release AND _dng_lcms2_debug)",
+            "            set(_dng_lcms2_release \"${_dng_lcms2_debug}\")",
+            "        endif()",
+            "        if(NOT _dng_lcms2_debug AND _dng_lcms2_release)",
+            "            set(_dng_lcms2_debug \"${_dng_lcms2_release}\")",
+            "        endif()",
+            "        # OIIO_BUILDER_LCMS2_LOCATION_FALLBACK_END",
+            "",
+        ]
+        lines[insert_at:insert_at] = block
+
+        try:
+            config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        except OSError:
+            return
+
     def _ensure_freetype_harfbuzz_compat(self, prefix: Path, build_type: str) -> None:
         if self.dry_run:
             return
@@ -3384,6 +3581,118 @@ endif()
                 path.write_text("\n".join(out_lines) + "\n", encoding="utf-8")
             except OSError:
                 continue
+
+    def _ensure_libheif_windows_multiconfig_compat(self, prefix: Path) -> None:
+        if self.dry_run or self.platform.os != "windows":
+            return
+
+        cmake_dir = prefix / "lib" / "cmake" / "libheif"
+        cfg_path = cmake_dir / "libheif-config.cmake"
+        if not cfg_path.exists():
+            return
+
+        marker_begin = "# OIIO_BUILDER_LIBHEIF_MULTICONFIG_BEGIN"
+        marker_end = "# OIIO_BUILDER_LIBHEIF_MULTICONFIG_END"
+        try:
+            text = cfg_path.read_text(encoding="utf-8")
+        except OSError:
+            return
+
+        debug_postfix = str(self.config.global_cfg.windows.get("debug_postfix", "d"))
+        lib_dir = prefix / "lib"
+
+        def _has_lib(name: str) -> bool:
+            return (lib_dir / name).exists()
+
+        def _config_expr(stem: str) -> str | None:
+            release_name = f"{stem}.lib"
+            debug_name = f"{stem}{debug_postfix}.lib"
+            has_release = _has_lib(release_name)
+            has_debug = _has_lib(debug_name)
+            if has_release and has_debug:
+                return (
+                    f"$<$<CONFIG:Debug>:${{_IMPORT_PREFIX}}/lib/{debug_name}>;"
+                    f"$<$<NOT:$<CONFIG:Debug>>:${{_IMPORT_PREFIX}}/lib/{release_name}>"
+                )
+            if has_debug:
+                return f"${{_IMPORT_PREFIX}}/lib/{debug_name}"
+            if has_release:
+                return f"${{_IMPORT_PREFIX}}/lib/{release_name}"
+            return None
+
+        link_parts: list[str] = []
+        for stem in ("x265-static", "libde265", "libkvazaar", "libsharpyuv"):
+            expr = _config_expr(stem)
+            if expr is not None:
+                link_parts.append(expr)
+        if not link_parts:
+            return
+
+        heif_release_name = "heif.lib"
+        heif_debug_name = f"heif{debug_postfix}.lib"
+        has_heif_release = _has_lib(heif_release_name)
+        has_heif_debug = _has_lib(heif_debug_name)
+        if not has_heif_release and not has_heif_debug:
+            return
+
+        patch_lines = [
+            "",
+            f"  {marker_begin}",
+            "  if (TARGET heif)",
+            f"    if (EXISTS \"${{_IMPORT_PREFIX}}/lib/{heif_debug_name}\")",
+            "      set_property(TARGET heif APPEND PROPERTY IMPORTED_CONFIGURATIONS DEBUG)",
+            f"      set_target_properties(heif PROPERTIES IMPORTED_LOCATION_DEBUG \"${{_IMPORT_PREFIX}}/lib/{heif_debug_name}\")",
+            f"    elseif (EXISTS \"${{_IMPORT_PREFIX}}/lib/{heif_release_name}\")",
+            "      set_property(TARGET heif APPEND PROPERTY IMPORTED_CONFIGURATIONS DEBUG)",
+            f"      set_target_properties(heif PROPERTIES IMPORTED_LOCATION_DEBUG \"${{_IMPORT_PREFIX}}/lib/{heif_release_name}\")",
+            "    endif()",
+            "    set_target_properties(heif PROPERTIES",
+            f"      INTERFACE_LINK_LIBRARIES \"{';'.join(link_parts)}\"",
+            "    )",
+            "  endif()",
+            f"  {marker_end}",
+            "",
+        ]
+        patch_block = "\n".join(patch_lines)
+
+        cleanup_anchor = "# Cleanup temporary variables."
+        if marker_begin in text and marker_end in text:
+            lines = text.splitlines()
+            begin: int | None = None
+            end: int | None = None
+            for i, line in enumerate(lines):
+                if marker_begin in line:
+                    begin = i
+                    break
+            if begin is None:
+                return
+            for j in range(begin + 1, len(lines)):
+                if marker_end in lines[j]:
+                    end = j
+                    break
+            if end is None:
+                return
+            replacement = patch_block.rstrip("\n").splitlines()
+            if lines[begin - 1 : end + 2] != replacement:
+                # Keep one leading/trailing blank line around the marker block.
+                start = begin - 1 if begin > 0 and lines[begin - 1].strip() == "" else begin
+                stop = end + 2 if end + 1 < len(lines) and lines[end + 1].strip() == "" else end + 1
+                lines[start:stop] = replacement
+                try:
+                    cfg_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                except OSError:
+                    pass
+            return
+
+        anchor_index = text.find(cleanup_anchor)
+        if anchor_index < 0:
+            new_text = text.rstrip() + patch_block + "\n"
+        else:
+            new_text = text[:anchor_index] + patch_block + text[anchor_index:]
+        try:
+            cfg_path.write_text(new_text, encoding="utf-8")
+        except OSError:
+            return
 
     def _ensure_openjph_alias(self, prefix: Path) -> None:
         libdir = prefix / "lib"
@@ -3987,6 +4296,7 @@ endif()
             self._ensure_aom_package(install_prefix, build_type)
             self._ensure_libheif_aom_dependency(install_prefix)
             self._ensure_libheif_consumer_definitions(install_prefix)
+            self._ensure_libheif_windows_multiconfig_compat(install_prefix)
 
         self._prepare_repo_source(repo, src_dir)
         if repo.name == "libjxl":
@@ -3995,6 +4305,8 @@ endif()
             self._ensure_openjph_alias(install_prefix)
         if repo.name in {"OpenColorIO", "OpenImageIO"}:
             self._ensure_pystring_package(install_prefix, build_type)
+        if repo.name in {"libraw", "OpenImageIO"}:
+            self._ensure_dng_sdk_lcms2_compat(install_prefix, build_type)
         if repo.name == "libpng":
             self._ensure_png16_include_alias(install_prefix)
         if repo.name == "OpenImageIO":
@@ -4096,6 +4408,21 @@ endif()
                 build_dir.mkdir(parents=True, exist_ok=True)
             else:
                 build_dir.mkdir(parents=True, exist_ok=True)
+
+            qt_env = dict(env)
+            if self.platform.os == "windows":
+                # Avoid inheriting host-shell compiler flags (e.g. CL=/RTC1 /Zi)
+                # that can conflict with the explicit CMake flags we pass for Qt.
+                sanitized_vars: list[str] = []
+                for var in ("CL", "_CL_", "CFLAGS", "CXXFLAGS", "CPPFLAGS", "LDFLAGS"):
+                    if qt_env.get(var) or os.environ.get(var):
+                        qt_env[var] = ""
+                        sanitized_vars.append(var)
+                if sanitized_vars:
+                    print(
+                        f"[note] Qt6: cleared inherited compiler env vars: {', '.join(sanitized_vars)}",
+                        flush=True,
+                    )
 
             qt_submodules = [
                 "qtbase",
@@ -4353,7 +4680,7 @@ endif()
             run(
                 full_cmd,
                 cwd=str(build_dir),
-                env=env,
+                env=qt_env,
                 dry_run=self.dry_run,
                 log_path=str(self._repo_log_path(repo.name, build_type, "configure")),
             )
@@ -4365,18 +4692,45 @@ endif()
                         "This commonly means required git submodules were not initialized; "
                         "re-run and allow -init-submodules to populate qtbase/qtdeclarative/etc."
                     )
-                ninja_file = build_dir / "build.ninja"
-                if not ninja_file.exists():
-                    raise RuntimeError(
-                        "Qt6: configure did not generate build.ninja. "
-                        "Configuration likely failed even if configure.bat returned success. "
-                        f"Check: {self._repo_log_path(repo.name, build_type, 'configure')}"
-                    )
+                generator = "Ninja"
+                try:
+                    for line in cache.read_text(encoding="utf-8", errors="replace").splitlines():
+                        if line.startswith("CMAKE_GENERATOR:"):
+                            generator = line.split("=", 1)[1].strip() or generator
+                            break
+                except OSError:
+                    pass
+
+                generator_lower = generator.lower()
+                if "ninja" in generator_lower:
+                    expected = build_dir / "build.ninja"
+                    if not expected.exists():
+                        raise RuntimeError(
+                            "Qt6: configure did not generate build.ninja. "
+                            "Configuration likely failed even if configure.bat returned success. "
+                            f"Check: {self._repo_log_path(repo.name, build_type, 'configure')}"
+                        )
+                elif "visual studio" in generator_lower:
+                    expected = build_dir / "Qt6.sln"
+                    if not expected.exists():
+                        # Fallback project produced by CMake if project name differs.
+                        if not any(build_dir.glob("*.sln")):
+                            raise RuntimeError(
+                                "Qt6: configure did not generate a Visual Studio solution. "
+                                "Configuration likely failed even if configure.bat returned success. "
+                                f"Check: {self._repo_log_path(repo.name, build_type, 'configure')}"
+                            )
 
             build_cmd = ["cmake", "--build", str(build_dir), "--config", build_type, "--parallel", str(self._jobs())]
             print_cmd("build command", build_cmd)
             banner(f"{repo.name} ({build_type}) - building")
-            run(build_cmd, cwd=str(build_dir), env=env, dry_run=self.dry_run, log_path=str(self._repo_log_path(repo.name, build_type, "build")))
+            run(
+                build_cmd,
+                cwd=str(build_dir),
+                env=qt_env,
+                dry_run=self.dry_run,
+                log_path=str(self._repo_log_path(repo.name, build_type, "build")),
+            )
 
             install_cmd = ["cmake", "--install", str(build_dir), "--config", build_type, "--prefix", str(install_prefix)]
             print_cmd("install command", install_cmd)
@@ -4384,7 +4738,7 @@ endif()
             run(
                 install_cmd,
                 cwd=str(build_dir),
-                env=env,
+                env=qt_env,
                 dry_run=self.dry_run,
                 log_path=str(self._repo_log_path(repo.name, build_type, "install")),
             )

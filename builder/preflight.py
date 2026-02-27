@@ -142,6 +142,20 @@ def _pkg_config_check(pkg_config: str, module: str, env: dict[str, str]) -> tupl
     return True, version
 
 
+def _bool_from_cache_value(value: object, *, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "on", "true", "yes", "y"}:
+            return True
+        if lowered in {"0", "off", "false", "no", "n", ""}:
+            return False
+    return default
+
+
 def _build_env_for_pkg_config(builder: Builder, build_type: str) -> dict[str, str]:
     """Approximate the builder's environment used for pkg-config resolution."""
     cfg = builder.config.global_cfg
@@ -380,6 +394,60 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
                     if apt_packages:
                         lines.append(f"    Debian/Ubuntu: sudo apt-get install {' '.join(apt_packages)}")
                 lines.append("    Install the development packages that provide the missing pkg-config modules above.")
+
+    # OpenImageIO static linkage can pull FFmpeg transitive system libs on Linux.
+    # In particular, FFmpeg builds with VDPAU support require -lvdpau at link time.
+    if (
+        platform.os == "linux"
+        and config.global_cfg.build_ffmpeg
+        and any(repo.name == "OpenImageIO" for repo in builder.repos)
+    ):
+        lines.append("FFmpeg/OpenImageIO (Linux transitive system libs):")
+        pkg_override = _normalize_override(env.get("PKG_CONFIG_EXECUTABLE") or env.get("PKG_CONFIG"))
+        pkg_candidates = [pkg_override] if pkg_override else ["pkg-config", "pkgconf"]
+        pkg_path, _ = _find_any(pkg_candidates)
+        build_env = _build_env_for_pkg_config(builder, "Release")
+
+        if not pkg_path:
+            lines.append("  pkg-config: missing (required to resolve vdpau)")
+        else:
+            vdpau_ok, vdpau_version = _pkg_config_check(pkg_path, "vdpau", build_env)
+            if vdpau_ok:
+                version_note = f" ({vdpau_version})" if vdpau_version else ""
+                lines.append(f"  vdpau: ok{version_note}")
+            else:
+                lines.append("  vdpau: missing (ld.lld would fail with `-lvdpau`)")
+                os_release = _read_os_release()
+                if _is_debian_like(os_release):
+                    lines.append("  install hint (Debian/Ubuntu): sudo apt-get install libvdpau-dev")
+                lines.append("  used for FFmpeg VDPAU hardware-acceleration support pulled into static OIIO link.")
+
+    # nativefiledialog-extended Linux dependency checks
+    if platform.os == "linux" and any(repo.name == "nativefiledialog-extended" for repo in builder.repos):
+        lines.append("nativefiledialog-extended (Linux prerequisites):")
+        nfd_options = builder._repo_cmake_effective_toml_options("nativefiledialog-extended")
+        portal_enabled = _bool_from_cache_value(nfd_options.cache.get("NFD_PORTAL"), default=False)
+        if portal_enabled:
+            lines.append("  backend: portal (NFD_PORTAL=ON), gtk+-3.0 check skipped")
+        else:
+            lines.append("  backend: gtk3 (NFD_PORTAL=OFF)")
+            pkg_override = _normalize_override(env.get("PKG_CONFIG_EXECUTABLE") or env.get("PKG_CONFIG"))
+            pkg_candidates = [pkg_override] if pkg_override else ["pkg-config", "pkgconf"]
+            pkg_path, _ = _find_any(pkg_candidates)
+            build_env = _build_env_for_pkg_config(builder, "Release")
+            if not pkg_path:
+                lines.append("  pkg-config: missing (required to resolve gtk+-3.0)")
+            else:
+                gtk_ok, gtk_version = _pkg_config_check(pkg_path, "gtk+-3.0", build_env)
+                if gtk_ok:
+                    version_note = f" ({gtk_version})" if gtk_version else ""
+                    lines.append(f"  gtk+-3.0: ok{version_note}")
+                else:
+                    lines.append("  gtk+-3.0: missing")
+                    os_release = _read_os_release()
+                    if _is_debian_like(os_release):
+                        lines.append("  install hint (Debian/Ubuntu): sudo apt-get install pkg-config libgtk-3-dev")
+                    lines.append("  install GTK3 development packages so pkg-config can resolve `gtk+-3.0`.")
 
     # Adobe DNG SDK (optional) - we do not vendor sources; users must provide the archive/dir.
     if getattr(config.global_cfg, "build_dng_sdk", False):

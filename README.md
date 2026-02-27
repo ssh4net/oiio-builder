@@ -28,6 +28,10 @@ Windows notes:
 - macOS (Homebrew): `brew install ccache`
 - Verify: `ccache --version`
 
+Linux GTK3 headers (needed for `nativefiledialog-extended` when `NFD_PORTAL=OFF`):
+- Ubuntu/Debian: `sudo apt-get install pkg-config libgtk-3-dev`
+- Verify: `pkg-config --modversion gtk+-3.0`
+
 ## Installation (Step-by-Step)
 
 1. Install the prerequisites above (via Homebrew/apt/choco/winget/etc.).
@@ -303,7 +307,8 @@ DOXYGEN_EXECUTABLE = "C:\\Program Files\\doxygen\\bin\\doxygen.exe"
 
 - **Rebuild not triggered after local edits**: stamps track dependency fingerprints and applied per-repo option layers, but not uncommitted working tree changes. Use `--force --only <repo>` for targeted rebuilds or `--force-all` for a clean run.
 - **uv cache permission issues**: set `UV_CACHE_DIR` to a writable directory (e.g. `UV_CACHE_DIR=/tmp/uv-cache`).
-- **nativefiledialog-extended (Linux) missing/broken GTK deps**: the builder configures `nativefiledialog-extended` with the GTK3 backend (`NFD_PORTAL=OFF`). Install the `gtk+-3.0` development packages (and ensure `pkg-config` can resolve GTK). To use the portal backend instead, override `NFD_PORTAL=ON`.
+- **nativefiledialog-extended (Linux) missing/broken GTK deps**: the builder configures `nativefiledialog-extended` with the GTK3 backend (`NFD_PORTAL=OFF`). On Ubuntu/Debian install with `sudo apt-get install pkg-config libgtk-3-dev`, then verify `pkg-config --modversion gtk+-3.0`. To use the portal backend instead, override `NFD_PORTAL=ON`.
+- **Linux link error `ld.lld: error: unable to find library -lvdpau`**: install `libvdpau-dev` (`sudo apt-get install libvdpau-dev`). This library is used by FFmpeg VDPAU hardware-acceleration support and may be pulled transitively when statically linking OpenImageIO with FFmpeg enabled.
 - **Qt6 static link errors mentioning `Brotli*` symbols**: rebuild `brotli` (or re-run `Qt6`) so the prefix has an `unofficial-brotli` CMake package shim.
 - **OpenImageIO link errors mentioning `g_unicode_*` / `g_bytes_*` from `libharfbuzz.a`**: rebuild `harfbuzz` (and `freetype`) so HarfBuzz is built without GLib integration for static linking.
 - **Missing optional repos**: `yaml-cpp`, `pystring`, `expat`, `pugixml`, `libxml2` are skipped if not present. On Windows, `libiconv` is expected via `external/vcpkg-export-libiconv.zip`.

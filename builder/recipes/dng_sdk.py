@@ -463,6 +463,38 @@ endif()
         if changed:
             xmp_config_in.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
+    dng_config_in = src_dir / "cmake" / "dng_sdk-config.cmake.in"
+    if dng_config_in.exists():
+        dng_config_text = dng_config_in.read_text(encoding="utf-8", errors="replace")
+        marker = "OIIO_BUILDER_LCMS2_LOCATION_FALLBACK_BEGIN"
+        if marker not in dng_config_text:
+            dng_lines = dng_config_text.splitlines()
+            insert_at = next(
+                (
+                    idx
+                    for idx, line in enumerate(dng_lines)
+                    if "if((_dng_lcms2_release OR _dng_lcms2_debug) AND NOT TARGET dng_sdk::lcms2)" in line
+                ),
+                None,
+            )
+            if insert_at is not None:
+                fallback_block = [
+                    "        # OIIO_BUILDER_LCMS2_LOCATION_FALLBACK_BEGIN",
+                    "        # Some installs expose only one configuration for lcms2::lcms2.",
+                    "        # Mirror the available location so imported targets are valid",
+                    "        # across single- and multi-config generators.",
+                    "        if(NOT _dng_lcms2_release AND _dng_lcms2_debug)",
+                    "            set(_dng_lcms2_release \"${_dng_lcms2_debug}\")",
+                    "        endif()",
+                    "        if(NOT _dng_lcms2_debug AND _dng_lcms2_release)",
+                    "            set(_dng_lcms2_debug \"${_dng_lcms2_release}\")",
+                    "        endif()",
+                    "        # OIIO_BUILDER_LCMS2_LOCATION_FALLBACK_END",
+                    "",
+                ]
+                dng_lines[insert_at:insert_at] = fallback_block
+                dng_config_in.write_text("\n".join(dng_lines) + "\n", encoding="utf-8")
+
     # DNG-CMake carries a patch file (cmake/xmp_stream_io_cstring.patch) that
     # adds <cstring>, but it can fail to apply as upstream XMP sources evolve.
     # Clang/libstdc++ is strict enough that missing memcpy declarations become

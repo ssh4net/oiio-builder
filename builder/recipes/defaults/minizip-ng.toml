@@ -1,11 +1,17 @@
 [cmake.cache]
 MZ_COMPAT = false
 MZ_BUILD_TESTS = false
-MZ_FORCE_FETCH_LIBS = false
 MZ_ZLIB = true
 MZ_BZIP2 = false
 MZ_LZMA = false
+MZ_PPMD = false
 MZ_ZSTD = false
 MZ_LIBCOMP = false
 MZ_OPENSSL = false
-
+MZ_LIBBSD = false
+MZ_PKCRYPT = false
+MZ_WZAES = false
+MZ_SIGNING = false
+MZ_ICONV = false
+MZ_FETCH_LIBS = false
+MZ_FORCE_FETCH_LIBS = false
