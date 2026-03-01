@@ -2,4 +2,4 @@
 PNG_SHARED = false
 PNG_STATIC = true
 PNG_TESTS = false
-
+PNG_FRAMEWORK = false

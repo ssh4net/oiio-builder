@@ -2558,6 +2558,10 @@ endif()
         default_path = default_lib.as_posix()
         release_path = release_lib.as_posix() if release_lib is not None else ""
         debug_path = debug_lib.as_posix() if debug_lib is not None else ""
+        extra_link = ""
+        if self.platform.os == "macos":
+            extra_link = '  set_property(TARGET HarfBuzz::HarfBuzz APPEND PROPERTY INTERFACE_LINK_LIBRARIES "-framework CoreText")\n'
+
         config_text = f"""\
 set(HarfBuzz_FOUND TRUE)
 set(HarfBuzz_INCLUDE_DIR "{include_path}")
@@ -2575,6 +2579,7 @@ if(NOT TARGET HarfBuzz::HarfBuzz)
   if(EXISTS "{debug_path}")
     set_property(TARGET HarfBuzz::HarfBuzz PROPERTY IMPORTED_LOCATION_DEBUG "{debug_path}")
   endif()
+{extra_link}
 endif()
 
 if(NOT TARGET harfbuzz::harfbuzz)
@@ -2636,6 +2641,76 @@ endif()
             except OSError:
                 return
         for name in ("HarfBuzzConfigVersion.cmake", "harfbuzz-config-version.cmake"):
+            try:
+                (cmake_dir / name).write_text(version_text, encoding="utf-8")
+            except OSError:
+                return
+
+    def _ensure_jasper_package(self, prefix: Path, build_type: str) -> None:
+        if self.dry_run:
+            return
+
+        include_dir = prefix / "include" / "jasper"
+        if not (include_dir / "jas_config.h").exists():
+            return
+
+        libdir = prefix / "lib"
+        if not libdir.exists():
+            return
+
+        if self.platform.os == "windows":
+            candidates = [libdir / "jasper.lib", libdir / "libjasper.lib"]
+            lib = next((c for c in candidates if c.exists()), None)
+        else:
+            candidates = [libdir / "libjasper.a", libdir / "libjasper.dylib", libdir / "libjasper.so"]
+            lib = next((c for c in candidates if c.exists()), None)
+        if lib is None:
+            return
+
+        cmake_dir = libdir / "cmake" / "Jasper"
+        try:
+            cmake_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return
+
+        include_path = include_dir.as_posix()
+        lib_path = lib.as_posix()
+
+        config_text = f"""\
+set(Jasper_FOUND TRUE)
+set(JASPER_FOUND TRUE)
+set(JASPER_INCLUDE_DIR "{include_path}")
+set(JASPER_INCLUDE_DIRS "{include_path}")
+set(JASPER_LIBRARY "{lib_path}")
+set(JASPER_LIBRARIES "{lib_path}")
+
+if(NOT TARGET Jasper::Jasper)
+  add_library(Jasper::Jasper UNKNOWN IMPORTED)
+  set_target_properties(Jasper::Jasper PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES "{include_path}"
+    IMPORTED_LOCATION "{lib_path}"
+  )
+endif()
+"""
+
+        version_text = """\
+set(PACKAGE_VERSION "1.0.0")
+if(PACKAGE_FIND_VERSION VERSION_GREATER PACKAGE_VERSION)
+  set(PACKAGE_VERSION_COMPATIBLE FALSE)
+else()
+  set(PACKAGE_VERSION_COMPATIBLE TRUE)
+  if(PACKAGE_FIND_VERSION STREQUAL PACKAGE_VERSION)
+    set(PACKAGE_VERSION_EXACT TRUE)
+  endif()
+endif()
+"""
+
+        for name in ("JasperConfig.cmake", "jasper-config.cmake"):
+            try:
+                (cmake_dir / name).write_text(config_text, encoding="utf-8")
+            except OSError:
+                return
+        for name in ("JasperConfigVersion.cmake", "jasper-config-version.cmake"):
             try:
                 (cmake_dir / name).write_text(version_text, encoding="utf-8")
             except OSError:
@@ -3203,6 +3278,14 @@ endif()
 if(TARGET harfbuzz::harfbuzz AND NOT TARGET HarfBuzz::HarfBuzz)
   add_library(HarfBuzz::HarfBuzz INTERFACE IMPORTED)
   set_property(TARGET HarfBuzz::HarfBuzz PROPERTY INTERFACE_LINK_LIBRARIES harfbuzz::harfbuzz)
+endif()
+if(APPLE)
+  if(TARGET HarfBuzz::HarfBuzz)
+    set_property(TARGET HarfBuzz::HarfBuzz APPEND PROPERTY INTERFACE_LINK_LIBRARIES "-framework CoreText")
+  endif()
+  if(TARGET harfbuzz::harfbuzz)
+    set_property(TARGET harfbuzz::harfbuzz APPEND PROPERTY INTERFACE_LINK_LIBRARIES "-framework CoreText")
+  endif()
 endif()
 """
 
@@ -3961,6 +4044,7 @@ endif()
                 "qtmultimedia",
                 "qtimageformats",
                 "qtsvg",
+                "qttools",
             ]
             if self.platform.os == "linux":
                 qt_submodules.append("qtwayland")
@@ -4400,6 +4484,7 @@ endif()
             # falls back to pkg-config. Static builds may miss `libbrotlicommon` in the pkg-config
             # branch, so provide a tiny config shim when brotli is present in the prefix.
             self._ensure_unofficial_brotli_package(install_prefix, build_type)
+            self._ensure_jasper_package(install_prefix, build_type)
 
             # Rebuild from a clean build tree to avoid confusing incremental states.
             if not self.dry_run:
@@ -4431,6 +4516,7 @@ endif()
                 "qtmultimedia",
                 "qtimageformats",
                 "qtsvg",
+                "qttools",
             ]
             if self.platform.os == "linux":
                 qt_submodules.append("qtwayland")
@@ -4572,6 +4658,10 @@ endif()
                 f"-DCMAKE_LIBRARY_PATH={install_prefix / 'lib'}",
                 "-DPKG_CONFIG_USE_STATIC_LIBS=ON",
             ]
+            if self.platform.os == "macos":
+                # Qt's Apple checks require xcodebuild; allow CLT-only setups by
+                # supplying a reasonable Xcode version override.
+                cmake_args.append("-DQT_INTERNAL_XCODE_VERSION=15.0")
             if self.config.global_cfg.pic:
                 cmake_args.append("-DCMAKE_POSITION_INDEPENDENT_CODE=ON")
 
@@ -4648,8 +4738,16 @@ endif()
                     cmake_args.append(f"-DPNG_PNG_INCLUDE_DIR={include_dir}")
             if self.platform.os in {"macos", "linux"} and self.config.global_cfg.use_libcxx:
                 cxxflags += " -stdlib=libc++"
-            cmake_args.append(f"-DCMAKE_C_FLAGS_INIT={cflags}")
-            cmake_args.append(f"-DCMAKE_CXX_FLAGS_INIT={cxxflags}")
+            if self.platform.os == "windows":
+                cmake_args.append(f"-DCMAKE_C_FLAGS_INIT={cflags}")
+                cmake_args.append(f"-DCMAKE_CXX_FLAGS_INIT={cxxflags}")
+            else:
+                # Qt's configure forwards CMake args via a whitespace split; avoid
+                # embedding space-separated flags in -D arguments on POSIX.
+                if cflags:
+                    qt_env["CFLAGS"] = cflags
+                if cxxflags:
+                    qt_env["CXXFLAGS"] = cxxflags
 
             linker_flags = self._linker_flags_init()
             if linker_flags:

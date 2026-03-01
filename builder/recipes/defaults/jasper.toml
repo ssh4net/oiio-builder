@@ -4,5 +4,7 @@ JAS_ENABLE_PROGRAMS = false
 # Jasper docs require perl + LaTeX/bibtex; disable by default for reproducible builds.
 JAS_ENABLE_DOC = false
 JAS_ENABLE_LIBJPEG = true
+JAS_ENABLE_LIBHEIF = false
 JAS_ENABLE_SHARED = false
 ALLOW_IN_SOURCE_BUILD = true
+JAS_INCLUDE_HEIC_CODEC = false

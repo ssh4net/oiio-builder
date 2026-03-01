@@ -4,3 +4,4 @@ oiio_error*
 AGENTS.md
 build.user.toml
 /developer
+.DS_Store
