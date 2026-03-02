@@ -105,6 +105,8 @@ Key options:
   - `by-build-type`: per-config prefixes (Unix: `Release/Debug/ASAN` subdirs; Windows: `install` + `asan`).
   - `suffix`: legacy Unix layout using `debug_suffix`/`asan_suffix`.
 - `prefix_base`: prefix root used by `prefix_layout` (default in this repo: `./developer/install`).
+- `install_prefix`: optional explicit install prefix (primarily for Windows); acts as default for `[windows].install_prefix`.
+- `asan_prefix`: optional explicit ASAN prefix (primarily for Windows); acts as default for `[windows].asan_prefix`.
 - `build_types`: list of configs to build (`Debug`, `Release`, `ASAN`).
 - `preferred_repo_order`: optional list of repo names that influences build order when multiple repos are ready (deps still win).
 - `use_libcxx`: default on macOS/Linux; set `false` to use libstdc++.
@@ -123,6 +125,11 @@ Key options:
 - `windows.clangcl_extra_flags`: clang-cl x86_64 baseline extra flags (default if unset: `-msse4.1`).
 - `windows.clangcl_extra_flags_append`: extra clang-cl x86_64 flags appended to the baseline (default: empty).
 - `windows.env`: tool overrides for Windows (e.g. `PKG_CONFIG_EXECUTABLE`, `DOXYGEN_EXECUTABLE`).
+
+Windows prefix precedence:
+- `windows.install_prefix` / `windows.asan_prefix` (highest)
+- `global.install_prefix` / `global.asan_prefix`
+- `global.prefix_base` (fallback)
 
 ### Repo Defaults and Local Overrides
 

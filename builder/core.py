@@ -287,14 +287,14 @@ class Builder:
                         path = (cfg.repo_root / path).resolve()
                     return path
 
-                base_raw = win_cfg.get("install_prefix") or cfg.prefix_base
+                base_raw = win_cfg.get("install_prefix") or cfg.install_prefix or cfg.prefix_base
                 if not base_raw:
                     base_raw = str(cfg.repo_root / "developer" / "install")
                 base_path = _resolve_prefix(str(base_raw))
                 prefixes["Release"] = base_path
                 prefixes["Debug"] = base_path
                 if "ASAN" in cfg.build_types:
-                    asan_raw = win_cfg.get("asan_prefix")
+                    asan_raw = win_cfg.get("asan_prefix") or cfg.asan_prefix
                     if asan_raw:
                         asan_path = _resolve_prefix(str(asan_raw))
                     else:
@@ -305,7 +305,7 @@ class Builder:
                     prefixes["ASAN"] = asan_path
                 return prefixes
 
-            base = win_cfg.get("install_prefix") or cfg.prefix_base
+            base = win_cfg.get("install_prefix") or cfg.install_prefix or cfg.prefix_base
             if not base:
                 base = str(cfg.repo_root / "_install" / "WIN")
             base = os.path.expanduser(os.path.expandvars(str(base)))
@@ -315,7 +315,7 @@ class Builder:
             prefixes["Release"] = base_path
             prefixes["Debug"] = base_path
             if "ASAN" in cfg.build_types:
-                asan_base = win_cfg.get("asan_prefix")
+                asan_base = win_cfg.get("asan_prefix") or cfg.asan_prefix
                 if not asan_base:
                     asan_base = f"{base}_ASAN"
                 asan_base = os.path.expanduser(os.path.expandvars(str(asan_base)))

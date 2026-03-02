@@ -6,6 +6,9 @@ build_root = "./developer/_build"
 # - by-build-type: Release=<prefix_base>/Release, Debug=<prefix_base>/Debug, ASAN=<prefix_base>/ASAN
 prefix_layout = "by-build-type"
 prefix_base = "./developer/install"
+# Optional explicit install prefixes (primarily for Windows):
+# install_prefix = "./developer/install"
+# asan_prefix = "./developer/asan"
 # Build types can be narrowed via --build-types Debug,Release
 # build_types = ["Debug", "Release", "ASAN"]
 build_types = ["Debug", "Release"]
@@ -140,6 +143,8 @@ build_ffmpeg = false  # default OFF on Windows; when ON, MSYS2 shells source-bui
 # FFMPEG_LIBAVFORMAT = "<prefix>/lib/avformatd.lib"
 # FFMPEG_LIBAVUTIL = "<prefix>/lib/avutild.lib"
 # FFMPEG_LIBSWSCALE = "<prefix>/lib/swscaled.lib"
+# PKG_CONFIG_EXECUTABLE = "C:/VCPKG/installed/x64-windows/tools/pkgconf/pkgconf.exe"
+# DOXYGEN_EXECUTABLE    = "C:/Program Files/doxygen/bin/doxygen.exe"
 
 [[repos]]
 name = "zlib-ng"

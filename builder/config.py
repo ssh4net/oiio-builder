@@ -32,6 +32,10 @@ class GlobalConfig:
     src_root: Path
     build_root: Path
     prefix_base: str | None
+    # Optional explicit install prefixes (primarily used on Windows).
+    # On Windows, these act as defaults for [windows].install_prefix / asan_prefix.
+    install_prefix: str | None
+    asan_prefix: str | None
     prefix_layout: str  # "suffix" (legacy) or "by-build-type"
     build_types: list[str]
     preferred_repo_order: list[str]
@@ -195,6 +199,8 @@ def load_config(path: Path) -> Config:
             "src_root",
             "build_root",
             "prefix_base",
+            "install_prefix",
+            "asan_prefix",
             "prefix_layout",
             "build_types",
             "preferred_repo_order",
@@ -279,6 +285,16 @@ def load_config(path: Path) -> Config:
         prefix_base = os.path.expandvars(prefix_base)
         prefix_base = os.path.expanduser(prefix_base)
         prefix_base = prefix_base.strip() or None
+    install_prefix = global_data.get("install_prefix")
+    if isinstance(install_prefix, str):
+        install_prefix = os.path.expandvars(install_prefix)
+        install_prefix = os.path.expanduser(install_prefix)
+        install_prefix = install_prefix.strip() or None
+    asan_prefix = global_data.get("asan_prefix")
+    if isinstance(asan_prefix, str):
+        asan_prefix = os.path.expandvars(asan_prefix)
+        asan_prefix = os.path.expanduser(asan_prefix)
+        asan_prefix = asan_prefix.strip() or None
 
     prefix_layout_raw = global_data.get("prefix_layout", "suffix")
     prefix_layout = str(prefix_layout_raw).strip().lower().replace("_", "-")
@@ -309,6 +325,8 @@ def load_config(path: Path) -> Config:
         src_root=src_root,
         build_root=build_root,
         prefix_base=prefix_base,
+        install_prefix=install_prefix if isinstance(install_prefix, str) else None,
+        asan_prefix=asan_prefix if isinstance(asan_prefix, str) else None,
         prefix_layout=prefix_layout,
         build_types=build_types,
         preferred_repo_order=preferred_repo_order,
