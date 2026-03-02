@@ -335,6 +335,3 @@ DOXYGEN_EXECUTABLE = "C:\\Program Files\\doxygen\\bin\\doxygen.exe"
 - Uncommitted working tree changes are not detected yet (use `--force` if needed).
 - Optional repos (e.g., `yaml-cpp`, `pystring`, `pugixml`, `expat`) are skipped if missing.
 
-## Legacy Script
-
-The original Bash script is still present at `build_MOS_stack_until_OIIO.sh` and remains the reference for options and build ordering.
