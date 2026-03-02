@@ -118,7 +118,7 @@ no_update = true
 install_prefix = "./developer/install"
 asan_prefix = "./developer/asan"
 # debug_postfix = "d"
-build_ffmpeg = false  # disable FFmpeg (and OpenImageIO ffmpeg plugin) on Windows
+build_ffmpeg = false  # default OFF on Windows; when ON, MSYS2 shells source-build FFmpeg, otherwise prebuilt FFmpeg is expected
 # msvc_runtime: static|dynamic (default: static => /MT, /MTd)
 # msvc_runtime = "static"
 # python_wrappers: auto|on|off (default: auto)

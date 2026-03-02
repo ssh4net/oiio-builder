@@ -266,6 +266,26 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
             extra = f" [{check.note}]" if check.note else ""
             lines.append(f"  {check.name}: not found{extra}")
 
+    if platform.os == "windows" and builder._ffmpeg_enabled():
+        lines.append("FFmpeg (Windows mode):")
+        if builder._windows_ffmpeg_native_build_enabled():
+            lines.append("  source build: enabled (MSYS2 environment detected)")
+            bash_path, _ = _find_any(["bash", "bash.exe"])
+            make_path, make_name = _find_any(["make", "mingw32-make"])
+            if bash_path:
+                lines.append(f"  bash: ok ({bash_path})")
+            else:
+                missing_tools += 1
+                lines.append("  bash: missing [required for FFmpeg source build]")
+            if make_path:
+                lines.append(f"  make: ok ({make_path}) ({make_name})")
+            else:
+                missing_tools += 1
+                lines.append("  make: missing [required for FFmpeg source build]")
+        else:
+            lines.append("  source build: disabled (MSYS2 environment not detected)")
+            lines.append("  fallback: expects prebuilt FFmpeg in the install prefix")
+
     # Qt6 system dependency checks (Linux)
     qt6_enabled = any(repo.build_system == "qt6" for repo in builder.repos)
     if platform.os == "linux" and qt6_enabled:

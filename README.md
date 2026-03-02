@@ -116,7 +116,7 @@ Key options:
 - `windows.vs_generator`: optional CMake generator name override for `windows.generator=msvc`/`msvc-clang-cl` (e.g. `Visual Studio 18 2026` with CMake 4.2+).
 - `windows.install_prefix`: single prefix for Debug+Release on Windows.
 - `windows.asan_prefix`: optional separate prefix for ASAN.
-- `windows.build_ffmpeg`: defaults to `false` (native FFmpeg build is disabled on Windows; see below).
+- `windows.build_ffmpeg`: defaults to `false`; when `true`, Windows builds use prebuilt FFmpeg by default, or native FFmpeg source build when run from MSYS2 (see below).
 - `windows.msvc_runtime`: `static` (default, `/MT`/`/MTd`) or `dynamic` (`/MD`/`/MDd`).
 - `windows.python_wrappers`: `auto` (default), `on`, `off` for OpenColorIO/OpenEXR Python bindings.
   `auto` enables wrappers only when `windows.msvc_runtime=dynamic`.
@@ -226,11 +226,15 @@ uv run build.py --build-types Debug,Release
 ```
 
 ### Windows: FFmpeg
-On Windows, the builder does not build FFmpeg from source. By default, `windows.build_ffmpeg = false` to keep OpenImageIO builds self-contained.
+By default, `windows.build_ffmpeg = false` to keep OpenImageIO builds self-contained.
 
-To enable the OpenImageIO FFmpeg plugin:
-1. Install/copy an **MSVC-built static** FFmpeg into the same prefix used by this script (headers under `<prefix>/include`, libs under `<prefix>/lib`).
-2. Set `windows.build_ffmpeg = true` (or omit `--no-ffmpeg`).
+When `windows.build_ffmpeg = true`, the builder picks one of two modes:
+1. **MSYS2 source-build mode** (auto): if `MSYSTEM`/MSYS2 is detected, FFmpeg is built from source via `bash + make` with `--toolchain=msvc`.
+2. **Prebuilt mode** (fallback): if MSYS2 is not detected, install/copy an **MSVC-built static** FFmpeg into the same prefix used by this script (headers under `<prefix>/include`, libs under `<prefix>/lib`).
+
+Notes:
+- For `windows.generator = "ninja-clang-cl"` / `msvc-clang-cl`, FFmpeg is configured with `clang-cl`.
+- Source-build mode requires `bash` and `make` in `PATH` (from MSYS2).
 
 ### Windows: libiconv (for libxml2)
 On Windows, `libiconv` is imported from a **vcpkg export zip** (no source build).

@@ -379,6 +379,11 @@ class Builder:
                 return str(candidate)
         return None
 
+    @staticmethod
+    def _which_in_env(name: str, env: dict[str, str]) -> str | None:
+        search_path = env.get("PATH") or os.environ.get("PATH", "")
+        return shutil.which(name, path=search_path)
+
     def _resolve_ccache(self) -> str | None:
         cfg = self.config.global_cfg
         if self.platform.os == "windows":
@@ -440,8 +445,33 @@ class Builder:
             )
         return toolchain
 
+    def _windows_msys2_detected(self) -> bool:
+        if self.platform.os != "windows":
+            return False
+        cfg = self.config.global_cfg
+        candidates = [
+            cfg.windows_env.get("MSYSTEM"),
+            cfg.env.get("MSYSTEM"),
+            os.environ.get("MSYSTEM"),
+            cfg.windows_env.get("MSYSTEM_PREFIX"),
+            cfg.env.get("MSYSTEM_PREFIX"),
+            os.environ.get("MSYSTEM_PREFIX"),
+            cfg.windows_env.get("MINGW_PREFIX"),
+            cfg.env.get("MINGW_PREFIX"),
+            os.environ.get("MINGW_PREFIX"),
+        ]
+        for value in candidates:
+            if isinstance(value, str) and value.strip():
+                return True
+
+        ostype = str(cfg.windows_env.get("OSTYPE") or cfg.env.get("OSTYPE") or os.environ.get("OSTYPE") or "").strip().lower()
+        return "msys" in ostype or "mingw" in ostype
+
+    def _windows_ffmpeg_native_build_enabled(self) -> bool:
+        return self.platform.os == "windows" and self._ffmpeg_enabled() and self._windows_msys2_detected()
+
     def _ensure_ffmpeg_posix_line_endings(self, src_dir: Path) -> None:
-        if self.platform.os == "windows":
+        if self.platform.os == "windows" and not self._windows_ffmpeg_native_build_enabled():
             return
 
         probe_paths = [
@@ -2112,6 +2142,7 @@ endif()
 
     def _ffmpeg_configure_args(self, ctx: BuildContext) -> list[str]:
         cfg = self.config.global_cfg
+        windows_native_ffmpeg = self.platform.os == "windows" and self._windows_ffmpeg_native_build_enabled()
         args = [
             f"--prefix={ctx.install_prefix}",
             "--disable-shared",
@@ -2120,10 +2151,38 @@ endif()
             "--disable-doc",
             "--pkg-config-flags=--static",
         ]
+        if windows_native_ffmpeg:
+            # FFmpeg on Windows is built through MSYS2 makefiles while targeting
+            # the same MSVC/clang-cl toolchain family as the CMake repos.
+            target_os = "win64" if self.platform.arch in {"x86_64", "arm64"} else "win32"
+            ffmpeg_arch = "aarch64" if self.platform.arch == "arm64" else ("x86_64" if self.platform.arch == "x86_64" else self.platform.arch)
+            args.extend(
+                [
+                    f"--target-os={target_os}",
+                    f"--arch={ffmpeg_arch}",
+                    "--toolchain=msvc",
+                    "--ar=lib",
+                    "--ranlib=:",
+                ]
+            )
+            generator = str(cfg.windows.get("generator", "ninja-msvc")).strip().lower()
+            if generator in {"msvc-clang-cl", "ninja-clang-cl"}:
+                args.append("--cc=clang-cl")
+                args.append("--cxx=clang-cl")
+            else:
+                args.append("--cc=cl")
+                args.append("--cxx=cl")
         if ctx.build_type == "Release":
-            args.append("--disable-debug")
+            if not windows_native_ffmpeg:
+                args.append("--disable-debug")
         else:
-            args.append("--enable-debug=3")
+            if windows_native_ffmpeg:
+                debug_postfix = str(cfg.windows.get("debug_postfix", "d")).strip()
+                args.append("--enable-debug")
+                if debug_postfix:
+                    args.append(f"--build-suffix={debug_postfix}")
+            else:
+                args.append("--enable-debug=3")
 
         if "cc" in self.toolchain:
             args.append(f"--cc={self.toolchain['cc']}")
@@ -2148,6 +2207,34 @@ endif()
         args.append(f"--extra-cxxflags={cxxflags}")
         args.append(f"--extra-ldflags={ldflags}")
         return args
+
+    def _ffmpeg_configure_command(self, configure: Path, args: list[str], env: dict[str, str]) -> list[str]:
+        if self.platform.os != "windows":
+            return [str(configure), *args]
+        if not self._windows_ffmpeg_native_build_enabled():
+            return [str(configure), *args]
+
+        bash = self._which_in_env("bash", env) or self._which_in_env("bash.exe", env)
+        if not bash:
+            raise RuntimeError(
+                "FFmpeg native build on Windows requires MSYS2 bash in PATH. "
+                "Run from an MSYS2 shell (MSYSTEM set) or disable windows.build_ffmpeg."
+            )
+        return [bash, configure.as_posix(), *args]
+
+    def _ffmpeg_make_command(self, make_args: list[str], env: dict[str, str]) -> list[str]:
+        if self.platform.os != "windows":
+            return ["make", *make_args]
+        if not self._windows_ffmpeg_native_build_enabled():
+            return ["make", *make_args]
+
+        make = self._which_in_env("make", env) or self._which_in_env("mingw32-make", env)
+        if not make:
+            raise RuntimeError(
+                "FFmpeg native build on Windows requires MSYS2 make in PATH. "
+                "Run from an MSYS2 shell (MSYSTEM set) or disable windows.build_ffmpeg."
+            )
+        return [make, *make_args]
 
     def _cmake_common_args(self, repo: RepoConfig, ctx: BuildContext) -> list[str]:
         cfg = self.config.global_cfg
@@ -2561,7 +2648,6 @@ endif()
         extra_link = ""
         if self.platform.os == "macos":
             extra_link = '  set_property(TARGET HarfBuzz::HarfBuzz APPEND PROPERTY INTERFACE_LINK_LIBRARIES "-framework CoreText")\n'
-
         config_text = f"""\
 set(HarfBuzz_FOUND TRUE)
 set(HarfBuzz_INCLUDE_DIR "{include_path}")
@@ -2659,11 +2745,23 @@ endif()
             return
 
         if self.platform.os == "windows":
-            candidates = [libdir / "jasper.lib", libdir / "libjasper.lib"]
+            debug_postfix = str(self.config.global_cfg.windows.get("debug_postfix", "d"))
+            if build_type == "Debug":
+                candidates = [libdir / f"jasper{debug_postfix}.lib", libdir / "jasper.lib", libdir / f"libjasper{debug_postfix}.lib"]
+            else:
+                candidates = [libdir / "jasper.lib", libdir / f"jasper{debug_postfix}.lib", libdir / "libjasper.lib"]
             lib = next((c for c in candidates if c.exists()), None)
+            if lib is None:
+                matches = sorted(libdir.glob("*jasper*.lib"))
+                if matches:
+                    lib = matches[0]
         else:
             candidates = [libdir / "libjasper.a", libdir / "libjasper.dylib", libdir / "libjasper.so"]
             lib = next((c for c in candidates if c.exists()), None)
+            if lib is None:
+                matches = sorted(libdir.glob("libjasper.*"))
+                if matches:
+                    lib = matches[0]
         if lib is None:
             return
 
@@ -4244,8 +4342,8 @@ endif()
         if not configure.exists():
             return False
         self._ensure_ffmpeg_posix_line_endings(ctx.src_dir)
-        cmd = [str(configure)]
-        cmd.extend(self._ffmpeg_configure_args(ctx))
+        ffmpeg_args = self._ffmpeg_configure_args(ctx)
+        cmd = self._ffmpeg_configure_command(configure, ffmpeg_args, env)
         print_cmd("configure command", cmd)
         banner(f"{ctx.repo.name} ({ctx.build_type}) - configure")
         run(
@@ -4256,7 +4354,7 @@ endif()
             log_path=str(self._repo_log_path(ctx.repo.name, ctx.build_type, "configure")),
         )
 
-        install_cmd = ["make", "install"]
+        install_cmd = self._ffmpeg_make_command(["install"], env)
         print_cmd("install command", install_cmd)
         banner(f"{ctx.repo.name} ({ctx.build_type}) - install")
         run(
@@ -4460,18 +4558,18 @@ endif()
             if not configure.exists():
                 raise RuntimeError(f"Missing configure script for {repo.name}: {configure}")
             self._ensure_ffmpeg_posix_line_endings(src_dir)
-            cmd = [str(configure)]
-            cmd.extend(self._ffmpeg_configure_args(ctx))
+            ffmpeg_args = self._ffmpeg_configure_args(ctx)
+            cmd = self._ffmpeg_configure_command(configure, ffmpeg_args, env)
             print_cmd("configure command", cmd)
             banner(f"{repo.name} ({build_type}) - configure")
             run(cmd, cwd=str(build_dir), env=env, dry_run=self.dry_run, log_path=str(self._repo_log_path(repo.name, build_type, "configure")))
 
-            build_cmd = ["make", f"-j{self._jobs()}"]
+            build_cmd = self._ffmpeg_make_command([f"-j{self._jobs()}"], env)
             print_cmd("build command", build_cmd)
             banner(f"{repo.name} ({build_type}) - building")
             run(build_cmd, cwd=str(build_dir), env=env, dry_run=self.dry_run, log_path=str(self._repo_log_path(repo.name, build_type, "build")))
 
-            install_cmd = ["make", "install"]
+            install_cmd = self._ffmpeg_make_command(["install"], env)
             print_cmd("install command", install_cmd)
             banner(f"{repo.name} ({build_type}) - install")
             run(install_cmd, cwd=str(build_dir), env=env, dry_run=self.dry_run, log_path=str(self._repo_log_path(repo.name, build_type, "install")))
