@@ -713,6 +713,41 @@ class Builder:
 
         return env
 
+    def _prepend_windows_env_paths(self, env: dict[str, str], key: str, paths: list[Path | str]) -> None:
+        if self.platform.os != "windows":
+            return
+
+        sep = ";"
+        merged: list[str] = []
+        for path_item in paths:
+            item = str(path_item).strip()
+            if item:
+                merged.append(item)
+        existing = env.get(key) or os.environ.get(key) or ""
+        if existing:
+            merged.extend(existing.split(sep))
+
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for raw in merged:
+            value = raw.strip()
+            if not value:
+                continue
+            norm = os.path.normcase(os.path.normpath(value.strip("\"'")))
+            if norm in seen:
+                continue
+            seen.add(norm)
+            deduped.append(value)
+        if deduped:
+            env[key] = sep.join(deduped)
+
+    @staticmethod
+    def _prepend_env_flag(env: dict[str, str], key: str, flag: str) -> None:
+        existing = str(env.get(key, "")).strip()
+        if flag.lower() in existing.lower():
+            return
+        env[key] = f"{flag} {existing}".strip()
+
     def _windows_runtime_mode(self) -> str:
         mode = str(self.config.global_cfg.windows.get("msvc_runtime", "static")).strip().lower()
         if mode in {"", "static", "mt", "multithreaded"}:
@@ -4315,6 +4350,76 @@ endif()
             # Some projects request explicit debug naming even in single-config generators.
             _materialize_alias(libdir / "deflated.lib", debug_source)
 
+    def _ensure_zlib_windows_alias(self, prefix: Path, build_type: str) -> None:
+        if self.dry_run or self.platform.os != "windows":
+            return
+
+        libdir = prefix / "lib"
+        if not libdir.exists():
+            return
+
+        debug_postfix = str(self.config.global_cfg.windows.get("debug_postfix", "d"))
+        release_candidates = [
+            libdir / "zlibstatic.lib",
+            libdir / "zlib.lib",
+            libdir / "zlib-ng.lib",
+            libdir / "zlibng.lib",
+        ]
+        debug_candidates = [
+            libdir / f"zlibstatic{debug_postfix}.lib",
+            libdir / f"zlib{debug_postfix}.lib",
+            libdir / "zlib_d.lib",
+            libdir / "zlibd.lib",
+            *release_candidates,
+        ]
+
+        release_source = next((p for p in release_candidates if p.exists()), None)
+        debug_source = next((p for p in debug_candidates if p.exists()), None)
+        if release_source is None and debug_source is None:
+            return
+        if release_source is None:
+            release_source = debug_source
+        if debug_source is None:
+            debug_source = release_source
+
+        def _materialize_alias(target: Path, source: Path | None) -> None:
+            if source is None or not source.exists():
+                return
+
+            if target.exists() or target.is_symlink():
+                try:
+                    if target.is_symlink():
+                        try:
+                            if target.resolve() == source.resolve():
+                                return
+                        except OSError:
+                            pass
+                    else:
+                        try:
+                            st_target = target.stat()
+                            st_source = source.stat()
+                            if st_target.st_size == st_source.st_size and int(st_target.st_mtime) == int(st_source.st_mtime):
+                                return
+                        except OSError:
+                            pass
+                    target.unlink()
+                except OSError:
+                    return
+
+            try:
+                target.symlink_to(source.name)
+            except OSError:
+                shutil.copy2(source, target)
+
+        if release_source is not None:
+            _materialize_alias(libdir / "zlib.lib", release_source)
+        if debug_source is not None:
+            _materialize_alias(libdir / f"zlib{debug_postfix}.lib", debug_source)
+            _materialize_alias(libdir / "zlibd.lib", debug_source)
+            _materialize_alias(libdir / "zlib_d.lib", debug_source)
+            if build_type == "Debug":
+                _materialize_alias(libdir / "zlib_debug.lib", debug_source)
+
     def _ensure_openjph_windows_alias(self, prefix: Path, build_type: str) -> None:
         if self.dry_run or self.platform.os != "windows":
             return
@@ -4863,6 +4968,35 @@ endif()
 
         config_name = "Debug" if ctx.build_type == "Debug" else "Release"
         fetch_externals = self._windows_cpython_fetch_externals()
+
+        self._ensure_zlib_windows_alias(install_prefix, ctx.build_type)
+        self._ensure_bzip2_alias(install_prefix, ctx.build_type)
+
+        py_env = dict(env)
+        include_dir = install_prefix / "include"
+        lib_dir = install_prefix / "lib"
+        bin_dir = install_prefix / "bin"
+        if include_dir.is_dir():
+            self._prepend_windows_env_paths(py_env, "INCLUDE", [include_dir])
+            self._prepend_env_flag(py_env, "CL", f'/I"{include_dir}"')
+        if lib_dir.is_dir():
+            self._prepend_windows_env_paths(py_env, "LIB", [lib_dir])
+            self._prepend_windows_env_paths(py_env, "LIBPATH", [lib_dir])
+            self._prepend_env_flag(py_env, "LINK", f'/LIBPATH:"{lib_dir}"')
+        if bin_dir.is_dir():
+            self._prepend_windows_env_paths(py_env, "PATH", [bin_dir])
+
+        prefix_str = str(install_prefix)
+        for key in ("zlibDir", "bz2Dir", "sqlite3Dir", "lzmaDir", "libffiDir"):
+            py_env.setdefault(key, prefix_str)
+        py_env.setdefault("ZLIB_ROOT", prefix_str)
+
+        if not fetch_externals and not (include_dir / "zlib.h").exists():
+            raise RuntimeError(
+                "CPython Windows build requires zlib headers when cpython_fetch_externals=false. "
+                f"Missing: {include_dir / 'zlib.h'}"
+            )
+
         build_cmd = [
             "cmd",
             "/c",
@@ -4879,7 +5013,7 @@ endif()
         run(
             build_cmd,
             cwd=str(src_dir),
-            env=env,
+            env=py_env,
             dry_run=self.dry_run,
             log_path=str(self._repo_log_path(ctx.repo.name, ctx.build_type, "build")),
         )
