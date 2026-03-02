@@ -14,7 +14,7 @@ class RepoConfig:
     dir_candidates: list[str] = field(default_factory=list)
     url: str | None = None
     enabled: bool = True
-    build_system: str | None = None  # cmake, autotools, giflib, ffmpeg, libiconv, openssl, cpython
+    build_system: str | None = None  # cmake, autotools, giflib, ffmpeg, libiconv, openssl, sqlite, libffi, cpython
     ref: str | None = None
     ref_type: str = "branch"  # branch, tag, commit
     deps: list[str] = field(default_factory=list)
@@ -278,6 +278,7 @@ def load_config(path: Path) -> Config:
             "build_ffmpeg",
             "msvc_runtime",
             "python_wrappers",
+            "cpython_fetch_externals",
             "clangcl_extra_flags",
             "clangcl_extra_flags_append",
             "env",

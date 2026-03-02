@@ -33,6 +33,7 @@ from . import (
     libde265,
     libheif,
     libjxl,
+    libffi,
     libpng,
     libtiff,
     libultrahdr,
@@ -52,6 +53,7 @@ from . import (
     pystring,
     qt6,
     robinmap,
+    sqlite,
     spdlog,
     x265,
 )
@@ -85,6 +87,7 @@ _RECIPES: dict[str, ModuleType] = {
     "libde265": libde265,
     "libheif": libheif,
     "libjxl": libjxl,
+    "libffi": libffi,
     "libpng": libpng,
     "libtiff": libtiff,
     "libultrahdr": libultrahdr,
@@ -104,6 +107,7 @@ _RECIPES: dict[str, ModuleType] = {
     "pystring": pystring,
     "Qt6": qt6,
     "robinmap": robinmap,
+    "sqlite": sqlite,
     "spdlog": spdlog,
     "x265": x265,
 }

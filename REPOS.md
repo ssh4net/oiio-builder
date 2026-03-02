@@ -39,3 +39,5 @@ Repositories referenced by `build_MOS_stack_until_OIIO.sh` with current local cl
 | x265 | x265_git | https://bitbucket.org/multicoreware/x265_git.git |  |
 | kvazaar | kvazaar | https://github.com/ultravideo/kvazaar.git |  |
 | ffmpeg | ffmpeg | https://github.com/FFmpeg/FFmpeg.git |  |
+| sqlite | sqlite | https://github.com/sqlite/sqlite.git |  |
+| libffi | libffi | https://github.com/libffi/libffi.git |  |

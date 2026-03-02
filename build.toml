@@ -40,6 +40,8 @@ preferred_repo_order = [
   "LBFGSpp",
   "imath",
   "pystring",
+  "sqlite",
+  "libffi",
   "cpython",
   "nanobind",
   "pybind11",
@@ -137,6 +139,10 @@ build_ffmpeg = false  # default OFF on Windows; when ON, MSYS2 shells source-bui
 #   on   -> force ON for OpenColorIO/OpenEXR wrappers
 #   off  -> force OFF for OpenColorIO/OpenEXR wrappers
 # python_wrappers = "auto"
+# cpython_fetch_externals: false|true (default: false)
+#   false -> pass `-E` to PCbuild/build.bat (no CPython external downloads)
+#   true  -> pass `-e` and allow CPython to fetch/build its own externals
+# cpython_fetch_externals = false
 
 [windows.env]
 # OpenMP (libomp) for clang-cl builds (e.g. when libraw_enable_openmp="ON"):
@@ -151,6 +157,8 @@ build_ffmpeg = false  # default OFF on Windows; when ON, MSYS2 shells source-bui
 # FFMPEG_LIBAVFORMAT = "<prefix>/lib/avformatd.lib"
 # FFMPEG_LIBAVUTIL = "<prefix>/lib/avutild.lib"
 # FFMPEG_LIBSWSCALE = "<prefix>/lib/swscaled.lib"
+# SQLITE_VCPKG_EXPORT_ZIP = "./external/vcpkg-export-sqlite.zip"
+# LIBFFI_VCPKG_EXPORT_ZIP = "./external/vcpkg-export-libffi.zip"
 # PKG_CONFIG_EXECUTABLE = "C:/VCPKG/installed/x64-windows/tools/pkgconf/pkgconf.exe"
 # DOXYGEN_EXECUTABLE    = "C:/Program Files/doxygen/bin/doxygen.exe"
 
@@ -381,6 +389,25 @@ url = "https://gitlab.com/federicomenaquintero/bzip2.git"
 build_system = "cmake"
 
 [[repos]]
+name = "sqlite"
+dir = "sqlite"
+# Windows-only: imported from a vcpkg export zip placed under `external/`.
+# Default expected path: `external/vcpkg-export-sqlite.zip`
+# Override: set `SQLITE_VCPKG_EXPORT_ZIP` in `[windows.env]` or the process env.
+url = "https://github.com/sqlite/sqlite.git"
+build_system = "autotools"
+source_subdir = "autoconf"
+
+[[repos]]
+name = "libffi"
+dir = "libffi"
+# Windows-only: imported from a vcpkg export zip placed under `external/`.
+# Default expected path: `external/vcpkg-export-libffi.zip`
+# Override: set `LIBFFI_VCPKG_EXPORT_ZIP` in `[windows.env]` or the process env.
+url = "https://github.com/libffi/libffi.git"
+build_system = "autotools"
+
+[[repos]]
 name = "highway"
 dir = "highway"
 url = "https://github.com/google/highway.git"
@@ -506,6 +533,7 @@ url = "https://github.com/python/cpython.git"
 ref = "3.12"
 ref_type = "branch"
 build_system = "cpython"
+deps = ["zlib-ng", "xz", "bzip2", "sqlite", "libffi"]
 
 [[repos]]
 name = "robinmap"

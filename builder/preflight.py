@@ -25,6 +25,8 @@ _PREFLIGHT_REPO_URLS: dict[str, str] = {
     "freetype": "https://github.com/freetype/freetype.git",
     "harfbuzz": "https://github.com/harfbuzz/harfbuzz.git",
     "bzip2": "https://gitlab.com/federicomenaquintero/bzip2.git",
+    "sqlite": "https://github.com/sqlite/sqlite.git",
+    "libffi": "https://github.com/libffi/libffi.git",
 }
 
 
@@ -510,6 +512,24 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
             continue
         if repo.name == "openssl" and platform.os == "windows":
             zip_path = builder._openssl_export_zip()
+            if zip_path.exists():
+                lines.append(f"  {repo.name}: ok (vcpkg export zip: {zip_path})")
+            else:
+                lines.append(f"  {repo.name}: missing (vcpkg export zip expected at {zip_path})")
+                if not repo.optional:
+                    missing_repos += 1
+            continue
+        if repo.name == "sqlite" and platform.os == "windows":
+            zip_path = builder._sqlite_export_zip()
+            if zip_path.exists():
+                lines.append(f"  {repo.name}: ok (vcpkg export zip: {zip_path})")
+            else:
+                lines.append(f"  {repo.name}: missing (vcpkg export zip expected at {zip_path})")
+                if not repo.optional:
+                    missing_repos += 1
+            continue
+        if repo.name == "libffi" and platform.os == "windows":
+            zip_path = builder._libffi_export_zip()
             if zip_path.exists():
                 lines.append(f"  {repo.name}: ok (vcpkg export zip: {zip_path})")
             else:

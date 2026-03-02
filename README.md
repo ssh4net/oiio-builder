@@ -115,6 +115,7 @@ Key options:
 - `build_cpython`: build CPython from source (`https://github.com/python/cpython.git`).
   - On Windows: enabled by default.
   - On Linux/macOS: built only when `cpython_ref` is explicitly set.
+- `sqlite` and `libffi` are built ahead of `cpython` when CPython is requested.
 - `cpython_ref`: optional CPython git ref override (example: `3.13`, `v3.12.11`, commit SHA).
 - `cpython_ref_type`: `branch` (default), `tag`, or `commit` for `cpython_ref`.
 - `build_qt6`: build a minimal **static Qt6** stack into the prefix (for consumers like OpenImageIO `iv` and GPUpad).
@@ -127,6 +128,8 @@ Key options:
 - `windows.msvc_runtime`: `static` (default, `/MT`/`/MTd`) or `dynamic` (`/MD`/`/MDd`).
 - `windows.python_wrappers`: `auto` (default), `on`, `off` for OpenColorIO/OpenEXR Python bindings.
   `auto` enables wrappers only when `windows.msvc_runtime=dynamic`.
+- `windows.cpython_fetch_externals`: `false` (default) passes `-E` to CPython `PCbuild/build.bat` (no external dependency downloads); `true` uses `-e`.
+- On Windows, `sqlite`/`libffi` are imported from vcpkg export zips (`external/vcpkg-export-sqlite.zip`, `external/vcpkg-export-libffi.zip`) instead of source/autotools builds.
 - `windows.clangcl_extra_flags`: clang-cl x86_64 baseline extra flags (default if unset: `-msse4.1`).
 - `windows.clangcl_extra_flags_append`: extra clang-cl x86_64 flags appended to the baseline (default: empty).
 - `windows.env`: tool overrides for Windows (e.g. `PKG_CONFIG_EXECUTABLE`, `DOXYGEN_EXECUTABLE`).
@@ -258,6 +261,23 @@ On Windows, `libiconv` is imported from a **vcpkg export zip** (no source build)
 Example:
 ```bat
 vcpkg export libiconv:x64-windows-static --zip --output=vcpkg-export-libiconv
+```
+
+### Windows: sqlite + libffi (for CPython)
+On Windows, `sqlite` and `libffi` are imported from **vcpkg export zips** (no source/autotools build).
+
+- Default paths:
+  - `external/vcpkg-export-sqlite.zip`
+  - `external/vcpkg-export-libffi.zip`
+- Overrides (optional, via `[windows.env]` or process env):
+  - `SQLITE_VCPKG_EXPORT_ZIP` (also accepts `SQLITE3_VCPKG_EXPORT_ZIP`)
+  - `LIBFFI_VCPKG_EXPORT_ZIP`
+- Prefer `*-static` triplets (e.g. `x64-windows-static`) to avoid DLL collisions in the shared prefix.
+
+Examples:
+```bat
+vcpkg export sqlite3:x64-windows-static --zip --output=vcpkg-export-sqlite
+vcpkg export libffi:x64-windows-static --zip --output=vcpkg-export-libffi
 ```
 
 ### Qt6 (static, optional)

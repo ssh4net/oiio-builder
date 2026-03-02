@@ -23,3 +23,12 @@ def ocio_enabled(builder) -> bool:
 
 def qt6_enabled(builder) -> bool:
     return bool(getattr(_cfg(builder), "build_qt6", False))
+
+
+def cpython_requested(builder) -> bool:
+    cfg = _cfg(builder)
+    if not bool(getattr(cfg, "build_cpython", True)):
+        return False
+    if builder.platform.os == "windows":
+        return True
+    return bool(getattr(cfg, "cpython_ref", None))

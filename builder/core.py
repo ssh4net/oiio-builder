@@ -760,6 +760,21 @@ class Builder:
             return False, "forced-off"
         return self._windows_runtime_mode() == "dynamic", "auto"
 
+    def _windows_cpython_fetch_externals(self) -> bool:
+        if self.platform.os != "windows":
+            return False
+        raw = self.config.global_cfg.windows.get("cpython_fetch_externals")
+        if raw is None:
+            return False
+        if isinstance(raw, bool):
+            return raw
+        value = str(raw).strip().lower()
+        if value in {"1", "true", "on", "yes"}:
+            return True
+        if value in {"0", "false", "off", "no"}:
+            return False
+        return False
+
     def _base_flags(self, build_type: str) -> str:
         cfg = self.config.global_cfg
         if self.platform.os == "windows":
@@ -2374,6 +2389,33 @@ endif()
             )
         return [make, *make_args]
 
+    def _autotools_windows_msys2_active(self) -> bool:
+        return self.platform.os == "windows" and self._windows_msys2_detected()
+
+    def _autotools_configure_command(self, configure: Path, args: list[str], env: dict[str, str]) -> list[str]:
+        if not self._autotools_windows_msys2_active():
+            return [str(configure), *args]
+
+        bash = self._which_in_env("bash", env) or self._which_in_env("bash.exe", env)
+        if not bash:
+            raise RuntimeError(
+                "Windows autotools builds require MSYS2 bash in PATH. "
+                "Run from an MSYS2 shell (MSYSTEM set)."
+            )
+        return [bash, configure.as_posix(), *args]
+
+    def _autotools_make_command(self, make_args: list[str], env: dict[str, str]) -> list[str]:
+        if not self._autotools_windows_msys2_active():
+            return ["make", *make_args]
+
+        make = self._which_in_env("make", env) or self._which_in_env("mingw32-make", env)
+        if not make:
+            raise RuntimeError(
+                "Windows autotools builds require MSYS2 make in PATH. "
+                "Run from an MSYS2 shell (MSYSTEM set)."
+            )
+        return [make, *make_args]
+
     def _cmake_common_args(self, repo: RepoConfig, ctx: BuildContext) -> list[str]:
         cfg = self.config.global_cfg
         args: list[str] = [
@@ -2659,6 +2701,77 @@ endif()
                 return matches[0]
         return default
 
+    def _sqlite_export_zip(self, env: dict[str, str] | None = None) -> Path:
+        cfg = self.config.global_cfg
+        default = cfg.repo_root / "external" / "vcpkg-export-sqlite.zip"
+        override = None
+        if env:
+            override = (
+                env.get("SQLITE_VCPKG_EXPORT_ZIP")
+                or env.get("VCPKG_SQLITE_EXPORT_ZIP")
+                or env.get("SQLITE3_VCPKG_EXPORT_ZIP")
+                or env.get("VCPKG_SQLITE3_EXPORT_ZIP")
+            )
+        if not override and self.platform.os == "windows":
+            override = (
+                cfg.windows_env.get("SQLITE_VCPKG_EXPORT_ZIP")
+                or cfg.windows_env.get("VCPKG_SQLITE_EXPORT_ZIP")
+                or cfg.windows_env.get("SQLITE3_VCPKG_EXPORT_ZIP")
+                or cfg.windows_env.get("VCPKG_SQLITE3_EXPORT_ZIP")
+                or cfg.env.get("SQLITE_VCPKG_EXPORT_ZIP")
+                or cfg.env.get("VCPKG_SQLITE_EXPORT_ZIP")
+                or cfg.env.get("SQLITE3_VCPKG_EXPORT_ZIP")
+                or cfg.env.get("VCPKG_SQLITE3_EXPORT_ZIP")
+                or os.environ.get("SQLITE_VCPKG_EXPORT_ZIP")
+                or os.environ.get("VCPKG_SQLITE_EXPORT_ZIP")
+                or os.environ.get("SQLITE3_VCPKG_EXPORT_ZIP")
+                or os.environ.get("VCPKG_SQLITE3_EXPORT_ZIP")
+            )
+        if override:
+            path = Path(os.path.expandvars(override)).expanduser()
+            if not path.is_absolute():
+                path = (cfg.repo_root / path).resolve()
+            return path
+
+        external_dir = cfg.repo_root / "external"
+        if default.exists():
+            return default
+        if external_dir.is_dir():
+            matches = sorted(external_dir.glob("vcpkg-export-sqlite*.zip"))
+            if matches:
+                return matches[0]
+        return default
+
+    def _libffi_export_zip(self, env: dict[str, str] | None = None) -> Path:
+        cfg = self.config.global_cfg
+        default = cfg.repo_root / "external" / "vcpkg-export-libffi.zip"
+        override = None
+        if env:
+            override = env.get("LIBFFI_VCPKG_EXPORT_ZIP") or env.get("VCPKG_LIBFFI_EXPORT_ZIP")
+        if not override and self.platform.os == "windows":
+            override = (
+                cfg.windows_env.get("LIBFFI_VCPKG_EXPORT_ZIP")
+                or cfg.windows_env.get("VCPKG_LIBFFI_EXPORT_ZIP")
+                or cfg.env.get("LIBFFI_VCPKG_EXPORT_ZIP")
+                or cfg.env.get("VCPKG_LIBFFI_EXPORT_ZIP")
+                or os.environ.get("LIBFFI_VCPKG_EXPORT_ZIP")
+                or os.environ.get("VCPKG_LIBFFI_EXPORT_ZIP")
+            )
+        if override:
+            path = Path(os.path.expandvars(override)).expanduser()
+            if not path.is_absolute():
+                path = (cfg.repo_root / path).resolve()
+            return path
+
+        external_dir = cfg.repo_root / "external"
+        if default.exists():
+            return default
+        if external_dir.is_dir():
+            matches = sorted(external_dir.glob("vcpkg-export-libffi*.zip"))
+            if matches:
+                return matches[0]
+        return default
+
     def _maybe_skip_missing(self, repo: RepoConfig, path: Path) -> bool:
         if repo.name == "libiconv" and self.platform.os == "windows":
             zip_path = self._libiconv_export_zip()
@@ -2670,6 +2783,22 @@ endif()
             return False
         if repo.name == "openssl" and self.platform.os == "windows":
             zip_path = self._openssl_export_zip()
+            if zip_path.exists():
+                return False
+            if repo.optional:
+                print(f"[skip] {repo.name}: missing vcpkg export zip at {zip_path}")
+                return True
+            return False
+        if repo.name == "sqlite" and self.platform.os == "windows":
+            zip_path = self._sqlite_export_zip()
+            if zip_path.exists():
+                return False
+            if repo.optional:
+                print(f"[skip] {repo.name}: missing vcpkg export zip at {zip_path}")
+                return True
+            return False
+        if repo.name == "libffi" and self.platform.os == "windows":
+            zip_path = self._libffi_export_zip()
             if zip_path.exists():
                 return False
             if repo.optional:
@@ -2692,8 +2821,34 @@ endif()
                 return
             if repo.name == "glew":
                 self._patch_glew_macos(src_dir)
+            if repo.name == "libffi":
+                self._ensure_libffi_autotools_bootstrap(src_dir)
             recipe_registry.patch_source(repo.name, self, src_dir)
             self._repo_source_prepared.add(repo.name)
+
+    def _ensure_libffi_autotools_bootstrap(self, src_dir: Path) -> None:
+        if (src_dir / "configure").exists():
+            return
+        autogen = src_dir / "autogen.sh"
+        if not autogen.exists():
+            return
+
+        if self.platform.os == "windows" and not self._autotools_windows_msys2_active():
+            raise RuntimeError(
+                "libffi git sources on Windows require MSYS2 autotools bootstrap "
+                "(run from an MSYS2 shell so autogen.sh can generate configure)."
+            )
+
+        env = dict(os.environ)
+        bash = self._which_in_env("bash", env) or self._which_in_env("bash.exe", env)
+        cmd: list[str]
+        if bash:
+            cmd = [bash, autogen.as_posix()]
+        else:
+            cmd = [str(autogen)]
+        print_cmd("bootstrap command", cmd)
+        banner("libffi - bootstrap")
+        run(cmd, cwd=str(src_dir), env=env, dry_run=self.dry_run)
 
     def _patch_glew_macos(self, src_dir: Path) -> None:
         if self.platform.os != "macos":
@@ -4347,6 +4502,20 @@ endif()
                 st = zip_path.stat()
                 payload["vcpkg_export_zip_size"] = int(st.st_size)
                 payload["vcpkg_export_zip_mtime"] = int(st.st_mtime)
+        if repo.name == "sqlite" and self.platform.os == "windows":
+            zip_path = self._sqlite_export_zip()
+            payload["vcpkg_export_zip"] = str(zip_path)
+            if zip_path.exists():
+                st = zip_path.stat()
+                payload["vcpkg_export_zip_size"] = int(st.st_size)
+                payload["vcpkg_export_zip_mtime"] = int(st.st_mtime)
+        if repo.name == "libffi" and self.platform.os == "windows":
+            zip_path = self._libffi_export_zip()
+            payload["vcpkg_export_zip"] = str(zip_path)
+            if zip_path.exists():
+                st = zip_path.stat()
+                payload["vcpkg_export_zip_size"] = int(st.st_size)
+                payload["vcpkg_export_zip_mtime"] = int(st.st_mtime)
         if repo.build_system == "qt6":
             qt_submodules = [
                 "qtbase",
@@ -4514,18 +4683,24 @@ endif()
         configure = ctx.src_dir / "configure"
         if not configure.exists():
             return False
+        use_msys2_autotools = self._autotools_windows_msys2_active()
+        if self.platform.os == "windows" and not use_msys2_autotools:
+            return False
         cflags, cxxflags, ldflags = self._non_cmake_flags(ctx.build_type)
         include_dir = ctx.install_prefix / "include"
         lib_dir = ctx.install_prefix / "lib"
+        include_arg = include_dir.as_posix() if use_msys2_autotools else str(include_dir)
+        lib_arg = lib_dir.as_posix() if use_msys2_autotools else str(lib_dir)
+        prefix_arg = ctx.install_prefix.as_posix() if use_msys2_autotools else str(ctx.install_prefix)
         install_env = {
             **env,
-            "CFLAGS": f"{cflags} -I{include_dir}",
-            "CXXFLAGS": f"{cxxflags} -I{include_dir}",
-            "LDFLAGS": f"{ldflags} -L{lib_dir}",
-            "CPPFLAGS": f"-I{include_dir}",
+            "CFLAGS": f"{cflags} -I{include_arg}",
+            "CXXFLAGS": f"{cxxflags} -I{include_arg}",
+            "LDFLAGS": f"{ldflags} -L{lib_arg}",
+            "CPPFLAGS": f"-I{include_arg}",
         }
-        cmd = [str(configure), f"--prefix={ctx.install_prefix}", "--disable-shared", "--enable-static"]
-        cmd.extend(self._autotools_args(repo))
+        configure_args = [f"--prefix={prefix_arg}", "--disable-shared", "--enable-static", *self._autotools_args(repo)]
+        cmd = self._autotools_configure_command(configure, configure_args, install_env)
         print_cmd("configure command", cmd)
         banner(f"{repo.name} ({ctx.build_type}) - configure")
         run(
@@ -4536,7 +4711,7 @@ endif()
             log_path=str(self._repo_log_path(repo.name, ctx.build_type, "configure")),
         )
 
-        install_cmd = ["make", "install"]
+        install_cmd = self._autotools_make_command(["install"], install_env)
         print_cmd("install command", install_cmd)
         banner(f"{repo.name} ({ctx.build_type}) - install")
         run(
@@ -4687,7 +4862,18 @@ endif()
             raise RuntimeError(f"Unsupported Windows architecture for cpython: {self.platform.arch}")
 
         config_name = "Debug" if ctx.build_type == "Debug" else "Release"
-        build_cmd = ["cmd", "/c", str(build_script), "-p", pcbuild_platform, "-c", config_name, "--no-tkinter"]
+        fetch_externals = self._windows_cpython_fetch_externals()
+        build_cmd = [
+            "cmd",
+            "/c",
+            str(build_script),
+            "-p",
+            pcbuild_platform,
+            "-c",
+            config_name,
+            "--no-tkinter",
+            ("-e" if fetch_externals else "-E"),
+        ]
         print_cmd("build command", build_cmd)
         banner(f"{ctx.repo.name} ({ctx.build_type}) - building")
         run(
@@ -4893,28 +5079,37 @@ endif()
             configure = src_dir / "configure"
             if not configure.exists():
                 raise RuntimeError(f"Missing configure script for {repo.name}: {configure}")
+            use_msys2_autotools = self._autotools_windows_msys2_active()
+            if self.platform.os == "windows" and not use_msys2_autotools:
+                raise RuntimeError(
+                    f"{repo.name}: Windows autotools builds require MSYS2 shell/tools in PATH "
+                    "(MSYSTEM set, plus bash+make)."
+                )
             cflags, cxxflags, ldflags = self._non_cmake_flags(build_type)
             include_dir = install_prefix / "include"
             lib_dir = install_prefix / "lib"
+            include_arg = include_dir.as_posix() if use_msys2_autotools else str(include_dir)
+            lib_arg = lib_dir.as_posix() if use_msys2_autotools else str(lib_dir)
+            prefix_arg = install_prefix.as_posix() if use_msys2_autotools else str(install_prefix)
             env = {
                 **env,
-                "CFLAGS": f"{cflags} -I{include_dir}",
-                "CXXFLAGS": f"{cxxflags} -I{include_dir}",
-                "LDFLAGS": f"{ldflags} -L{lib_dir}",
-                "CPPFLAGS": f"-I{include_dir}",
+                "CFLAGS": f"{cflags} -I{include_arg}",
+                "CXXFLAGS": f"{cxxflags} -I{include_arg}",
+                "LDFLAGS": f"{ldflags} -L{lib_arg}",
+                "CPPFLAGS": f"-I{include_arg}",
             }
-            cmd = [str(configure), f"--prefix={install_prefix}", "--disable-shared", "--enable-static"]
-            cmd.extend(self._autotools_args(repo))
+            configure_args = [f"--prefix={prefix_arg}", "--disable-shared", "--enable-static", *self._autotools_args(repo)]
+            cmd = self._autotools_configure_command(configure, configure_args, env)
             print_cmd("configure command", cmd)
             banner(f"{repo.name} ({build_type}) - configure")
             run(cmd, cwd=str(build_dir), env=env, dry_run=self.dry_run, log_path=str(self._repo_log_path(repo.name, build_type, "configure")))
 
-            build_cmd = ["make", f"-j{self._jobs()}"]
+            build_cmd = self._autotools_make_command([f"-j{self._jobs()}"], env)
             print_cmd("build command", build_cmd)
             banner(f"{repo.name} ({build_type}) - building")
             run(build_cmd, cwd=str(build_dir), env=env, dry_run=self.dry_run, log_path=str(self._repo_log_path(repo.name, build_type, "build")))
 
-            install_cmd = ["make", "install"]
+            install_cmd = self._autotools_make_command(["install"], env)
             print_cmd("install command", install_cmd)
             banner(f"{repo.name} ({build_type}) - install")
             run(install_cmd, cwd=str(build_dir), env=env, dry_run=self.dry_run, log_path=str(self._repo_log_path(repo.name, build_type, "install")))
@@ -5722,6 +5917,263 @@ endif()
                 + "\n",
                 encoding="utf-8",
             )
+        elif repo.build_system == "sqlite":
+            if self.platform.os != "windows":
+                raise RuntimeError("sqlite build system is only supported on Windows")
+            build_dir.mkdir(parents=True, exist_ok=True)
+
+            zip_path = self._sqlite_export_zip(env)
+            if not zip_path.exists():
+                raise RuntimeError(f"Missing sqlite vcpkg export zip: {zip_path}")
+
+            banner(f"{repo.name} ({build_type}) - stage")
+            print(f"vcpkg export zip: {zip_path}", flush=True)
+
+            import zipfile
+
+            export_dir = build_dir / "_sqlite_vcpkg_export"
+            marker = export_dir / ".zipstamp"
+            st = zip_path.stat()
+            stamp = f"{zip_path}|{int(st.st_size)}|{int(st.st_mtime)}"
+
+            if self.dry_run:
+                print(f"[dry-run] extract -> {export_dir}", flush=True)
+                return ("rebuilt" if had_stamp else "built"), ""
+
+            if marker.exists() and marker.read_text(encoding="utf-8").strip() == stamp:
+                pass
+            else:
+                if export_dir.exists():
+                    shutil.rmtree(export_dir, ignore_errors=True)
+                export_dir.mkdir(parents=True, exist_ok=True)
+                with zipfile.ZipFile(zip_path) as zf:
+                    export_abs = export_dir.resolve()
+                    for info in zf.infolist():
+                        name = info.filename
+                        if not name or name.endswith("/"):
+                            continue
+                        dest = export_dir / name
+                        dest_abs = dest.resolve()
+                        if export_abs not in dest_abs.parents and dest_abs != export_abs:
+                            raise RuntimeError(f"Refusing to extract outside destination: {name}")
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        with zf.open(info) as src_f, open(dest, "wb") as dst_f:
+                            shutil.copyfileobj(src_f, dst_f)
+                marker.write_text(stamp, encoding="utf-8")
+
+            def _find_export_root(base: Path) -> Path:
+                if (base / "installed").is_dir():
+                    return base
+                for child in base.iterdir():
+                    if child.is_dir() and (child / "installed").is_dir():
+                        return child
+                raise RuntimeError(f"Unexpected vcpkg export layout under {base}")
+
+            export_root = _find_export_root(export_dir)
+            installed_dir = export_root / "installed"
+
+            triplet_candidates = [
+                p
+                for p in installed_dir.iterdir()
+                if p.is_dir() and p.name != "vcpkg" and (p / "include" / "sqlite3.h").exists()
+            ]
+            if not triplet_candidates:
+                raise RuntimeError(f"vcpkg export zip does not contain installed/<triplet>/include/sqlite3.h: {zip_path}")
+
+            def _triplet_score(path: Path) -> tuple[int, str]:
+                name = path.name.lower()
+                score = 0
+                if "static" in name:
+                    score -= 10
+                bin_dir = path / "bin"
+                if bin_dir.is_dir() and any(bin_dir.glob("*.dll")):
+                    score += 5
+                return score, name
+
+            triplet_candidates.sort(key=_triplet_score)
+            triplet_dir = triplet_candidates[0]
+
+            include_src = triplet_dir / "include"
+            lib_src = triplet_dir / "lib"
+            debug_lib_src = triplet_dir / "debug" / "lib"
+            bin_src = triplet_dir / "bin"
+
+            sqlite_release = lib_src / "sqlite3.lib"
+            sqlite_debug = debug_lib_src / "sqlite3.lib"
+            required = [include_src / "sqlite3.h", sqlite_release, sqlite_debug]
+            missing = [p for p in required if not p.exists()]
+            if missing:
+                wanted = "\n".join(f"  - {p}" for p in missing)
+                raise RuntimeError(f"sqlite vcpkg export is missing expected files:\n{wanted}")
+
+            debug_postfix = str(self.config.global_cfg.windows.get("debug_postfix", "d"))
+
+            def _add_debug_postfix(filename: str) -> str:
+                p = Path(filename)
+                suffixes = p.suffixes
+                if not suffixes:
+                    return filename + debug_postfix
+                base = filename
+                for suff in suffixes:
+                    if base.endswith(suff):
+                        base = base[: -len(suff)]
+                if base.endswith(debug_postfix):
+                    return filename
+                return base + debug_postfix + "".join(suffixes)
+
+            banner(f"{repo.name} ({build_type}) - install")
+
+            inc_dst = install_prefix / "include"
+            lib_dst = install_prefix / "lib"
+            bin_dst = install_prefix / "bin"
+            inc_dst.mkdir(parents=True, exist_ok=True)
+            lib_dst.mkdir(parents=True, exist_ok=True)
+            if bin_src.is_dir():
+                bin_dst.mkdir(parents=True, exist_ok=True)
+
+            for item in include_src.iterdir():
+                if item.is_file() and item.name.lower().startswith("sqlite3"):
+                    shutil.copy2(item, inc_dst / item.name)
+
+            shutil.copy2(sqlite_release, lib_dst / sqlite_release.name)
+            shutil.copy2(sqlite_debug, lib_dst / _add_debug_postfix(sqlite_release.name))
+
+            if bin_src.is_dir():
+                if any(bin_src.glob("*.dll")):
+                    print("[note] sqlite export contains DLLs; prefer exporting a *-static triplet for a fully static prefix", flush=True)
+                for item in bin_src.iterdir():
+                    if item.is_file() and item.suffix.lower() in {".dll", ".pdb", ".exe"}:
+                        shutil.copy2(item, bin_dst / item.name)
+        elif repo.build_system == "libffi":
+            if self.platform.os != "windows":
+                raise RuntimeError("libffi build system is only supported on Windows")
+            build_dir.mkdir(parents=True, exist_ok=True)
+
+            zip_path = self._libffi_export_zip(env)
+            if not zip_path.exists():
+                raise RuntimeError(f"Missing libffi vcpkg export zip: {zip_path}")
+
+            banner(f"{repo.name} ({build_type}) - stage")
+            print(f"vcpkg export zip: {zip_path}", flush=True)
+
+            import zipfile
+
+            export_dir = build_dir / "_libffi_vcpkg_export"
+            marker = export_dir / ".zipstamp"
+            st = zip_path.stat()
+            stamp = f"{zip_path}|{int(st.st_size)}|{int(st.st_mtime)}"
+
+            if self.dry_run:
+                print(f"[dry-run] extract -> {export_dir}", flush=True)
+                return ("rebuilt" if had_stamp else "built"), ""
+
+            if marker.exists() and marker.read_text(encoding="utf-8").strip() == stamp:
+                pass
+            else:
+                if export_dir.exists():
+                    shutil.rmtree(export_dir, ignore_errors=True)
+                export_dir.mkdir(parents=True, exist_ok=True)
+                with zipfile.ZipFile(zip_path) as zf:
+                    export_abs = export_dir.resolve()
+                    for info in zf.infolist():
+                        name = info.filename
+                        if not name or name.endswith("/"):
+                            continue
+                        dest = export_dir / name
+                        dest_abs = dest.resolve()
+                        if export_abs not in dest_abs.parents and dest_abs != export_abs:
+                            raise RuntimeError(f"Refusing to extract outside destination: {name}")
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        with zf.open(info) as src_f, open(dest, "wb") as dst_f:
+                            shutil.copyfileobj(src_f, dst_f)
+                marker.write_text(stamp, encoding="utf-8")
+
+            def _find_export_root(base: Path) -> Path:
+                if (base / "installed").is_dir():
+                    return base
+                for child in base.iterdir():
+                    if child.is_dir() and (child / "installed").is_dir():
+                        return child
+                raise RuntimeError(f"Unexpected vcpkg export layout under {base}")
+
+            export_root = _find_export_root(export_dir)
+            installed_dir = export_root / "installed"
+
+            triplet_candidates = [
+                p
+                for p in installed_dir.iterdir()
+                if p.is_dir() and p.name != "vcpkg" and (p / "include" / "ffi.h").exists()
+            ]
+            if not triplet_candidates:
+                raise RuntimeError(f"vcpkg export zip does not contain installed/<triplet>/include/ffi.h: {zip_path}")
+
+            def _triplet_score(path: Path) -> tuple[int, str]:
+                name = path.name.lower()
+                score = 0
+                if "static" in name:
+                    score -= 10
+                bin_dir = path / "bin"
+                if bin_dir.is_dir() and any(bin_dir.glob("*.dll")):
+                    score += 5
+                return score, name
+
+            triplet_candidates.sort(key=_triplet_score)
+            triplet_dir = triplet_candidates[0]
+
+            include_src = triplet_dir / "include"
+            lib_src = triplet_dir / "lib"
+            debug_lib_src = triplet_dir / "debug" / "lib"
+            bin_src = triplet_dir / "bin"
+
+            ffi_release = lib_src / "ffi.lib"
+            ffi_debug = debug_lib_src / "ffi.lib"
+            required = [include_src / "ffi.h", include_src / "ffitarget.h", ffi_release, ffi_debug]
+            missing = [p for p in required if not p.exists()]
+            if missing:
+                wanted = "\n".join(f"  - {p}" for p in missing)
+                raise RuntimeError(f"libffi vcpkg export is missing expected files:\n{wanted}")
+
+            debug_postfix = str(self.config.global_cfg.windows.get("debug_postfix", "d"))
+
+            def _add_debug_postfix(filename: str) -> str:
+                p = Path(filename)
+                suffixes = p.suffixes
+                if not suffixes:
+                    return filename + debug_postfix
+                base = filename
+                for suff in suffixes:
+                    if base.endswith(suff):
+                        base = base[: -len(suff)]
+                if base.endswith(debug_postfix):
+                    return filename
+                return base + debug_postfix + "".join(suffixes)
+
+            banner(f"{repo.name} ({build_type}) - install")
+
+            inc_dst = install_prefix / "include"
+            lib_dst = install_prefix / "lib"
+            bin_dst = install_prefix / "bin"
+            inc_dst.mkdir(parents=True, exist_ok=True)
+            lib_dst.mkdir(parents=True, exist_ok=True)
+            if bin_src.is_dir():
+                bin_dst.mkdir(parents=True, exist_ok=True)
+
+            for name in ("ffi.h", "ffitarget.h"):
+                shutil.copy2(include_src / name, inc_dst / name)
+
+            ffi_debug_name = _add_debug_postfix(ffi_release.name)
+            shutil.copy2(ffi_release, lib_dst / ffi_release.name)
+            shutil.copy2(ffi_debug, lib_dst / ffi_debug_name)
+            # Compatibility aliases for consumers that probe `libffi*.lib`.
+            shutil.copy2(ffi_release, lib_dst / "libffi.lib")
+            shutil.copy2(ffi_debug, lib_dst / _add_debug_postfix("libffi.lib"))
+
+            if bin_src.is_dir():
+                if any(bin_src.glob("*.dll")):
+                    print("[note] libffi export contains DLLs; prefer exporting a *-static triplet for a fully static prefix", flush=True)
+                for item in bin_src.iterdir():
+                    if item.is_file() and item.suffix.lower() in {".dll", ".pdb", ".exe"}:
+                        shutil.copy2(item, bin_dst / item.name)
         elif repo.build_system == "giflib":
             build_dir.mkdir(parents=True, exist_ok=True)
             if self.platform.os == "windows":
@@ -5928,6 +6380,11 @@ endif()
 
     def _resolved_repo_config_for_build(self, repo: RepoConfig, src_dir: Path) -> RepoConfig:
         # Decide build system for xz/lcms2 based on config and source layout.
+        if self.platform.os == "windows":
+            if repo.name == "sqlite":
+                return replace(repo, build_system="sqlite")
+            if repo.name == "libffi":
+                return replace(repo, build_system="libffi")
         if repo.name == "xz":
             cmake_lists = src_dir / "CMakeLists.txt"
             build_system = "autotools" if (self.config.global_cfg.xz_use_autotools or not cmake_lists.exists()) else "cmake"
@@ -6054,6 +6511,10 @@ endif()
             if repo.name == "libiconv" and self.platform.os == "windows":
                 continue
             if repo.name == "openssl" and self.platform.os == "windows":
+                continue
+            if repo.name == "sqlite" and self.platform.os == "windows":
+                continue
+            if repo.name == "libffi" and self.platform.os == "windows":
                 continue
             ensure_repo(repo_dir, repo.url, repo.ref, repo.ref_type, update=not self.no_update, dry_run=self.dry_run)
 
