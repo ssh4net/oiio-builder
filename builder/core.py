@@ -980,24 +980,69 @@ class Builder:
                 f"-DENABLE_OPENMP={cfg.libraw_enable_openmp}",
                 "-DENABLE_LCMS=ON",
                 "-DENABLE_JASPER=ON",
+                f"-DENABLE_DCRAW_DEBUG={'ON' if ctx.build_type == 'Debug' else 'OFF'}",
+                "-DENABLE_X3FTOOLS=ON",
+                "-DENABLE_6BY9RPI=ON",
             ]
             if self.platform.os == "windows":
                 debug_postfix = str(cfg.windows.get("debug_postfix", "d"))
                 lib_dir = (ctx.install_prefix / "lib").resolve()
                 include_dir = (ctx.install_prefix / "include").resolve()
-                lcms_release = lib_dir / "lcms2_static.lib"
-                lcms_debug = lib_dir / f"lcms2_static{debug_postfix}.lib"
-                lcms_lib = lcms_debug if ctx.build_type == "Debug" else lcms_release
-                if not lcms_lib.exists():
-                    candidates = sorted(lib_dir.glob("lcms2_static*.lib"))
-                    if candidates:
-                        lcms_lib = candidates[0]
-                if lcms_lib.exists() and (include_dir / "lcms2.h").exists():
+                if ctx.build_type == "Debug":
+                    lcms_names = [
+                        f"lcms2_static{debug_postfix}.lib",
+                        f"lcms2{debug_postfix}.lib",
+                        f"liblcms2{debug_postfix}.lib",
+                        f"lcms-2{debug_postfix}.lib",
+                        f"liblcms-2{debug_postfix}.lib",
+                        "lcms2_static.lib",
+                        "lcms2.lib",
+                        "liblcms2.lib",
+                        "lcms-2.lib",
+                        "liblcms-2.lib",
+                    ]
+                else:
+                    lcms_names = [
+                        "lcms2_static.lib",
+                        "lcms2.lib",
+                        "liblcms2.lib",
+                        "lcms-2.lib",
+                        "liblcms-2.lib",
+                        f"lcms2_static{debug_postfix}.lib",
+                        f"lcms2{debug_postfix}.lib",
+                        f"liblcms2{debug_postfix}.lib",
+                        f"lcms-2{debug_postfix}.lib",
+                        f"liblcms-2{debug_postfix}.lib",
+                    ]
+                lcms_lib = next((lib_dir / name for name in lcms_names if (lib_dir / name).exists()), None)
+                if lcms_lib is None:
+                    patterns: list[str]
+                    if ctx.build_type == "Debug":
+                        patterns = [
+                            f"lcms2*{debug_postfix}.lib",
+                            f"liblcms2*{debug_postfix}.lib",
+                            "lcms2*.lib",
+                            "liblcms2*.lib",
+                        ]
+                    else:
+                        patterns = [
+                            "lcms2*.lib",
+                            "liblcms2*.lib",
+                            f"lcms2*{debug_postfix}.lib",
+                            f"liblcms2*{debug_postfix}.lib",
+                        ]
+                    for pattern in patterns:
+                        matches = sorted(lib_dir.glob(pattern))
+                        if matches:
+                            lcms_lib = matches[0]
+                            break
+                if lcms_lib is not None and (include_dir / "lcms2.h").exists():
                     # LibRaw ships its own FindLCMS2.cmake which doesn't look for
                     # `lcms2_static`, so force the static library explicitly.
                     args += [
                         f"-DLCMS2_INCLUDE_DIR={include_dir}",
                         f"-DLCMS2_LIBRARIES={lcms_lib}",
+                        f"-DLCMS2_LIBRARY={lcms_lib}",
                     ]
         elif name == "libheif":
             args += [
