@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import threading
 
 from .config import Config, RepoConfig
@@ -89,6 +90,7 @@ class Builder:
         self.toolchain = self._resolve_toolchain()
         self._ccache_path = self._resolve_ccache()
         self.repos = self._filter_repos()
+        self._apply_dynamic_repo_overrides()
         if force and bool(self.config.only) and not self.force_all:
             self.force_targets = set(self.config.only)
         if reinstall and bool(self.config.only) and not self.reinstall_all:
@@ -272,6 +274,97 @@ class Builder:
             self.config.skip = set(skip)
             repos = [r for r in repos if r.name not in skip]
         return repos
+
+    def _apply_dynamic_repo_overrides(self) -> None:
+        cpython_ref, cpython_ref_type = self._cpython_ref_override()
+        if not cpython_ref:
+            return
+        for repo in self.repos:
+            if repo.name != "cpython":
+                continue
+            repo.ref = cpython_ref
+            repo.ref_type = cpython_ref_type
+
+    def _cpython_ref_override(self) -> tuple[str | None, str]:
+        cfg = self.config.global_cfg
+        ref = getattr(cfg, "cpython_ref", None)
+        if isinstance(ref, str):
+            ref = ref.strip() or None
+        else:
+            ref = None
+        ref_type = str(getattr(cfg, "cpython_ref_type", "branch")).strip().lower() or "branch"
+        if ref_type not in {"branch", "tag", "commit"}:
+            ref_type = "branch"
+        return ref, ref_type
+
+    def _cpython_enabled_for_run(self) -> bool:
+        return any(repo.name == "cpython" for repo in self.repos)
+
+    def _prefix_python_executable(self, prefix: Path, build_type: str) -> Path | None:
+        if self.platform.os == "windows":
+            debug_postfix = str(self.config.global_cfg.windows.get("debug_postfix", "d"))
+            if build_type == "Debug":
+                candidates = [
+                    prefix / f"python_{debug_postfix}.exe",
+                    prefix / f"python{debug_postfix}.exe",
+                    prefix / "python.exe",
+                    prefix / "bin" / f"python_{debug_postfix}.exe",
+                    prefix / "bin" / f"python{debug_postfix}.exe",
+                    prefix / "bin" / "python.exe",
+                ]
+            else:
+                candidates = [
+                    prefix / "python.exe",
+                    prefix / "bin" / "python.exe",
+                    prefix / f"python_{debug_postfix}.exe",
+                    prefix / f"python{debug_postfix}.exe",
+                    prefix / "bin" / f"python_{debug_postfix}.exe",
+                    prefix / "bin" / f"python{debug_postfix}.exe",
+                ]
+        else:
+            candidates = [prefix / "bin" / "python3", prefix / "bin" / "python"]
+        return next((candidate for candidate in candidates if candidate.exists()), None)
+
+    def _prefix_windows_python_libraries(self, prefix: Path) -> tuple[Path | None, Path | None]:
+        debug_postfix = str(self.config.global_cfg.windows.get("debug_postfix", "d"))
+        lib_dirs = [prefix / "libs", prefix / "lib"]
+        release_candidates: list[Path] = []
+        debug_candidates: list[Path] = []
+
+        for lib_dir in lib_dirs:
+            if not lib_dir.exists():
+                continue
+            for candidate in sorted(lib_dir.glob("python*.lib")):
+                name = candidate.name.lower()
+                # Keep python3.lib as a low-priority compatibility fallback.
+                if name == "python3.lib":
+                    release_candidates.append(candidate)
+                    continue
+                if name.endswith(f"{debug_postfix}.lib") or name.endswith(f"_{debug_postfix}.lib"):
+                    debug_candidates.append(candidate)
+                else:
+                    release_candidates.append(candidate)
+
+        def _priority(path: Path) -> tuple[int, str]:
+            stem = path.stem.lower()
+            # Prefer versioned libs (python312.lib / python312_d.lib) over
+            # generic import libs (python3.lib / python3_d.lib).
+            if re.fullmatch(r"python\d{2,}(_[a-z])?", stem):
+                return 0, path.name.lower()
+            if stem.startswith("python3"):
+                return 2, path.name.lower()
+            return 1, path.name.lower()
+
+        release_candidates.sort(key=_priority)
+        debug_candidates.sort(key=_priority)
+
+        release_lib = release_candidates[0] if release_candidates else None
+        debug_lib = debug_candidates[0] if debug_candidates else None
+        if debug_lib is None:
+            debug_lib = release_lib
+        if release_lib is None:
+            release_lib = debug_lib
+        return release_lib, debug_lib
 
     def _compute_prefixes(self) -> dict[str, Path]:
         cfg = self.config.global_cfg
@@ -2331,6 +2424,81 @@ endif()
             doxygen = _normalize_override(os.environ.get("DOXYGEN_EXECUTABLE")) or doxygen
         if doxygen:
             args.append(f"-DDOXYGEN_EXECUTABLE={doxygen}")
+
+        python_exec = _normalize_override(
+            cfg.env.get("Python3_EXECUTABLE")
+            or cfg.env.get("PYTHON3_EXECUTABLE")
+            or cfg.env.get("Python_EXECUTABLE")
+            or cfg.env.get("PYTHON_EXECUTABLE")
+        )
+        if self.platform.os == "windows":
+            python_exec = _normalize_override(
+                cfg.windows_env.get("Python3_EXECUTABLE")
+                or cfg.windows_env.get("PYTHON3_EXECUTABLE")
+                or cfg.windows_env.get("Python_EXECUTABLE")
+                or cfg.windows_env.get("PYTHON_EXECUTABLE")
+                or os.environ.get("Python3_EXECUTABLE")
+                or os.environ.get("PYTHON3_EXECUTABLE")
+                or os.environ.get("Python_EXECUTABLE")
+                or os.environ.get("PYTHON_EXECUTABLE")
+            ) or python_exec
+        else:
+            python_exec = _normalize_override(
+                os.environ.get("Python3_EXECUTABLE")
+                or os.environ.get("PYTHON3_EXECUTABLE")
+                or os.environ.get("Python_EXECUTABLE")
+                or os.environ.get("PYTHON_EXECUTABLE")
+            ) or python_exec
+
+        cpython_enabled = self._cpython_enabled_for_run()
+        if cpython_enabled:
+            prefix_posix = ctx.install_prefix.as_posix()
+            args.append(f"-DPython3_ROOT_DIR={prefix_posix}")
+            args.append(f"-DPython_ROOT_DIR={prefix_posix}")
+            args.append("-DPython3_FIND_STRATEGY=LOCATION")
+            args.append("-DPython_FIND_STRATEGY=LOCATION")
+            if not python_exec:
+                prefix_python = self._prefix_python_executable(ctx.install_prefix, ctx.build_type)
+                if prefix_python is not None:
+                    python_exec = prefix_python.as_posix()
+
+        # Keep Python resolution portable by default:
+        # - do not hardcode an absolute interpreter path unless user-provided;
+        # - prefer PATH/venv over Windows registry-provided interpreters.
+        if self.platform.os == "windows":
+            args.append("-DPython3_FIND_REGISTRY=NEVER")
+            args.append("-DPython_FIND_REGISTRY=NEVER")
+
+        in_virtual_env = (
+            bool(os.environ.get("VIRTUAL_ENV"))
+            or bool(os.environ.get("CONDA_PREFIX"))
+            or bool(getattr(sys, "real_prefix", ""))
+            or (getattr(sys, "base_prefix", sys.prefix) != sys.prefix)
+        )
+        if in_virtual_env:
+            args.append("-DPython3_FIND_VIRTUALENV=ONLY")
+            args.append("-DPython_FIND_VIRTUALENV=ONLY")
+
+        if python_exec:
+            args.append(f"-DPython3_EXECUTABLE={python_exec}")
+            args.append(f"-DPython_EXECUTABLE={python_exec}")
+
+        if self.platform.os == "windows" and cpython_enabled:
+            python_release_lib, python_debug_lib = self._prefix_windows_python_libraries(ctx.install_prefix)
+            if python_release_lib is not None:
+                release_posix = python_release_lib.as_posix()
+                args.append(f"-DPython3_LIBRARY_RELEASE={release_posix}")
+                args.append(f"-DPython_LIBRARY_RELEASE={release_posix}")
+            if python_debug_lib is not None:
+                debug_posix = python_debug_lib.as_posix()
+                args.append(f"-DPython3_LIBRARY_DEBUG={debug_posix}")
+                args.append(f"-DPython_LIBRARY_DEBUG={debug_posix}")
+            if python_release_lib is not None or python_debug_lib is not None:
+                chosen = python_debug_lib or python_release_lib
+                if chosen is not None:
+                    chosen_posix = chosen.as_posix()
+                    args.append(f"-DPython3_LIBRARY={chosen_posix}")
+                    args.append(f"-DPython_LIBRARY={chosen_posix}")
 
         if cfg.pic:
             args.append("-DCMAKE_POSITION_INDEPENDENT_CODE=ON")
@@ -4435,6 +4603,159 @@ endif()
         # multiple build types are enabled. Fall back to full rebuild+install.
         return False
 
+    def _build_cpython_posix(self, ctx: BuildContext, env: dict[str, str]) -> None:
+        build_dir = ctx.build_dir
+        src_dir = ctx.src_dir
+        install_prefix = ctx.install_prefix
+        configure = src_dir / "configure"
+        if not configure.exists():
+            raise RuntimeError(f"Missing configure script for cpython: {configure}")
+
+        if not self.dry_run and (build_dir / "Makefile").exists():
+            shutil.rmtree(build_dir, ignore_errors=True)
+        build_dir.mkdir(parents=True, exist_ok=True)
+
+        cflags, cxxflags, ldflags = self._non_cmake_flags(ctx.build_type)
+        py_env = dict(env)
+        if "cc" in self.toolchain:
+            py_env["CC"] = self.toolchain["cc"]
+        if "cxx" in self.toolchain:
+            py_env["CXX"] = self.toolchain["cxx"]
+        if "ar" in self.toolchain:
+            py_env["AR"] = self.toolchain["ar"]
+        if "ranlib" in self.toolchain:
+            py_env["RANLIB"] = self.toolchain["ranlib"]
+        if cflags:
+            py_env["CFLAGS"] = cflags
+        if cxxflags:
+            py_env["CXXFLAGS"] = cxxflags
+        if ldflags:
+            py_env["LDFLAGS"] = ldflags
+
+        configure_cmd = [
+            str(configure),
+            f"--prefix={install_prefix}",
+            "--enable-shared",
+            "--without-ensurepip",
+        ]
+        print_cmd("configure command", configure_cmd)
+        banner(f"{ctx.repo.name} ({ctx.build_type}) - configure")
+        run(
+            configure_cmd,
+            cwd=str(build_dir),
+            env=py_env,
+            dry_run=self.dry_run,
+            log_path=str(self._repo_log_path(ctx.repo.name, ctx.build_type, "configure")),
+        )
+
+        build_cmd = ["make", f"-j{self._jobs()}"]
+        print_cmd("build command", build_cmd)
+        banner(f"{ctx.repo.name} ({ctx.build_type}) - building")
+        run(
+            build_cmd,
+            cwd=str(build_dir),
+            env=py_env,
+            dry_run=self.dry_run,
+            log_path=str(self._repo_log_path(ctx.repo.name, ctx.build_type, "build")),
+        )
+
+        install_cmd = ["make", "install"]
+        print_cmd("install command", install_cmd)
+        banner(f"{ctx.repo.name} ({ctx.build_type}) - install")
+        run(
+            install_cmd,
+            cwd=str(build_dir),
+            env=py_env,
+            dry_run=self.dry_run,
+            log_path=str(self._repo_log_path(ctx.repo.name, ctx.build_type, "install")),
+        )
+
+    def _build_cpython_windows(self, ctx: BuildContext, env: dict[str, str]) -> None:
+        src_dir = ctx.src_dir
+        install_prefix = ctx.install_prefix
+        build_script = src_dir / "PCbuild" / "build.bat"
+        if not build_script.exists():
+            raise RuntimeError(f"Missing CPython Windows build script: {build_script}")
+
+        if self.platform.arch == "x86_64":
+            pcbuild_platform = "x64"
+            output_dirs = ["amd64", "x64"]
+        elif self.platform.arch == "arm64":
+            pcbuild_platform = "arm64"
+            output_dirs = ["arm64", "ARM64"]
+        else:
+            raise RuntimeError(f"Unsupported Windows architecture for cpython: {self.platform.arch}")
+
+        config_name = "Debug" if ctx.build_type == "Debug" else "Release"
+        build_cmd = ["cmd", "/c", str(build_script), "-p", pcbuild_platform, "-c", config_name, "--no-tkinter"]
+        print_cmd("build command", build_cmd)
+        banner(f"{ctx.repo.name} ({ctx.build_type}) - building")
+        run(
+            build_cmd,
+            cwd=str(src_dir),
+            env=env,
+            dry_run=self.dry_run,
+            log_path=str(self._repo_log_path(ctx.repo.name, ctx.build_type, "build")),
+        )
+
+        if self.dry_run:
+            return
+
+        pcbuild_root = src_dir / "PCbuild"
+        output_dir: Path | None = None
+        for name in output_dirs:
+            candidate = pcbuild_root / name
+            if candidate.is_dir() and list(candidate.glob("python*.lib")):
+                output_dir = candidate
+                break
+        if output_dir is None:
+            for candidate in sorted(pcbuild_root.iterdir()):
+                if candidate.is_dir() and list(candidate.glob("python*.lib")):
+                    output_dir = candidate
+                    break
+        if output_dir is None:
+            raise RuntimeError(f"Could not locate CPython build output under: {pcbuild_root}")
+
+        include_dst = install_prefix / "include"
+        lib_dst = install_prefix / "lib"
+        libs_compat_dst = install_prefix / "libs"
+        bin_dst = install_prefix / "bin"
+        include_dst.mkdir(parents=True, exist_ok=True)
+        lib_dst.mkdir(parents=True, exist_ok=True)
+        libs_compat_dst.mkdir(parents=True, exist_ok=True)
+        bin_dst.mkdir(parents=True, exist_ok=True)
+
+        include_src = src_dir / "Include"
+        if include_src.is_dir():
+            shutil.copytree(include_src, include_dst, dirs_exist_ok=True)
+        for pyconfig_candidate in (src_dir / "PC" / "pyconfig.h", src_dir / "PCbuild" / "pyconfig.h"):
+            if pyconfig_candidate.exists():
+                shutil.copy2(pyconfig_candidate, include_dst / "pyconfig.h")
+                break
+
+        for lib_file in sorted(output_dir.glob("python*.lib")):
+            shutil.copy2(lib_file, lib_dst / lib_file.name)
+            shutil.copy2(lib_file, libs_compat_dst / lib_file.name)
+
+        for pattern in ("python*.dll", "python*.exe", "python*.pdb"):
+            for file_path in sorted(output_dir.glob(pattern)):
+                shutil.copy2(file_path, install_prefix / file_path.name)
+                shutil.copy2(file_path, bin_dst / file_path.name)
+
+        stdlib_src = src_dir / "Lib"
+        if stdlib_src.is_dir():
+            shutil.copytree(stdlib_src, install_prefix / "Lib", dirs_exist_ok=True)
+
+        debug_postfix = str(self.config.global_cfg.windows.get("debug_postfix", "d"))
+        debug_libs = list(lib_dst.glob(f"python*{debug_postfix}.lib")) + list(lib_dst.glob(f"python*_{debug_postfix}.lib"))
+        if ctx.build_type == "Debug" and not debug_libs:
+            release_libs = [p for p in sorted(lib_dst.glob("python*.lib")) if not p.name.lower().endswith(f"{debug_postfix}.lib")]
+            if release_libs:
+                source = release_libs[0]
+                fallback_name = f"{source.stem}{debug_postfix}.lib"
+                shutil.copy2(source, lib_dst / fallback_name)
+                shutil.copy2(source, libs_compat_dst / fallback_name)
+
     def _install_only(self, repo: RepoConfig, ctx: BuildContext, env: dict[str, str]) -> bool:
         if repo.build_system == "cmake":
             return self._cmake_install_only(ctx, env)
@@ -4618,6 +4939,13 @@ endif()
             print_cmd("install command", install_cmd)
             banner(f"{repo.name} ({build_type}) - install")
             run(install_cmd, cwd=str(build_dir), env=env, dry_run=self.dry_run, log_path=str(self._repo_log_path(repo.name, build_type, "install")))
+        elif repo.build_system == "cpython":
+            if self.platform.os == "windows":
+                self._build_cpython_windows(ctx, env)
+            elif self.platform.os in {"linux", "macos"}:
+                self._build_cpython_posix(ctx, env)
+            else:
+                raise RuntimeError(f"Unsupported platform for cpython build: {self.platform.os}")
         elif repo.build_system == "qt6":
             configure = src_dir / ("configure.bat" if self.platform.os == "windows" else "configure")
             if not configure.exists():

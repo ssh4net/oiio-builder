@@ -27,6 +27,7 @@ Repositories referenced by `build_MOS_stack_until_OIIO.sh` with current local cl
 | libjxl | libjxl | https://github.com/libjxl/libjxl.git |  |
 | libultrahdr | libultrahdr | https://github.com/google/libultrahdr.git |  |
 | OpenColorIO | OpenColorIO | https://github.com/AcademySoftwareFoundation/OpenColorIO.git |  |
+| CPython | cpython | https://github.com/python/cpython.git |  |
 | minizip-ng | minizip-ng | https://github.com/zlib-ng/minizip-ng.git |  |
 | libwebp | libwebp | https://chromium.googlesource.com/webm/libwebp |  |
 | ptex | ptex | https://github.com/wdas/ptex.git |  |

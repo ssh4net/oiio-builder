@@ -40,6 +40,7 @@ preferred_repo_order = [
   "LBFGSpp",
   "imath",
   "pystring",
+  "cpython",
   "nanobind",
   "pybind11",
   "lcms2",
@@ -81,11 +82,18 @@ build_kvazaar = true
 build_webp = true
 build_ptex = true
 build_pybind11 = true
+build_cpython = true
 build_ffmpeg = true
 build_oiio = true
 build_qt6 = false
 build_dng_sdk = false
 openimageio_patch_png_include = true
+# CPython source override:
+# - default repo ref is branch "3.12" (see [[repos]] cpython below)
+# - set cpython_ref/cpython_ref_type to build a different branch/tag/commit
+#   (Linux/macOS builds CPython only when cpython_ref is explicitly set)
+# cpython_ref = "3.13"
+# cpython_ref_type = "branch"
 
 # Repo-specific switches (match shell script defaults)
 openjpeg_build_codec = ""
@@ -432,7 +440,7 @@ name = "openexr"
 dir = "openexr"
 url = "https://github.com/AcademySoftwareFoundation/openexr.git"
 build_system = "cmake"
-deps = ["imath", "libdeflate", "openjph", "zlib-ng", "pybind11"]
+deps = ["imath", "libdeflate", "openjph", "zlib-ng", "pybind11", "cpython"]
 
 [[repos]]
 name = "expat"
@@ -492,6 +500,14 @@ url = "https://github.com/pybind/pybind11.git"
 build_system = "cmake"
 
 [[repos]]
+name = "cpython"
+dir = "cpython"
+url = "https://github.com/python/cpython.git"
+ref = "3.12"
+ref_type = "branch"
+build_system = "cpython"
+
+[[repos]]
 name = "robinmap"
 dir = "robin-map"
 url = "https://github.com/Tessil/robin-map.git"
@@ -515,7 +531,7 @@ name = "OpenColorIO"
 dir = "OpenColorIO"
 url = "https://github.com/AcademySoftwareFoundation/OpenColorIO.git"
 build_system = "cmake"
-deps = ["expat", "yaml-cpp", "pystring", "minizip-ng", "zlib-ng", "imath", "lcms2", "pybind11"]
+deps = ["expat", "yaml-cpp", "pystring", "minizip-ng", "zlib-ng", "imath", "lcms2", "pybind11", "cpython"]
 
 [[repos]]
 name = "googletest"
@@ -556,5 +572,6 @@ deps = [
   "pugixml",
   "libxml2",
   "pybind11",
+  "cpython",
   "ffmpeg",
 ]

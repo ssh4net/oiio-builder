@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import shutil
 import os
+import sys
 
 from .config import Config, _expand_path
 from .core import Builder
@@ -16,6 +17,7 @@ _PREFLIGHT_REPO_URLS: dict[str, str] = {
     "expat": "https://github.com/libexpat/libexpat.git",
     "yaml-cpp": "https://github.com/jbeder/yaml-cpp.git",
     "pybind11": "https://github.com/pybind/pybind11.git",
+    "cpython": "https://github.com/python/cpython.git",
     "lcms2": "https://github.com/mm2/Little-CMS.git",
     "glew": "https://github.com/Perlmint/glew-cmake.git",
     "glfw": "https://github.com/glfw/glfw.git",
@@ -194,6 +196,16 @@ def _build_env_for_pkg_config(builder: Builder, build_type: str) -> dict[str, st
 def _tool_checks(platform: PlatformInfo, env: dict[str, str]) -> list[ToolCheck]:
     doxygen_override = _normalize_override(env.get("DOXYGEN_EXECUTABLE"))
     pkg_override = _normalize_override(env.get("PKG_CONFIG_EXECUTABLE") or env.get("PKG_CONFIG"))
+    python_override = _normalize_override(
+        env.get("Python3_EXECUTABLE")
+        or env.get("PYTHON3_EXECUTABLE")
+        or env.get("Python_EXECUTABLE")
+        or env.get("PYTHON_EXECUTABLE")
+    )
+    python_candidates: list[str] = []
+    for candidate in [python_override, sys.executable, "python3", "python"]:
+        if candidate and candidate not in python_candidates:
+            python_candidates.append(candidate)
     checks = [
         ToolCheck("git", ["git"], True),
         ToolCheck("cmake", ["cmake"], True),
@@ -208,7 +220,7 @@ def _tool_checks(platform: PlatformInfo, env: dict[str, str]) -> list[ToolCheck]
         checks.append(ToolCheck("nasm", ["nasm", "yasm"], True, "x86/x64 asm"))
     else:
         checks.append(ToolCheck("nasm", ["nasm", "yasm"], False, "not required on arm64"))
-    checks.append(ToolCheck("python", ["python3", "python"], True))
+    checks.append(ToolCheck("python", python_candidates, True))
     checks.append(ToolCheck("uv", ["uv"], False, "optional"))
     if platform.os == "macos":
         checks.append(ToolCheck("xcrun", ["xcrun"], True))
@@ -255,7 +267,7 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
     for check in checks:
         path, resolved = _find_any(check.candidates)
         if path:
-            note = f" ({resolved})" if resolved and resolved != check.name else ""
+            note = f" ({resolved})" if resolved and resolved != check.name and resolved != path else ""
             lines.append(f"  {check.name}: ok ({path}){note}")
             continue
         if check.required:

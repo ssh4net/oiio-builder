@@ -112,6 +112,11 @@ Key options:
 - `use_libcxx`: default on macOS/Linux; set `false` to use libstdc++.
 - `use_ccache`: enable `ccache` compiler launcher on macOS/Linux (default: `true`). Disable with `--no-ccache` or `use_ccache=false`. Configure cache paths via `[global.env]` (`CCACHE_DIR`, `CCACHE_TEMPDIR`, `CCACHE_MAXSIZE`, …).
 - `build_*` toggles: enable/disable stacks (GL, EXR, image IO, etc.).
+- `build_cpython`: build CPython from source (`https://github.com/python/cpython.git`).
+  - On Windows: enabled by default.
+  - On Linux/macOS: built only when `cpython_ref` is explicitly set.
+- `cpython_ref`: optional CPython git ref override (example: `3.13`, `v3.12.11`, commit SHA).
+- `cpython_ref_type`: `branch` (default), `tag`, or `commit` for `cpython_ref`.
 - `build_qt6`: build a minimal **static Qt6** stack into the prefix (for consumers like OpenImageIO `iv` and GPUpad).
 - `build_dng_sdk`: build Adobe DNG SDK + XMP (via `DNG-CMake`) into the prefix (optional; disabled by default).
 - `windows.generator`: choose one of `msvc`, `ninja-msvc`, `msvc-clang-cl`, `ninja-clang-cl`.
@@ -334,4 +339,3 @@ DOXYGEN_EXECUTABLE = "C:\\Program Files\\doxygen\\bin\\doxygen.exe"
   no repo/toolchain/flag changes are detected.
 - Uncommitted working tree changes are not detected yet (use `--force` if needed).
 - Optional repos (e.g., `yaml-cpp`, `pystring`, `pugixml`, `expat`) are skipped if missing.
-

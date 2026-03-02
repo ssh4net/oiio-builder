@@ -14,7 +14,7 @@ class RepoConfig:
     dir_candidates: list[str] = field(default_factory=list)
     url: str | None = None
     enabled: bool = True
-    build_system: str | None = None  # cmake, autotools, giflib, ffmpeg, libiconv
+    build_system: str | None = None  # cmake, autotools, giflib, ffmpeg, libiconv, openssl, cpython
     ref: str | None = None
     ref_type: str = "branch"  # branch, tag, commit
     deps: list[str] = field(default_factory=list)
@@ -72,11 +72,15 @@ class GlobalConfig:
     build_webp: bool = True
     build_ptex: bool = True
     build_pybind11: bool = True
+    build_cpython: bool = True
     build_ffmpeg: bool = True
     build_oiio: bool = True
     build_qt6: bool = False
     build_dng_sdk: bool = False
     openimageio_patch_png_include: bool = True
+    # Optional CPython source override (repo ref/ref_type).
+    cpython_ref: str | None = None
+    cpython_ref_type: str = "branch"
     # Repo-specific feature toggles
     openjpeg_build_codec: str | None = None
     ocio_build_apps: str = "OFF"
@@ -233,11 +237,14 @@ def load_config(path: Path) -> Config:
             "build_webp",
             "build_ptex",
             "build_pybind11",
+            "build_cpython",
             "build_ffmpeg",
             "build_oiio",
             "build_qt6",
             "build_dng_sdk",
             "openimageio_patch_png_include",
+            "cpython_ref",
+            "cpython_ref_type",
             # Repo-specific switches
             "openjpeg_build_codec",
             "ocio_build_apps",
@@ -319,6 +326,17 @@ def load_config(path: Path) -> Config:
     if isinstance(openjpeg_build_codec, str) and not openjpeg_build_codec.strip():
         openjpeg_build_codec = None
 
+    cpython_ref = global_data.get("cpython_ref")
+    if isinstance(cpython_ref, str):
+        cpython_ref = cpython_ref.strip() or None
+    else:
+        cpython_ref = None
+    cpython_ref_type = str(global_data.get("cpython_ref_type", "branch")).strip().lower() or "branch"
+    if cpython_ref_type not in {"branch", "tag", "commit"}:
+        raise ValueError(
+            f"Invalid [global].cpython_ref_type={cpython_ref_type!r} (expected 'branch', 'tag', or 'commit')"
+        )
+
     windows_env = {str(k): str(v) for k, v in windows_section.get("env", {}).items()}
     global_cfg = GlobalConfig(
         repo_root=repo_root,
@@ -360,11 +378,14 @@ def load_config(path: Path) -> Config:
         build_webp=bool(global_data.get("build_webp", True)),
         build_ptex=bool(global_data.get("build_ptex", True)),
         build_pybind11=bool(global_data.get("build_pybind11", True)),
+        build_cpython=bool(global_data.get("build_cpython", True)),
         build_ffmpeg=bool(global_data.get("build_ffmpeg", True)),
         build_oiio=bool(global_data.get("build_oiio", True)),
         build_qt6=bool(global_data.get("build_qt6", False)),
         build_dng_sdk=bool(global_data.get("build_dng_sdk", False)),
         openimageio_patch_png_include=bool(global_data.get("openimageio_patch_png_include", True)),
+        cpython_ref=cpython_ref,
+        cpython_ref_type=cpython_ref_type,
         openjpeg_build_codec=openjpeg_build_codec,
         ocio_build_apps=str(global_data.get("ocio_build_apps", "OFF")),
         libjxl_enable_tools=str(global_data.get("libjxl_enable_tools", "ON")),
