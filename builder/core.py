@@ -2891,18 +2891,25 @@ endif()
                 deflate_globs = [f"deflate*{debug_postfix}.lib", "deflate*.lib"]
                 openjph_names = [f"openjph{debug_postfix}.lib", "openjph.lib"]
                 openjph_globs = [f"openjph*{debug_postfix}.lib", "openjph*.lib"]
+                imath_names = [f"Imath-3_2{debug_postfix}.lib", "Imath-3_2d.lib", "Imath-3_2.lib"]
+                imath_globs = [f"Imath-*{debug_postfix}.lib", "Imath-*d.lib", "Imath-*.lib"]
             else:
                 deflate_names = ["deflatestatic.lib", "deflate.lib", f"deflatestatic{debug_postfix}.lib", f"deflate{debug_postfix}.lib"]
                 deflate_globs = ["deflate*.lib", f"deflate*{debug_postfix}.lib"]
                 openjph_names = ["openjph.lib", f"openjph{debug_postfix}.lib"]
                 openjph_globs = ["openjph*.lib", f"openjph*{debug_postfix}.lib"]
+                imath_names = ["Imath-3_2.lib", f"Imath-3_2{debug_postfix}.lib", "Imath-3_2d.lib"]
+                imath_globs = ["Imath-*.lib", f"Imath-*{debug_postfix}.lib", "Imath-*d.lib"]
             deflate_lib = _pick_windows_lib(libdir, deflate_names, deflate_globs)
             openjph_lib = _pick_windows_lib(libdir, openjph_names, openjph_globs)
+            imath_lib = _pick_windows_lib(libdir, imath_names, imath_globs)
             windows_libs: list[str] = []
             if deflate_lib:
                 windows_libs.append(deflate_lib.as_posix())
             if openjph_lib:
                 windows_libs.append(openjph_lib.as_posix())
+            if imath_lib:
+                windows_libs.append(imath_lib.as_posix())
             if windows_libs:
                 extra_flags = " " + " ".join(windows_libs)
         else:
@@ -2915,9 +2922,20 @@ endif()
         for line in src.read_text(encoding="utf-8").splitlines():
             if line.startswith("Libs:"):
                 cleaned = re.sub(r"\s+-l(?:deflate|openjph[^\s]*)", "", line)
+                cleaned = re.sub(r"\s+-lImath[^\s]*", "", cleaned)
                 cleaned = re.sub(r"\s+[^\s]*deflate[^\s]*\.lib", "", cleaned, flags=re.IGNORECASE)
                 cleaned = re.sub(r"\s+[^\s]*openjph[^\s]*\.lib", "", cleaned, flags=re.IGNORECASE)
+                cleaned = re.sub(r"\s+[^\s]*Imath[^\s]*\.lib", "", cleaned, flags=re.IGNORECASE)
                 lines.append((cleaned.rstrip() + extra_flags).rstrip())
+                continue
+            if self.platform.os == "windows" and line.startswith("Requires:"):
+                cleaned = line
+                cleaned = re.sub(r"\bImath\b(?:\s*[<>=]+\s*[\w\.\-]+)?", "", cleaned)
+                cleaned = re.sub(r"\s+", " ", cleaned).rstrip()
+                if cleaned.endswith(":"):
+                    lines.append("Requires:")
+                else:
+                    lines.append(cleaned)
                 continue
             if self.platform.os == "windows" and line.startswith("Requires.private:"):
                 cleaned = line
