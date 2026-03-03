@@ -1,4 +1,6 @@
 [cmake.cache]
+# Build pybind11 as a header-only dependency package here; Python is discovered
+# later by downstream projects (OpenImageIO/OpenEXR) in their own configure step.
+PYBIND11_NOPYTHON = true
 PYBIND11_TEST = false
 PYBIND11_INSTALL = true
-
