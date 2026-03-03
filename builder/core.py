@@ -3815,29 +3815,49 @@ endif()
 
         dec_expr = _cmake_config_expr(dec_release, dec_debug)
         common_expr = _cmake_config_expr(common_release, common_debug)
-        if common_expr is not None:
+        if dec_expr is not None or common_expr is not None:
             target_pattern = r'(set_target_properties\(freetype PROPERTIES[\s\S]*?INTERFACE_LINK_LIBRARIES ")([^"]*)(")'
             match = re.search(target_pattern, updated)
             if match:
                 libs_value = match.group(2)
-                if "brotlidec" in libs_value.lower():
-                    parts = [part for part in libs_value.split(";") if part]
-                    rewritten: list[str] = []
-                    common_inserted = False
-                    for part in parts:
-                        lower = part.lower()
-                        if "brotlicommon" in lower:
-                            continue
-                        if "brotlidec" in lower:
-                            rewritten.append(dec_expr if dec_expr is not None else part)
-                            if not common_inserted:
-                                rewritten.append(common_expr)
-                                common_inserted = True
-                            continue
-                        rewritten.append(part)
-                    libs_new = ";".join(rewritten)
-                    if libs_new != libs_value:
-                        updated = updated[: match.start(2)] + libs_new + updated[match.end(2) :]
+                parts = [part for part in libs_value.split(";") if part]
+                rewritten: list[str] = []
+                changed = False
+                dec_present = False
+                common_present = False
+
+                for part in parts:
+                    lower = part.lower()
+                    if "brotlidec" in lower:
+                        replacement = dec_expr if dec_expr is not None else part
+                        rewritten.append(replacement)
+                        if replacement != part:
+                            changed = True
+                        dec_present = True
+                        continue
+                    if "brotlicommon" in lower:
+                        replacement = common_expr if common_expr is not None else part
+                        rewritten.append(replacement)
+                        if replacement != part:
+                            changed = True
+                        common_present = True
+                        continue
+                    rewritten.append(part)
+
+                # Upstream FreeType currently links Brotli privately, so
+                # exported targets may omit it entirely. Ensure static consumers
+                # (Qt qsb, libjxl tools, etc.) get the required transitive libs.
+                if not dec_present and dec_expr is not None:
+                    rewritten.append(dec_expr)
+                    dec_present = True
+                    changed = True
+                if dec_present and not common_present and common_expr is not None:
+                    rewritten.append(common_expr)
+                    changed = True
+
+                libs_new = ";".join(rewritten)
+                if changed and libs_new != libs_value:
+                    updated = updated[: match.start(2)] + libs_new + updated[match.end(2) :]
 
         try:
             freetype_cfg.write_text(updated, encoding="utf-8")
@@ -5460,6 +5480,9 @@ endif()
                 f"-DCMAKE_LIBRARY_PATH={install_prefix / 'lib'}",
                 "-DPKG_CONFIG_USE_STATIC_LIBS=ON",
             ]
+            freetype_dir = install_prefix / "lib" / "cmake" / "freetype"
+            if freetype_dir.exists():
+                cmake_args.append(f"-DFreetype_DIR={freetype_dir}")
             if self.platform.os == "macos":
                 # Qt's Apple checks require xcodebuild; allow CLT-only setups by
                 # supplying a reasonable Xcode version override.
