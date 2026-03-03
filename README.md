@@ -102,11 +102,11 @@ Key options:
 - `src_root`: where repos are cloned (default in this repo: `./developer`).
 - `build_root`: where per-repo build dirs and stamps live (default: `./developer/_build`).
 - `prefix_layout`:
-  - `by-build-type`: per-config prefixes (Unix: `Release/Debug/ASAN` subdirs; Windows: `install` + `asan`).
+  - `by-build-type`: per-config prefixes (macOS/Linux: `Release/Debug/ASAN` subdirs under `install_prefix`; Windows: Debug+Release share `install_prefix`, ASAN uses `asan_prefix` or a derived path).
   - `suffix`: legacy Unix layout using `debug_suffix`/`asan_suffix`.
-- `prefix_base`: prefix root used by `prefix_layout` (default in this repo: `./developer/install`).
-- `install_prefix`: optional explicit install prefix (primarily for Windows); acts as default for `[windows].install_prefix`.
-- `asan_prefix`: optional explicit ASAN prefix (primarily for Windows); acts as default for `[windows].asan_prefix`.
+- `install_prefix`: canonical install prefix root (cross-platform).
+- `asan_prefix`: optional explicit ASAN prefix (cross-platform).
+- `prefix_base`: legacy fallback prefix root used when `install_prefix` is not set.
 - `build_types`: list of configs to build (`Debug`, `Release`, `ASAN`).
 - `preferred_repo_order`: optional list of repo names that influences build order when multiple repos are ready (deps still win).
 - `use_libcxx`: default on macOS/Linux; set `false` to use libstdc++.
@@ -122,8 +122,6 @@ Key options:
 - `build_dng_sdk`: build Adobe DNG SDK + XMP (via `DNG-CMake`) into the prefix (optional; disabled by default).
 - `windows.generator`: choose one of `msvc`, `ninja-msvc`, `msvc-clang-cl`, `ninja-clang-cl`.
 - `windows.vs_generator`: optional CMake generator name override for `windows.generator=msvc`/`msvc-clang-cl` (e.g. `Visual Studio 18 2026` with CMake 4.2+).
-- `windows.install_prefix`: single prefix for Debug+Release on Windows.
-- `windows.asan_prefix`: optional separate prefix for ASAN.
 - `windows.build_ffmpeg`: defaults to `false`; when `true`, Windows builds use prebuilt FFmpeg by default, or native FFmpeg source build when run from MSYS2 (see below).
 - `windows.msvc_runtime`: `static` (default, `/MT`/`/MTd`) or `dynamic` (`/MD`/`/MDd`).
 - `windows.python_wrappers`: `auto` (default), `on`, `off` for OpenColorIO/OpenEXR Python bindings.
@@ -134,10 +132,9 @@ Key options:
 - `windows.clangcl_extra_flags_append`: extra clang-cl x86_64 flags appended to the baseline (default: empty).
 - `windows.env`: tool overrides for Windows (e.g. `PKG_CONFIG_EXECUTABLE`, `DOXYGEN_EXECUTABLE`).
 
-Windows prefix precedence:
-- `windows.install_prefix` / `windows.asan_prefix` (highest)
+Prefix precedence (all platforms):
 - `global.install_prefix` / `global.asan_prefix`
-- `global.prefix_base` (fallback)
+- `global.prefix_base` (fallback when `install_prefix` is unset)
 
 ### Repo Defaults and Local Overrides
 
@@ -149,7 +146,7 @@ Local overrides are read from `build.user.toml` (gitignored) and merged on top o
 
 ```toml
 [global]
-prefix_base = "./developer/install" # example
+install_prefix = "./developer/install" # example
 
 [windows]
 generator = "msvc"
@@ -165,12 +162,12 @@ PNG_TESTS = true
 ## Prefix Rules
 
 - macOS/Linux (`prefix_layout="by-build-type"`):
-  - `prefix_base=/mnt/f/dev` → Release: `/mnt/f/dev/Release`, Debug: `/mnt/f/dev/Debug`, ASAN: `/mnt/f/dev/ASAN`
+  - `install_prefix=/mnt/f/dev` → Release: `/mnt/f/dev/Release`, Debug: `/mnt/f/dev/Debug`, ASAN: `/mnt/f/dev/ASAN`
 - macOS/Linux (`prefix_layout="suffix"`):
-  - `prefix_base=/mnt/f/UBS` → Release: `/mnt/f/UBS`, Debug: `/mnt/f/UBSd`, ASAN: `/mnt/f/UBSasn`
+  - `install_prefix=/mnt/f/UBS` → Release: `/mnt/f/UBS`, Debug: `/mnt/f/UBSd`, ASAN: `/mnt/f/UBSasn`
 - Windows:
   - Debug and Release share one prefix (debug builds first).
-  - ASAN can use a separate prefix (e.g., `./developer/asan`).
+  - ASAN can use a separate prefix via `asan_prefix` (e.g., `./developer/asan`).
 
 ## Install Markers (Prefix Retargeting)
 
@@ -178,7 +175,7 @@ The builder writes per-repo install markers under:
 
 `<prefix>/.oiio-builder/install-stamps/<repo>/<build_type>.json`
 
-If a repo is up-to-date but its marker is missing or mismatched (for example: you changed `prefix_base` or deleted/moved a
+If a repo is up-to-date but its marker is missing or mismatched (for example: you changed `install_prefix` or deleted/moved a
 prefix directory), the builder automatically re-runs the repo install step instead of skipping it.
 Use `--reinstall` / `--reinstall-all` to force reinstall even when markers are present.
 

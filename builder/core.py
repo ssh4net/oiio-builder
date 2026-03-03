@@ -369,25 +369,25 @@ class Builder:
     def _compute_prefixes(self) -> dict[str, Path]:
         cfg = self.config.global_cfg
         prefixes: dict[str, Path] = {}
+
+        def _resolve_prefix(raw: str) -> Path:
+            expanded = os.path.expanduser(os.path.expandvars(str(raw)))
+            path = Path(expanded)
+            if not path.is_absolute():
+                path = (cfg.repo_root / path).resolve()
+            return path
+
         if self.platform.os == "windows":
-            win_cfg = cfg.windows
             layout = str(getattr(cfg, "prefix_layout", "suffix")).strip().lower()
             if layout == "by-build-type":
-                def _resolve_prefix(raw: str) -> Path:
-                    expanded = os.path.expanduser(os.path.expandvars(str(raw)))
-                    path = Path(expanded)
-                    if not path.is_absolute():
-                        path = (cfg.repo_root / path).resolve()
-                    return path
-
-                base_raw = win_cfg.get("install_prefix") or cfg.install_prefix or cfg.prefix_base
+                base_raw = cfg.install_prefix or cfg.prefix_base
                 if not base_raw:
                     base_raw = str(cfg.repo_root / "developer" / "install")
                 base_path = _resolve_prefix(str(base_raw))
                 prefixes["Release"] = base_path
                 prefixes["Debug"] = base_path
                 if "ASAN" in cfg.build_types:
-                    asan_raw = win_cfg.get("asan_prefix") or cfg.asan_prefix
+                    asan_raw = cfg.asan_prefix
                     if asan_raw:
                         asan_path = _resolve_prefix(str(asan_raw))
                     else:
@@ -398,48 +398,42 @@ class Builder:
                     prefixes["ASAN"] = asan_path
                 return prefixes
 
-            base = win_cfg.get("install_prefix") or cfg.install_prefix or cfg.prefix_base
+            base = cfg.install_prefix or cfg.prefix_base
             if not base:
                 base = str(cfg.repo_root / "_install" / "WIN")
-            base = os.path.expanduser(os.path.expandvars(str(base)))
-            base_path = Path(base)
-            if not base_path.is_absolute():
-                base_path = (cfg.repo_root / base_path).resolve()
+            base_path = _resolve_prefix(str(base))
             prefixes["Release"] = base_path
             prefixes["Debug"] = base_path
             if "ASAN" in cfg.build_types:
-                asan_base = win_cfg.get("asan_prefix") or cfg.asan_prefix
+                asan_base = cfg.asan_prefix
                 if not asan_base:
-                    asan_base = f"{base}_ASAN"
-                asan_base = os.path.expanduser(os.path.expandvars(str(asan_base)))
-                asan_path = Path(asan_base)
-                if not asan_path.is_absolute():
-                    asan_path = (cfg.repo_root / asan_path).resolve()
+                    asan_base = f"{base_path}_ASAN"
+                asan_path = _resolve_prefix(str(asan_base))
                 prefixes["ASAN"] = asan_path
             return prefixes
 
         layout = str(getattr(cfg, "prefix_layout", "suffix")).strip().lower()
         if layout == "by-build-type":
-            root = cfg.prefix_base or str(cfg.repo_root / "developer")
-            root = os.path.expanduser(os.path.expandvars(str(root)))
-            root_path = Path(root)
-            if not root_path.is_absolute():
-                root_path = (cfg.repo_root / root_path).resolve()
+            root = cfg.install_prefix or cfg.prefix_base or str(cfg.repo_root / "developer")
+            root_path = _resolve_prefix(str(root))
             prefixes["Release"] = root_path / "Release"
             prefixes["Debug"] = root_path / "Debug"
-            prefixes["ASAN"] = root_path / "ASAN"
+            if cfg.asan_prefix:
+                prefixes["ASAN"] = _resolve_prefix(str(cfg.asan_prefix))
+            else:
+                prefixes["ASAN"] = root_path / "ASAN"
             return prefixes
 
-        base = cfg.prefix_base
+        base = cfg.install_prefix or cfg.prefix_base
         if not base:
             base = str(cfg.repo_root / "_install" / "UBS")
-        base = os.path.expanduser(os.path.expandvars(base))
-        base_path = Path(base)
-        if not base_path.is_absolute():
-            base_path = (cfg.repo_root / base_path).resolve()
+        base_path = _resolve_prefix(str(base))
         prefixes["Release"] = base_path
         prefixes["Debug"] = Path(f"{base_path}{cfg.debug_suffix}")
-        prefixes["ASAN"] = Path(f"{base_path}{cfg.asan_suffix}")
+        if cfg.asan_prefix:
+            prefixes["ASAN"] = _resolve_prefix(str(cfg.asan_prefix))
+        else:
+            prefixes["ASAN"] = Path(f"{base_path}{cfg.asan_suffix}")
         return prefixes
 
     def _build_type_order(self) -> list[str]:
@@ -2927,6 +2921,11 @@ endif()
                 cleaned = re.sub(r"\s+[^\s]*openjph[^\s]*\.lib", "", cleaned, flags=re.IGNORECASE)
                 cleaned = re.sub(r"\s+[^\s]*Imath[^\s]*\.lib", "", cleaned, flags=re.IGNORECASE)
                 lines.append((cleaned.rstrip() + extra_flags).rstrip())
+                continue
+            if self.platform.os == "windows" and line.startswith("Cflags:"):
+                cleaned = re.sub(r"\s+-I\$\{includedir\}/Imath\b", "", line)
+                cleaned = re.sub(r"\s+-I[^\s]*[/\\\\]Imath\b", "", cleaned)
+                lines.append((cleaned.rstrip() + " -I${includedir}/Imath").rstrip())
                 continue
             if self.platform.os == "windows" and line.startswith("Requires:"):
                 cleaned = line

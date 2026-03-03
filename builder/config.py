@@ -32,8 +32,7 @@ class GlobalConfig:
     src_root: Path
     build_root: Path
     prefix_base: str | None
-    # Optional explicit install prefixes (primarily used on Windows).
-    # On Windows, these act as defaults for [windows].install_prefix / asan_prefix.
+    # Optional explicit install prefixes (cross-platform canonical inputs).
     install_prefix: str | None
     asan_prefix: str | None
     prefix_layout: str  # "suffix" (legacy) or "by-build-type"
@@ -272,8 +271,6 @@ def load_config(path: Path) -> Config:
         allowed_windows_keys = {
             "generator",
             "vs_generator",
-            "install_prefix",
-            "asan_prefix",
             "debug_postfix",
             "build_ffmpeg",
             "msvc_runtime",
@@ -285,6 +282,15 @@ def load_config(path: Path) -> Config:
         }
         _validate_user_override_keys(user_windows, allowed=allowed_windows_keys, context=f"{user_path}:[windows]")
         windows_section = _merge_config_table(windows_section, user_windows, context=f"{user_path}:[windows]")
+
+    # Prefix configuration is global-only.
+    legacy_prefix_keys = [key for key in ("install_prefix", "asan_prefix") if key in windows_section]
+    if legacy_prefix_keys:
+        keys_str = ", ".join(f"[windows].{key}" for key in legacy_prefix_keys)
+        raise ValueError(
+            f"{path}: {keys_str} is no longer supported. "
+            "Use [global].install_prefix / [global].asan_prefix instead."
+        )
 
     src_root = _expand_path(global_data.get("src_root", ".."), repo_root)
     build_root = _expand_path(global_data.get("build_root", "./_build"), repo_root)
