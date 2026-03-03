@@ -723,7 +723,10 @@ class Builder:
             item = str(path_item).strip()
             if item:
                 merged.append(item)
-        existing = env.get(key) or os.environ.get(key) or ""
+        if key in env:
+            existing = env.get(key) or ""
+        else:
+            existing = ""
         if existing:
             merged.extend(existing.split(sep))
 
@@ -740,13 +743,6 @@ class Builder:
             deduped.append(value)
         if deduped:
             env[key] = sep.join(deduped)
-
-    @staticmethod
-    def _prepend_env_flag(env: dict[str, str], key: str, flag: str) -> None:
-        existing = str(env.get(key, "")).strip()
-        if flag.lower() in existing.lower():
-            return
-        env[key] = f"{flag} {existing}".strip()
 
     def _windows_runtime_mode(self) -> str:
         mode = str(self.config.global_cfg.windows.get("msvc_runtime", "static")).strip().lower()
@@ -800,7 +796,7 @@ class Builder:
             return False
         raw = self.config.global_cfg.windows.get("cpython_fetch_externals")
         if raw is None:
-            return False
+            return True
         if isinstance(raw, bool):
             return raw
         value = str(raw).strip().lower()
@@ -808,7 +804,7 @@ class Builder:
             return True
         if value in {"0", "false", "off", "no"}:
             return False
-        return False
+        return True
 
     def _base_flags(self, build_type: str) -> str:
         cfg = self.config.global_cfg
@@ -2777,36 +2773,6 @@ endif()
                 return matches[0]
         return default
 
-    def _libffi_export_zip(self, env: dict[str, str] | None = None) -> Path:
-        cfg = self.config.global_cfg
-        default = cfg.repo_root / "external" / "vcpkg-export-libffi.zip"
-        override = None
-        if env:
-            override = env.get("LIBFFI_VCPKG_EXPORT_ZIP") or env.get("VCPKG_LIBFFI_EXPORT_ZIP")
-        if not override and self.platform.os == "windows":
-            override = (
-                cfg.windows_env.get("LIBFFI_VCPKG_EXPORT_ZIP")
-                or cfg.windows_env.get("VCPKG_LIBFFI_EXPORT_ZIP")
-                or cfg.env.get("LIBFFI_VCPKG_EXPORT_ZIP")
-                or cfg.env.get("VCPKG_LIBFFI_EXPORT_ZIP")
-                or os.environ.get("LIBFFI_VCPKG_EXPORT_ZIP")
-                or os.environ.get("VCPKG_LIBFFI_EXPORT_ZIP")
-            )
-        if override:
-            path = Path(os.path.expandvars(override)).expanduser()
-            if not path.is_absolute():
-                path = (cfg.repo_root / path).resolve()
-            return path
-
-        external_dir = cfg.repo_root / "external"
-        if default.exists():
-            return default
-        if external_dir.is_dir():
-            matches = sorted(external_dir.glob("vcpkg-export-libffi*.zip"))
-            if matches:
-                return matches[0]
-        return default
-
     def _maybe_skip_missing(self, repo: RepoConfig, path: Path) -> bool:
         if repo.name == "libiconv" and self.platform.os == "windows":
             zip_path = self._libiconv_export_zip()
@@ -2832,14 +2798,6 @@ endif()
                 print(f"[skip] {repo.name}: missing vcpkg export zip at {zip_path}")
                 return True
             return False
-        if repo.name == "libffi" and self.platform.os == "windows":
-            zip_path = self._libffi_export_zip()
-            if zip_path.exists():
-                return False
-            if repo.optional:
-                print(f"[skip] {repo.name}: missing vcpkg export zip at {zip_path}")
-                return True
-            return False
         if path.exists():
             return False
         if repo.optional and not repo.url:
@@ -2856,34 +2814,8 @@ endif()
                 return
             if repo.name == "glew":
                 self._patch_glew_macos(src_dir)
-            if repo.name == "libffi":
-                self._ensure_libffi_autotools_bootstrap(src_dir)
             recipe_registry.patch_source(repo.name, self, src_dir)
             self._repo_source_prepared.add(repo.name)
-
-    def _ensure_libffi_autotools_bootstrap(self, src_dir: Path) -> None:
-        if (src_dir / "configure").exists():
-            return
-        autogen = src_dir / "autogen.sh"
-        if not autogen.exists():
-            return
-
-        if self.platform.os == "windows" and not self._autotools_windows_msys2_active():
-            raise RuntimeError(
-                "libffi git sources on Windows require MSYS2 autotools bootstrap "
-                "(run from an MSYS2 shell so autogen.sh can generate configure)."
-            )
-
-        env = dict(os.environ)
-        bash = self._which_in_env("bash", env) or self._which_in_env("bash.exe", env)
-        cmd: list[str]
-        if bash:
-            cmd = [bash, autogen.as_posix()]
-        else:
-            cmd = [str(autogen)]
-        print_cmd("bootstrap command", cmd)
-        banner("libffi - bootstrap")
-        run(cmd, cwd=str(src_dir), env=env, dry_run=self.dry_run)
 
     def _patch_glew_macos(self, src_dir: Path) -> None:
         if self.platform.os != "macos":
@@ -3800,48 +3732,95 @@ endif()
             updated = text.replace(needle, shim + "\n" + needle, 1)
 
         # Some FreeType exports record only libbrotlidec, but static Brotli decode
-        # also needs libbrotlicommon. Add it explicitly so static Qt links succeed.
+        # also needs libbrotlicommon. Normalize the exported link list so both
+        # libraries are present, and prefer config-specific libs on Windows.
         libdir = prefix / "lib"
+        debug_postfix = str(self.config.global_cfg.windows.get("debug_postfix", "d"))
+
+        def _first_existing(candidates: list[Path]) -> Path | None:
+            for candidate in candidates:
+                if candidate.exists():
+                    return candidate
+            return None
+
         if self.platform.os == "windows":
-            common_candidates = [
-                libdir / "brotlicommon.lib",
-                libdir / "libbrotlicommon.lib",
-                libdir / "brotlicommond.lib",
-                libdir / "libbrotlicommond.lib",
-            ]
+            dec_release = _first_existing([libdir / "brotlidec.lib", libdir / "libbrotlidec.lib"])
+            dec_debug = _first_existing(
+                [
+                    libdir / f"brotlidec{debug_postfix}.lib",
+                    libdir / f"libbrotlidec{debug_postfix}.lib",
+                    libdir / "brotlidecd.lib",
+                    libdir / "libbrotlidecd.lib",
+                ]
+            )
+            common_release = _first_existing([libdir / "brotlicommon.lib", libdir / "libbrotlicommon.lib"])
+            common_debug = _first_existing(
+                [
+                    libdir / f"brotlicommon{debug_postfix}.lib",
+                    libdir / f"libbrotlicommon{debug_postfix}.lib",
+                    libdir / "brotlicommond.lib",
+                    libdir / "libbrotlicommond.lib",
+                ]
+            )
         else:
-            common_candidates = [
-                libdir / "libbrotlicommon.a",
-                libdir / "libbrotlicommon-static.a",
-                libdir / "libbrotlicommon.so",
-                libdir / "libbrotlicommon.dylib",
-            ]
-        brotli_common = next((candidate for candidate in common_candidates if candidate.exists()), None)
-        if brotli_common is not None:
-            common_path = brotli_common.resolve().as_posix()
-            if common_path not in updated:
-                libs_key = 'INTERFACE_LINK_LIBRARIES "'
-                libs_start = updated.find(libs_key)
-                if libs_start != -1:
-                    libs_start += len(libs_key)
-                    libs_end = updated.find('"', libs_start)
-                    if libs_end != -1:
-                        libs_value = updated[libs_start:libs_end]
-                        if "brotlidec" in libs_value.lower():
-                            parts = [
-                                part
-                                for part in libs_value.split(";")
-                                if part and "brotlicommon" not in part.lower()
-                            ]
-                            insert_idx = None
-                            for idx, part in enumerate(parts):
-                                if "brotlidec" in part.lower():
-                                    insert_idx = idx + 1
-                            if insert_idx is None:
-                                parts.append(common_path)
-                            else:
-                                parts.insert(insert_idx, common_path)
-                            updated = updated[:libs_start] + ";".join(parts) + updated[libs_end:]
+            dec_release = _first_existing(
+                [
+                    libdir / "libbrotlidec.a",
+                    libdir / "libbrotlidec-static.a",
+                    libdir / "libbrotlidec.so",
+                    libdir / "libbrotlidec.dylib",
+                ]
+            )
+            dec_debug = dec_release
+            common_release = _first_existing(
+                [
+                    libdir / "libbrotlicommon.a",
+                    libdir / "libbrotlicommon-static.a",
+                    libdir / "libbrotlicommon.so",
+                    libdir / "libbrotlicommon.dylib",
+                ]
+            )
+            common_debug = common_release
+
+        def _cmake_path(path: Path | None) -> str | None:
+            return path.resolve().as_posix() if path is not None else None
+
+        def _cmake_config_expr(release: Path | None, debug: Path | None) -> str | None:
+            release_path = _cmake_path(release)
+            debug_path = _cmake_path(debug)
+            if release_path and debug_path and release_path != debug_path:
+                return f"\\$<$<CONFIG:Debug>:{debug_path}>;\\$<$<NOT:$<CONFIG:Debug>>:{release_path}>"
+            if debug_path:
+                return debug_path
+            if release_path:
+                return release_path
+            return None
+
+        dec_expr = _cmake_config_expr(dec_release, dec_debug)
+        common_expr = _cmake_config_expr(common_release, common_debug)
+        if common_expr is not None:
+            target_pattern = r'(set_target_properties\(freetype PROPERTIES[\s\S]*?INTERFACE_LINK_LIBRARIES ")([^"]*)(")'
+            match = re.search(target_pattern, updated)
+            if match:
+                libs_value = match.group(2)
+                if "brotlidec" in libs_value.lower():
+                    parts = [part for part in libs_value.split(";") if part]
+                    rewritten: list[str] = []
+                    common_inserted = False
+                    for part in parts:
+                        lower = part.lower()
+                        if "brotlicommon" in lower:
+                            continue
+                        if "brotlidec" in lower:
+                            rewritten.append(dec_expr if dec_expr is not None else part)
+                            if not common_inserted:
+                                rewritten.append(common_expr)
+                                common_inserted = True
+                            continue
+                        rewritten.append(part)
+                    libs_new = ";".join(rewritten)
+                    if libs_new != libs_value:
+                        updated = updated[: match.start(2)] + libs_new + updated[match.end(2) :]
 
         try:
             freetype_cfg.write_text(updated, encoding="utf-8")
@@ -4614,13 +4593,6 @@ endif()
                 st = zip_path.stat()
                 payload["vcpkg_export_zip_size"] = int(st.st_size)
                 payload["vcpkg_export_zip_mtime"] = int(st.st_mtime)
-        if repo.name == "libffi" and self.platform.os == "windows":
-            zip_path = self._libffi_export_zip()
-            payload["vcpkg_export_zip"] = str(zip_path)
-            if zip_path.exists():
-                st = zip_path.stat()
-                payload["vcpkg_export_zip_size"] = int(st.st_size)
-                payload["vcpkg_export_zip_mtime"] = int(st.st_mtime)
         if repo.build_system == "qt6":
             qt_submodules = [
                 "qtbase",
@@ -4973,29 +4945,38 @@ endif()
         self._ensure_bzip2_alias(install_prefix, ctx.build_type)
 
         py_env = dict(env)
+        # Avoid inheriting host-shell compiler/linker flags (for example CL=/Yu...)
+        # that can conflict with CPython's own PCbuild project settings.
+        for var in ("CL", "_CL_", "CFLAGS", "CXXFLAGS", "CPPFLAGS", "LDFLAGS", "LINK"):
+            py_env[var] = ""
+        # Explicitly disable forced PCH use if any /Yu slips in from project/user overrides.
+        py_env["_CL_"] = "/Y-"
+        # Preserve host toolchain paths and prepend our prefix paths as needed.
+        py_env.setdefault("PATH", os.environ.get("PATH", ""))
+        py_env.setdefault("INCLUDE", os.environ.get("INCLUDE", ""))
+        py_env.setdefault("LIB", os.environ.get("LIB", ""))
+        py_env.setdefault("LIBPATH", os.environ.get("LIBPATH", ""))
+
         include_dir = install_prefix / "include"
         lib_dir = install_prefix / "lib"
         bin_dir = install_prefix / "bin"
         if include_dir.is_dir():
             self._prepend_windows_env_paths(py_env, "INCLUDE", [include_dir])
-            self._prepend_env_flag(py_env, "CL", f'/I"{include_dir}"')
         if lib_dir.is_dir():
             self._prepend_windows_env_paths(py_env, "LIB", [lib_dir])
             self._prepend_windows_env_paths(py_env, "LIBPATH", [lib_dir])
-            self._prepend_env_flag(py_env, "LINK", f'/LIBPATH:"{lib_dir}"')
         if bin_dir.is_dir():
             self._prepend_windows_env_paths(py_env, "PATH", [bin_dir])
 
-        prefix_str = str(install_prefix)
-        for key in ("zlibDir", "bz2Dir", "sqlite3Dir", "lzmaDir", "libffiDir"):
-            py_env.setdefault(key, prefix_str)
-        py_env.setdefault("ZLIB_ROOT", prefix_str)
-
-        if not fetch_externals and not (include_dir / "zlib.h").exists():
-            raise RuntimeError(
-                "CPython Windows build requires zlib headers when cpython_fetch_externals=false. "
-                f"Missing: {include_dir / 'zlib.h'}"
-            )
+        if not self.dry_run:
+            pcbuild_root = src_dir / "PCbuild"
+            for name in output_dirs:
+                candidate = pcbuild_root / name
+                if candidate.exists():
+                    shutil.rmtree(candidate, ignore_errors=True)
+            obj_dir = pcbuild_root / "obj"
+            if obj_dir.exists():
+                shutil.rmtree(obj_dir, ignore_errors=True)
 
         build_cmd = [
             "cmd",
@@ -5006,8 +4987,11 @@ endif()
             "-c",
             config_name,
             "--no-tkinter",
-            ("-e" if fetch_externals else "-E"),
         ]
+        if fetch_externals:
+            build_cmd.append("-e")
+        else:
+            build_cmd.append("-E")
         print_cmd("build command", build_cmd)
         banner(f"{ctx.repo.name} ({ctx.build_type}) - building")
         run(
@@ -5284,6 +5268,7 @@ endif()
             # falls back to pkg-config. Static builds may miss `libbrotlicommon` in the pkg-config
             # branch, so provide a tiny config shim when brotli is present in the prefix.
             self._ensure_unofficial_brotli_package(install_prefix, build_type)
+            self._ensure_freetype_harfbuzz_compat(install_prefix, build_type)
             self._ensure_jasper_package(install_prefix, build_type)
 
             # Rebuild from a clean build tree to avoid confusing incremental states.
@@ -6178,136 +6163,6 @@ endif()
                 for item in bin_src.iterdir():
                     if item.is_file() and item.suffix.lower() in {".dll", ".pdb", ".exe"}:
                         shutil.copy2(item, bin_dst / item.name)
-        elif repo.build_system == "libffi":
-            if self.platform.os != "windows":
-                raise RuntimeError("libffi build system is only supported on Windows")
-            build_dir.mkdir(parents=True, exist_ok=True)
-
-            zip_path = self._libffi_export_zip(env)
-            if not zip_path.exists():
-                raise RuntimeError(f"Missing libffi vcpkg export zip: {zip_path}")
-
-            banner(f"{repo.name} ({build_type}) - stage")
-            print(f"vcpkg export zip: {zip_path}", flush=True)
-
-            import zipfile
-
-            export_dir = build_dir / "_libffi_vcpkg_export"
-            marker = export_dir / ".zipstamp"
-            st = zip_path.stat()
-            stamp = f"{zip_path}|{int(st.st_size)}|{int(st.st_mtime)}"
-
-            if self.dry_run:
-                print(f"[dry-run] extract -> {export_dir}", flush=True)
-                return ("rebuilt" if had_stamp else "built"), ""
-
-            if marker.exists() and marker.read_text(encoding="utf-8").strip() == stamp:
-                pass
-            else:
-                if export_dir.exists():
-                    shutil.rmtree(export_dir, ignore_errors=True)
-                export_dir.mkdir(parents=True, exist_ok=True)
-                with zipfile.ZipFile(zip_path) as zf:
-                    export_abs = export_dir.resolve()
-                    for info in zf.infolist():
-                        name = info.filename
-                        if not name or name.endswith("/"):
-                            continue
-                        dest = export_dir / name
-                        dest_abs = dest.resolve()
-                        if export_abs not in dest_abs.parents and dest_abs != export_abs:
-                            raise RuntimeError(f"Refusing to extract outside destination: {name}")
-                        dest.parent.mkdir(parents=True, exist_ok=True)
-                        with zf.open(info) as src_f, open(dest, "wb") as dst_f:
-                            shutil.copyfileobj(src_f, dst_f)
-                marker.write_text(stamp, encoding="utf-8")
-
-            def _find_export_root(base: Path) -> Path:
-                if (base / "installed").is_dir():
-                    return base
-                for child in base.iterdir():
-                    if child.is_dir() and (child / "installed").is_dir():
-                        return child
-                raise RuntimeError(f"Unexpected vcpkg export layout under {base}")
-
-            export_root = _find_export_root(export_dir)
-            installed_dir = export_root / "installed"
-
-            triplet_candidates = [
-                p
-                for p in installed_dir.iterdir()
-                if p.is_dir() and p.name != "vcpkg" and (p / "include" / "ffi.h").exists()
-            ]
-            if not triplet_candidates:
-                raise RuntimeError(f"vcpkg export zip does not contain installed/<triplet>/include/ffi.h: {zip_path}")
-
-            def _triplet_score(path: Path) -> tuple[int, str]:
-                name = path.name.lower()
-                score = 0
-                if "static" in name:
-                    score -= 10
-                bin_dir = path / "bin"
-                if bin_dir.is_dir() and any(bin_dir.glob("*.dll")):
-                    score += 5
-                return score, name
-
-            triplet_candidates.sort(key=_triplet_score)
-            triplet_dir = triplet_candidates[0]
-
-            include_src = triplet_dir / "include"
-            lib_src = triplet_dir / "lib"
-            debug_lib_src = triplet_dir / "debug" / "lib"
-            bin_src = triplet_dir / "bin"
-
-            ffi_release = lib_src / "ffi.lib"
-            ffi_debug = debug_lib_src / "ffi.lib"
-            required = [include_src / "ffi.h", include_src / "ffitarget.h", ffi_release, ffi_debug]
-            missing = [p for p in required if not p.exists()]
-            if missing:
-                wanted = "\n".join(f"  - {p}" for p in missing)
-                raise RuntimeError(f"libffi vcpkg export is missing expected files:\n{wanted}")
-
-            debug_postfix = str(self.config.global_cfg.windows.get("debug_postfix", "d"))
-
-            def _add_debug_postfix(filename: str) -> str:
-                p = Path(filename)
-                suffixes = p.suffixes
-                if not suffixes:
-                    return filename + debug_postfix
-                base = filename
-                for suff in suffixes:
-                    if base.endswith(suff):
-                        base = base[: -len(suff)]
-                if base.endswith(debug_postfix):
-                    return filename
-                return base + debug_postfix + "".join(suffixes)
-
-            banner(f"{repo.name} ({build_type}) - install")
-
-            inc_dst = install_prefix / "include"
-            lib_dst = install_prefix / "lib"
-            bin_dst = install_prefix / "bin"
-            inc_dst.mkdir(parents=True, exist_ok=True)
-            lib_dst.mkdir(parents=True, exist_ok=True)
-            if bin_src.is_dir():
-                bin_dst.mkdir(parents=True, exist_ok=True)
-
-            for name in ("ffi.h", "ffitarget.h"):
-                shutil.copy2(include_src / name, inc_dst / name)
-
-            ffi_debug_name = _add_debug_postfix(ffi_release.name)
-            shutil.copy2(ffi_release, lib_dst / ffi_release.name)
-            shutil.copy2(ffi_debug, lib_dst / ffi_debug_name)
-            # Compatibility aliases for consumers that probe `libffi*.lib`.
-            shutil.copy2(ffi_release, lib_dst / "libffi.lib")
-            shutil.copy2(ffi_debug, lib_dst / _add_debug_postfix("libffi.lib"))
-
-            if bin_src.is_dir():
-                if any(bin_src.glob("*.dll")):
-                    print("[note] libffi export contains DLLs; prefer exporting a *-static triplet for a fully static prefix", flush=True)
-                for item in bin_src.iterdir():
-                    if item.is_file() and item.suffix.lower() in {".dll", ".pdb", ".exe"}:
-                        shutil.copy2(item, bin_dst / item.name)
         elif repo.build_system == "giflib":
             build_dir.mkdir(parents=True, exist_ok=True)
             if self.platform.os == "windows":
@@ -6517,8 +6372,6 @@ endif()
         if self.platform.os == "windows":
             if repo.name == "sqlite":
                 return replace(repo, build_system="sqlite")
-            if repo.name == "libffi":
-                return replace(repo, build_system="libffi")
         if repo.name == "xz":
             cmake_lists = src_dir / "CMakeLists.txt"
             build_system = "autotools" if (self.config.global_cfg.xz_use_autotools or not cmake_lists.exists()) else "cmake"
@@ -6647,8 +6500,6 @@ endif()
             if repo.name == "openssl" and self.platform.os == "windows":
                 continue
             if repo.name == "sqlite" and self.platform.os == "windows":
-                continue
-            if repo.name == "libffi" and self.platform.os == "windows":
                 continue
             ensure_repo(repo_dir, repo.url, repo.ref, repo.ref_type, update=not self.no_update, dry_run=self.dry_run)
 
