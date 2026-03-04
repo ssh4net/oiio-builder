@@ -2561,7 +2561,10 @@ endif()
                 args.append(f"-DPython3_LIBRARY_DEBUG={debug_posix}")
                 args.append(f"-DPython_LIBRARY_DEBUG={debug_posix}")
             if python_release_lib is not None or python_debug_lib is not None:
-                chosen = python_debug_lib or python_release_lib
+                if ctx.build_type == "Debug":
+                    chosen = python_debug_lib or python_release_lib
+                else:
+                    chosen = python_release_lib or python_debug_lib
                 if chosen is not None:
                     chosen_posix = chosen.as_posix()
                     args.append(f"-DPython3_LIBRARY={chosen_posix}")
