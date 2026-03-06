@@ -20,6 +20,7 @@ def main() -> int:
         epilog=(
             "Examples:\n"
             "  uv run build.py --preflight\n"
+            "  uv run build.py --update-only\n"
             "  uv run build.py --build-types Debug,Release\n"
             "  uv run build.py --build-types Debug,ASAN\n"
             "  uv run build.py --build-types Debug,Release --jobs 8\n"
@@ -46,6 +47,7 @@ def main() -> int:
     parser.add_argument("--skip", help="Comma-separated repo names")
     parser.add_argument("--no-update", action="store_true", help="Skip git fetch/pull (overrides config)")
     parser.add_argument("--update", action="store_true", help="Force git fetch/pull (overrides config)")
+    parser.add_argument("--update-only", action="store_true", help="Clone/fetch/checkout repos only, then exit")
     parser.add_argument("--dry-run", action="store_true", help="Print commands only")
     parser.add_argument(
         "--no-ffmpeg",
@@ -106,7 +108,9 @@ def main() -> int:
         config.skip = {name.strip() for name in args.skip.split(",") if name.strip()}
 
     platform_info = detect_platform()
-    if args.update:
+    if args.update_only and args.no_update:
+        raise SystemExit("--update-only cannot be combined with --no-update")
+    if args.update_only or args.update:
         no_update = False
     else:
         no_update = args.no_update or config.global_cfg.no_update
@@ -140,6 +144,9 @@ def main() -> int:
                 print(f"{key}: {value}")
         return 0
 
+    if args.update_only:
+        return builder.update_only()
+
     build_requested = any(
         [
             args.build_types,
@@ -151,6 +158,7 @@ def main() -> int:
             args.reinstall,
             args.reinstall_all,
             args.update,
+            args.update_only,
             args.no_update,
             args.dry_run,
         ]

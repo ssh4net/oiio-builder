@@ -49,6 +49,7 @@ Linux GTK3 headers (needed for `nativefiledialog-extended` when `NFD_PORTAL=OFF`
    [windows.env]
    PKG_CONFIG_EXECUTABLE = "E:/vcpkg/installed/x64-windows/tools/pkgconf/pkgconf.exe"
    DOXYGEN_EXECUTABLE = "C:/Program Files/doxygen/bin/doxygen.exe"
+   NASM_EXECUTABLE = "C:/Program Files/NASM/nasm.exe"
    OpenMP_ROOT = "C:/LLVM" # provides <OpenMP_ROOT>/lib/libomp.lib
    ```
    Example for ccache on Linux/macOS:
@@ -187,6 +188,9 @@ uv run build.py --preflight
 
 # List repos to build
 uv run build.py --list-repos
+
+# Clone/fetch/checkout repos only (no build)
+uv run build.py --update-only
 
 # Print computed install prefixes
 uv run build.py --print-prefixes
@@ -330,6 +334,7 @@ uv run build.py --build-types Debug,Release --only dng-sdk,libraw,OpenImageIO
 [windows.env]
 PKG_CONFIG_EXECUTABLE = "C:\\msys64\\usr\\bin\\pkg-config.exe"
 DOXYGEN_EXECUTABLE = "C:\\Program Files\\doxygen\\bin\\doxygen.exe"
+NASM_EXECUTABLE = "C:\\Program Files\\NASM\\nasm.exe"
 ```
 
 ## Troubleshooting
@@ -342,6 +347,7 @@ DOXYGEN_EXECUTABLE = "C:\\Program Files\\doxygen\\bin\\doxygen.exe"
 - **OpenImageIO link errors mentioning `g_unicode_*` / `g_bytes_*` from `libharfbuzz.a`**: rebuild `harfbuzz` (and `freetype`) so HarfBuzz is built without GLib integration for static linking.
 - **Missing optional repos**: `yaml-cpp`, `pystring`, `expat`, `pugixml`, `libxml2` are skipped if not present. On Windows, `libiconv` is expected via `external/vcpkg-export-libiconv.zip`.
 - **OpenMP not found (macOS/Linux)**: set `OpenMP_ROOT` in `build.toml` or environment.
+- **NASM not detected on Windows**: set `windows.env.NASM_EXECUTABLE = "C:/Program Files/NASM/nasm.exe"` in `build.user.toml`. The builder also probes the default NASM installer path automatically.
 - **ASAN failures on Windows**: prefer clang-cl and ensure the MSVC AddressSanitizer component is installed.
 - **PyOpenColorIO / PyOpenEXR link errors on Windows**: set `windows.msvc_runtime = "dynamic"` and `windows.python_wrappers = "on"` for wrapper builds.
 - **Preflight only**: run `uv run build.py` (no args) to see tool/repo readiness without building.

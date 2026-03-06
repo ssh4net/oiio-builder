@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 import json
@@ -19,6 +20,91 @@ from .repo_options import CMakeOptions, load_repo_defaults, load_user_overrides,
 from .runner import banner, print_cmd, run, set_output_lock
 from .stamps import compute_stamp, read_stamp, write_stamp
 from .topo import topo_sort
+
+
+def _normalize_override(value: str | None) -> str | None:
+    if not value:
+        return None
+    trimmed = value.strip()
+    if len(trimmed) >= 2 and trimmed[0] == trimmed[-1] and trimmed[0] in {"\"", "'"}:
+        trimmed = trimmed[1:-1]
+    return trimmed or None
+
+
+def _resolve_executable_candidate(candidate: str | None, *, search_path: str | None = None) -> str | None:
+    normalized = _normalize_override(candidate)
+    if not normalized:
+        return None
+
+    if any(sep in normalized for sep in ("/", "\\")):
+        expanded = os.path.expandvars(os.path.expanduser(normalized))
+        path = Path(expanded)
+        if path.is_file() and os.access(path, os.X_OK):
+            return str(path)
+        return None
+
+    return shutil.which(normalized, path=search_path)
+
+
+def _windows_nasm_probe_candidates(env: Mapping[str, str] | None = None) -> list[str]:
+    merged_env = dict(os.environ)
+    if env:
+        merged_env.update(env)
+
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str | None) -> None:
+        normalized = _normalize_override(value)
+        if not normalized:
+            return
+        key = os.path.normcase(os.path.normpath(normalized.strip("\"'")))
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append(normalized)
+
+    for env_name in ("ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"):
+        base = merged_env.get(env_name)
+        if not base:
+            continue
+        add(str(Path(base) / "NASM" / "nasm.exe"))
+
+    add(r"C:\Program Files\NASM\nasm.exe")
+    add(r"C:\Program Files (x86)\NASM\nasm.exe")
+    return candidates
+
+
+def resolve_nasm_executable(env: Mapping[str, str] | None = None, *, platform_os: str | None = None) -> str | None:
+    search_path = None
+    if env is not None:
+        search_path = env.get("PATH") or os.environ.get("PATH", "")
+
+    override_names = [
+        "NASM_EXECUTABLE",
+        "CMAKE_ASM_NASM_COMPILER",
+        "NASM",
+        "YASM_EXECUTABLE",
+        "YASM",
+    ]
+    for name in override_names:
+        value = env.get(name) if env is not None else os.environ.get(name)
+        resolved = _resolve_executable_candidate(value, search_path=search_path)
+        if resolved:
+            return resolved
+
+    for candidate in ("nasm", "yasm"):
+        resolved = _resolve_executable_candidate(candidate, search_path=search_path)
+        if resolved:
+            return resolved
+
+    if platform_os == "windows":
+        for candidate in _windows_nasm_probe_candidates(env):
+            resolved = _resolve_executable_candidate(candidate, search_path=search_path)
+            if resolved:
+                return resolved
+
+    return None
 
 
 @dataclass
@@ -667,6 +753,14 @@ class Builder:
                     env["CCACHE_DIR"] = str(fallback_cache_dir)
                 else:
                     env["CCACHE_DISABLE"] = "1"
+
+        if self.platform.os == "windows":
+            effective_env = dict(os.environ)
+            effective_env.update(env)
+            nasm = resolve_nasm_executable(effective_env, platform_os="windows")
+            if nasm:
+                env.setdefault("PATH", os.environ.get("PATH", ""))
+                self._prepend_windows_env_paths(env, "PATH", [Path(nasm).parent])
 
         return env
 
@@ -2466,14 +2560,6 @@ endif()
             if generator in {"msvc", "msvc-clang-cl"}:
                 args.append("-DCMAKE_SUPPRESS_REGENERATION=ON")
 
-        def _normalize_override(value: str | None) -> str | None:
-            if not value:
-                return None
-            trimmed = value.strip()
-            if len(trimmed) >= 2 and trimmed[0] == trimmed[-1] and trimmed[0] in {"\"", "'"}:
-                trimmed = trimmed[1:-1]
-            return trimmed or None
-
         pkg_cfg = _normalize_override(cfg.env.get("PKG_CONFIG_EXECUTABLE") or cfg.env.get("PKG_CONFIG"))
         if self.platform.os == "windows":
             pkg_cfg = _normalize_override(
@@ -2491,6 +2577,14 @@ endif()
             doxygen = _normalize_override(os.environ.get("DOXYGEN_EXECUTABLE")) or doxygen
         if doxygen:
             args.append(f"-DDOXYGEN_EXECUTABLE={doxygen}")
+
+        effective_env = dict(os.environ)
+        effective_env.update(cfg.env)
+        if self.platform.os == "windows":
+            effective_env.update(cfg.windows_env)
+        nasm = resolve_nasm_executable(effective_env, platform_os=self.platform.os)
+        if nasm:
+            args.append(f"-DCMAKE_ASM_NASM_COMPILER={nasm}")
 
         python_exec = _normalize_override(
             cfg.env.get("Python3_EXECUTABLE")
@@ -6520,18 +6614,8 @@ endif()
         finally:
             self._parallel_build_type_count = 1
 
-    def run(self) -> int:
-        deps_map = {repo.name: repo.deps for repo in self.repos}
-        order = topo_sort(
-            [r.name for r in self.repos],
-            deps_map,
-            preferred_order=self.config.global_cfg.preferred_repo_order,
-        )
-        repos_by_name = {repo.name: repo for repo in self.repos}
-        build_types = self._build_type_order()
-        report = BuildReport(build_types, order, self.prefixes)
-
-        # Resolve paths and clone/update repos.
+    def _sync_repos(self, order: list[str], repos_by_name: dict[str, RepoConfig]) -> None:
+        """Resolve repo paths and perform clone/fetch/checkout/update."""
         for repo_name in order:
             repo = repos_by_name[repo_name]
             repo_dir = self._resolve_repo_dir(repo)
@@ -6545,6 +6629,32 @@ endif()
             if repo.name == "sqlite" and self.platform.os == "windows":
                 continue
             ensure_repo(repo_dir, repo.url, repo.ref, repo.ref_type, update=not self.no_update, dry_run=self.dry_run)
+
+    def update_only(self) -> int:
+        deps_map = {repo.name: repo.deps for repo in self.repos}
+        order = topo_sort(
+            [r.name for r in self.repos],
+            deps_map,
+            preferred_order=self.config.global_cfg.preferred_repo_order,
+        )
+        repos_by_name = {repo.name: repo for repo in self.repos}
+        self._sync_repos(order, repos_by_name)
+        print("Repo update-only completed.")
+        return 0
+
+    def run(self) -> int:
+        deps_map = {repo.name: repo.deps for repo in self.repos}
+        order = topo_sort(
+            [r.name for r in self.repos],
+            deps_map,
+            preferred_order=self.config.global_cfg.preferred_repo_order,
+        )
+        repos_by_name = {repo.name: repo for repo in self.repos}
+        build_types = self._build_type_order()
+        report = BuildReport(build_types, order, self.prefixes)
+
+        # Resolve paths and clone/update repos.
+        self._sync_repos(order, repos_by_name)
 
         if self.parallel_build_types and self.platform.os in {"macos", "linux"} and len(build_types) > 1:
             self._run_parallel_build_types(build_types, order, repos_by_name, report)

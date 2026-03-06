@@ -8,7 +8,7 @@ import os
 import sys
 
 from .config import Config, _expand_path
-from .core import Builder
+from .core import Builder, resolve_nasm_executable
 from .platform import PlatformInfo
 
 _PREFLIGHT_REPO_URLS: dict[str, str] = {
@@ -197,6 +197,7 @@ def _build_env_for_pkg_config(builder: Builder, build_type: str) -> dict[str, st
 def _tool_checks(platform: PlatformInfo, env: dict[str, str]) -> list[ToolCheck]:
     doxygen_override = _normalize_override(env.get("DOXYGEN_EXECUTABLE"))
     pkg_override = _normalize_override(env.get("PKG_CONFIG_EXECUTABLE") or env.get("PKG_CONFIG"))
+    nasm_override = resolve_nasm_executable(env, platform_os=platform.os)
     python_override = _normalize_override(
         env.get("Python3_EXECUTABLE")
         or env.get("PYTHON3_EXECUTABLE")
@@ -218,9 +219,11 @@ def _tool_checks(platform: PlatformInfo, env: dict[str, str]) -> list[ToolCheck]
     if platform.os in {"macos", "linux"}:
         checks.append(ToolCheck("make", ["make", "gmake"], True))
     if platform.arch == "x86_64":
-        checks.append(ToolCheck("nasm", ["nasm", "yasm"], True, "x86/x64 asm"))
+        checks.append(ToolCheck("nasm", [nasm_override] if nasm_override else ["nasm", "yasm"], True, "x86/x64 asm"))
     else:
-        checks.append(ToolCheck("nasm", ["nasm", "yasm"], False, "not required on arm64"))
+        checks.append(
+            ToolCheck("nasm", [nasm_override] if nasm_override else ["nasm", "yasm"], False, "not required on arm64")
+        )
     checks.append(ToolCheck("python", python_candidates, True))
     checks.append(ToolCheck("uv", ["uv"], False, "optional"))
     if platform.os == "macos":

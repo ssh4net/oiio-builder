@@ -159,6 +159,7 @@ build_ffmpeg = false  # default OFF on Windows; when ON, MSYS2 shells source-bui
 # SQLITE_VCPKG_EXPORT_ZIP = "./external/vcpkg-export-sqlite.zip"
 # PKG_CONFIG_EXECUTABLE = "C:/VCPKG/installed/x64-windows/tools/pkgconf/pkgconf.exe"
 # DOXYGEN_EXECUTABLE    = "C:/Program Files/doxygen/bin/doxygen.exe"
+# NASM_EXECUTABLE       = "C:/Program Files/NASM/nasm.exe"
 
 [[repos]]
 name = "zlib-ng"
