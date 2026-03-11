@@ -1,0 +1,3 @@
+[cmake.cache]
+GLSLANG_TESTS = false
+ENABLE_OPT = true

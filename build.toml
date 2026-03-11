@@ -558,11 +558,36 @@ url = "https://github.com/google/googletest.git"
 build_system = "cmake"
 
 [[repos]]
+name = "SPIRV-Headers"
+dir = "SPIRV-Headers"
+url = "https://github.com/KhronosGroup/SPIRV-Headers.git"
+ref = "04f10f650d514df88b76d25e83db360142c7b174"
+ref_type = "commit"
+
+[[repos]]
+name = "SPIRV-Tools"
+dir = "SPIRV-Tools"
+url = "https://github.com/KhronosGroup/SPIRV-Tools.git"
+ref = "fbe4f3ad913c44fe8700545f8ffe35d1382b7093"
+ref_type = "commit"
+deps = ["SPIRV-Headers"]
+
+[[repos]]
+name = "glslang"
+dir = "glslang"
+url = "https://github.com/KhronosGroup/glslang.git"
+ref = "vulkan-sdk-1.4.341"
+ref_type = "branch"
+build_system = "cmake"
+deps = ["SPIRV-Headers", "SPIRV-Tools"]
+
+[[repos]]
 name = "OpenImageIO"
 dir = "OpenImageIO"
 url = "https://github.com/AcademySoftwareFoundation/OpenImageIO.git"
 build_system = "cmake"
 deps = [
+  "glslang",
   "Qt6",
   "zlib-ng",
   "libpng",

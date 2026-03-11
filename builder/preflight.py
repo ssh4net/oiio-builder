@@ -6,6 +6,7 @@ import subprocess
 import shutil
 import os
 import sys
+import tempfile
 
 from .config import Config, _expand_path
 from .core import Builder, resolve_nasm_executable
@@ -143,6 +144,105 @@ def _pkg_config_check(pkg_config: str, module: str, env: dict[str, str]) -> tupl
     except OSError:
         version = ""
     return True, version
+
+
+def _find_any_with_dirs(candidates: list[str], extra_dirs: list[Path]) -> tuple[str | None, str]:
+    path, resolved = _find_any(candidates)
+    if path:
+        return path, resolved
+    for directory in extra_dirs:
+        if not directory:
+            continue
+        for name in candidates:
+            candidate = directory / name
+            if candidate.exists():
+                return str(candidate), name
+    return None, ""
+
+
+def _resolve_vulkan_sdk_root(env: dict[str, str], repo_root: Path) -> Path | None:
+    override = _normalize_override(env.get("VULKAN_SDK"))
+    if not override:
+        return None
+    value = Path(os.path.expandvars(override)).expanduser()
+    if not value.is_absolute():
+        value = (repo_root / value).resolve()
+    return value
+
+
+def _cmake_vulkan_probe(builder: Builder, env: dict[str, str]) -> tuple[bool | None, dict[str, str], str]:
+    cmake_path, _ = _find_any(["cmake"])
+    if not cmake_path:
+        return None, {}, "cmake not found"
+
+    cmake_lists = """\
+cmake_minimum_required(VERSION 3.20)
+project(VulkanProbe NONE)
+find_package(Vulkan QUIET)
+if (Vulkan_FOUND)
+  message(STATUS "OIIO_BUILDER_VULKAN_FOUND=ON")
+else ()
+  message(STATUS "OIIO_BUILDER_VULKAN_FOUND=OFF")
+endif ()
+
+if (DEFINED ENV{VULKAN_SDK} AND NOT "$ENV{VULKAN_SDK}" STREQUAL "")
+  message(STATUS "OIIO_BUILDER_ENV_VULKAN_SDK=$ENV{VULKAN_SDK}")
+endif ()
+if (DEFINED Vulkan_INCLUDE_DIR AND NOT "${Vulkan_INCLUDE_DIR}" STREQUAL "")
+  message(STATUS "OIIO_BUILDER_VULKAN_INCLUDE_DIR=${Vulkan_INCLUDE_DIR}")
+endif ()
+if (DEFINED Vulkan_INCLUDE_DIRS AND NOT "${Vulkan_INCLUDE_DIRS}" STREQUAL "")
+  message(STATUS "OIIO_BUILDER_VULKAN_INCLUDE_DIRS=${Vulkan_INCLUDE_DIRS}")
+endif ()
+if (DEFINED Vulkan_LIBRARY AND NOT "${Vulkan_LIBRARY}" STREQUAL "")
+  message(STATUS "OIIO_BUILDER_VULKAN_LIBRARY=${Vulkan_LIBRARY}")
+endif ()
+if (DEFINED Vulkan_LIBRARIES AND NOT "${Vulkan_LIBRARIES}" STREQUAL "")
+  message(STATUS "OIIO_BUILDER_VULKAN_LIBRARIES=${Vulkan_LIBRARIES}")
+endif ()
+if (DEFINED Vulkan_GLSLANG_VALIDATOR_EXECUTABLE AND NOT "${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE}" STREQUAL "")
+  message(STATUS "OIIO_BUILDER_VULKAN_GLSLANG_VALIDATOR_EXECUTABLE=${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE}")
+endif ()
+if (DEFINED Vulkan_GLSLC_EXECUTABLE AND NOT "${Vulkan_GLSLC_EXECUTABLE}" STREQUAL "")
+  message(STATUS "OIIO_BUILDER_VULKAN_GLSLC_EXECUTABLE=${Vulkan_GLSLC_EXECUTABLE}")
+endif ()
+"""
+
+    with tempfile.TemporaryDirectory(prefix="oiio-builder-vulkan-probe-") as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        (tmp_path / "CMakeLists.txt").write_text(cmake_lists, encoding="utf-8")
+        cmd = [cmake_path, "-S", str(tmp_path), "-B", str(tmp_path / "build")]
+        cmd.extend(builder._cmake_generator_args())
+        proc = subprocess.run(
+            cmd,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    output = "\n".join(part for part in (proc.stdout, proc.stderr) if part)
+    values: dict[str, str] = {}
+    marker = "OIIO_BUILDER_"
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        idx = line.find(marker)
+        if idx < 0:
+            continue
+        payload = line[idx + len(marker) :]
+        key, sep, value = payload.partition("=")
+        if not sep:
+            continue
+        values[key.strip()] = value.strip()
+
+    found = values.get("VULKAN_FOUND")
+    if found == "ON":
+        return True, values, output
+    if found == "OFF":
+        return False, values, output
+    if proc.returncode != 0:
+        return False, values, output
+    return None, values, output
 
 
 def _bool_from_cache_value(value: object, *, default: bool = False) -> bool:
@@ -484,6 +584,71 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
                     if _is_debian_like(os_release):
                         lines.append("  install hint (Debian/Ubuntu): sudo apt-get install pkg-config libgtk-3-dev")
                     lines.append("  install GTK3 development packages so pkg-config can resolve `gtk+-3.0`.")
+
+    if any(repo.name == "glslang" for repo in builder.repos):
+        lines.append("Vulkan SDK:")
+        sdk_root = _resolve_vulkan_sdk_root(env, config.global_cfg.repo_root)
+        extra_dirs: list[Path] = []
+        if sdk_root is None:
+            lines.append("  VULKAN_SDK: not set")
+        elif sdk_root.exists():
+            lines.append(f"  VULKAN_SDK: ok ({sdk_root})")
+            extra_dirs.extend(
+                [
+                    sdk_root / "Bin",
+                    sdk_root / "Bin32",
+                    sdk_root / "bin",
+                    sdk_root / "bin32",
+                ]
+            )
+        else:
+            missing_tools += 1
+            lines.append(f"  VULKAN_SDK: missing ({sdk_root})")
+
+        glslang_validator_path, _ = _find_any_with_dirs(
+            ["glslangValidator", "glslangValidator.exe"],
+            extra_dirs,
+        )
+        if glslang_validator_path:
+            lines.append(f"  glslangValidator: ok ({glslang_validator_path})")
+        else:
+            lines.append("  glslangValidator: missing")
+
+        vulkaninfo_path, _ = _find_any_with_dirs(
+            ["vulkaninfo", "vulkaninfo.exe"],
+            extra_dirs,
+        )
+        if vulkaninfo_path:
+            lines.append(f"  vulkaninfo: ok ({vulkaninfo_path})")
+        else:
+            lines.append("  vulkaninfo: missing")
+
+        probe_ok, probe_values, probe_output = _cmake_vulkan_probe(builder, env)
+        if probe_ok is True:
+            lines.append("  find_package(Vulkan): ok")
+            include_dir = probe_values.get("VULKAN_INCLUDE_DIRS") or probe_values.get("VULKAN_INCLUDE_DIR")
+            library = probe_values.get("VULKAN_LIBRARIES") or probe_values.get("VULKAN_LIBRARY")
+            glslc = probe_values.get("VULKAN_GLSLC_EXECUTABLE")
+            if include_dir:
+                lines.append(f"  include: {include_dir}")
+            if library:
+                lines.append(f"  library: {library}")
+            if glslc:
+                lines.append(f"  glslc: {glslc}")
+        elif probe_ok is False:
+            missing_tools += 1
+            lines.append("  find_package(Vulkan): missing")
+            if platform.os == "windows":
+                lines.append("  install hint: install the LunarG Vulkan SDK and reopen the shell so VULKAN_SDK is exported.")
+            else:
+                lines.append("  install hint: install the LunarG Vulkan SDK and source its setup script so VULKAN_SDK is exported.")
+            if probe_output:
+                for line in probe_output.splitlines()[-3:]:
+                    stripped = line.strip()
+                    if stripped:
+                        lines.append(f"  cmake: {stripped}")
+        else:
+            lines.append("  find_package(Vulkan): skipped (cmake probe inconclusive)")
 
     # Adobe DNG SDK (optional) - we do not vendor sources; users must provide the archive/dir.
     if getattr(config.global_cfg, "build_dng_sdk", False):
