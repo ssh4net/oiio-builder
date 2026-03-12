@@ -2965,6 +2965,7 @@ endif()
             ]
         else:
             init_cmd = [
+                "sh",
                 str(init_repo),
                 f"--module-subset={','.join(qt_submodules)}",
                 "--no-optional-deps",
