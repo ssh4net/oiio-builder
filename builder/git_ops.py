@@ -22,11 +22,11 @@ def ensure_repo(path: Path, url: str | None, ref: str | None, ref_type: str, upd
             return
         if not update:
             return
-        run(["git", "-C", str(path), "fetch", "--all", "--tags"], dry_run=dry_run)
+        run(["git", "-C", str(path), "fetch", "--quiet", "--all", "--tags"], dry_run=dry_run)
         if ref:
             run(["git", "-C", str(path), "checkout", ref], dry_run=dry_run)
             if ref_type == "branch":
-                run(["git", "-C", str(path), "pull", "--ff-only"], dry_run=dry_run)
+                run(["git", "-C", str(path), "pull", "--quiet", "--ff-only"], dry_run=dry_run)
         return
 
     if not url:
