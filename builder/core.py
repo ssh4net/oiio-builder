@@ -2908,6 +2908,83 @@ endif()
             recipe_registry.patch_source(repo.name, self, src_dir)
             self._repo_source_prepared.add(repo.name)
 
+    def _source_prep_env(self) -> dict[str, str]:
+        env = dict(os.environ)
+        env.update(self.config.global_cfg.env)
+        if self.platform.os == "windows":
+            env.update(self.config.global_cfg.windows_env)
+        return env
+
+    def _qt6_submodules(self) -> list[str]:
+        submodules = [
+            "qtbase",
+            "qtdeclarative",
+            "qtshadertools",
+            "qtmultimedia",
+            "qtimageformats",
+            "qtsvg",
+            "qttools",
+        ]
+        if self.platform.os == "linux":
+            submodules.append("qtwayland")
+        return submodules
+
+    def _qt6_submodule_initialized(self, src_dir: Path, name: str) -> bool:
+        path = src_dir / name
+        if not path.is_dir():
+            return False
+        # A non-initialized git submodule usually exists as an empty directory.
+        if (path / ".git").exists():
+            return True
+        if (path / "CMakeLists.txt").exists():
+            return True
+        try:
+            next(path.iterdir())
+        except StopIteration:
+            return False
+        return True
+
+    def _prepare_qt6_sources(self, src_dir: Path) -> None:
+        qt_submodules = self._qt6_submodules()
+        missing_submodules = [name for name in qt_submodules if not self._qt6_submodule_initialized(src_dir, name)]
+        if not missing_submodules:
+            return
+
+        init_repo = src_dir / ("init-repository.bat" if self.platform.os == "windows" else "init-repository")
+        if not init_repo.exists():
+            return
+
+        banner("Qt6 - init submodules")
+        if self.platform.os == "windows":
+            init_cmd = [
+                "cmd",
+                "/c",
+                str(init_repo),
+                f"--module-subset={','.join(qt_submodules)}",
+                "--no-optional-deps",
+            ]
+        else:
+            init_cmd = [
+                str(init_repo),
+                f"--module-subset={','.join(qt_submodules)}",
+                "--no-optional-deps",
+            ]
+        if self.no_update:
+            # We still need to fetch at least once to clone missing Qt submodules.
+            # `init-repository --no-fetch` would prevent bringing in new submodules.
+            print(
+                "[note] Qt6: missing submodules require fetching; ignoring no_update for init-repository.",
+                flush=True,
+            )
+        print_cmd("init-repository command", init_cmd)
+        run(
+            init_cmd,
+            cwd=str(src_dir),
+            env=self._source_prep_env(),
+            dry_run=self.dry_run,
+            log_path=str(self._repo_log_path("Qt6", "_shared", "init-submodules")),
+        )
+
     def _patch_glew_macos(self, src_dir: Path) -> None:
         if self.platform.os != "macos":
             return
@@ -5428,69 +5505,7 @@ endif()
                         flush=True,
                     )
 
-            qt_submodules = [
-                "qtbase",
-                "qtdeclarative",
-                "qtshadertools",
-                "qtmultimedia",
-                "qtimageformats",
-                "qtsvg",
-                "qttools",
-            ]
-            if self.platform.os == "linux":
-                qt_submodules.append("qtwayland")
-
-            def _qt_submodule_initialized(name: str) -> bool:
-                path = ctx.src_dir / name
-                if not path.is_dir():
-                    return False
-                # A non-initialized git submodule usually exists as an empty directory.
-                if (path / ".git").exists():
-                    return True
-                if (path / "CMakeLists.txt").exists():
-                    return True
-                try:
-                    next(path.iterdir())
-                except StopIteration:
-                    return False
-                return True
-
-            missing_submodules = [name for name in qt_submodules if not _qt_submodule_initialized(name)]
-
-            if missing_submodules:
-                init_repo = src_dir / ("init-repository.bat" if self.platform.os == "windows" else "init-repository")
-                if init_repo.exists():
-                    banner(f"{repo.name} ({build_type}) - init submodules")
-                    init_cmd: list[str] = []
-                    if self.platform.os == "windows":
-                        init_cmd = [
-                            "cmd",
-                            "/c",
-                            str(init_repo),
-                            f"--module-subset={','.join(qt_submodules)}",
-                            "--no-optional-deps",
-                        ]
-                    else:
-                        init_cmd = [
-                            str(init_repo),
-                            f"--module-subset={','.join(qt_submodules)}",
-                            "--no-optional-deps",
-                        ]
-                    if self.no_update:
-                        # We still need to fetch at least once to clone missing Qt submodules.
-                        # `init-repository --no-fetch` would prevent bringing in new submodules.
-                        print(
-                            "[note] Qt6: missing submodules require fetching; ignoring no_update for init-repository.",
-                            flush=True,
-                        )
-                    print_cmd("init-repository command", init_cmd)
-                    run(
-                        init_cmd,
-                        cwd=str(src_dir),
-                        env=env,
-                        dry_run=self.dry_run,
-                        log_path=str(self._repo_log_path(repo.name, build_type, "init-submodules")),
-                    )
+            qt_submodules = self._qt6_submodules()
 
             if self.platform.os == "linux" and "qtwayland" in qt_submodules:
                 if not shutil.which("wayland-scanner"):
@@ -6640,6 +6655,28 @@ endif()
         repos_by_name = {repo.name: repo for repo in self.repos}
         self._sync_repos(order, repos_by_name)
         print("Repo update-only completed.")
+        return 0
+
+    def prepare_only(self) -> int:
+        deps_map = {repo.name: repo.deps for repo in self.repos}
+        order = topo_sort(
+            [r.name for r in self.repos],
+            deps_map,
+            preferred_order=self.config.global_cfg.preferred_repo_order,
+        )
+        repos_by_name = {repo.name: repo for repo in self.repos}
+        self._sync_repos(order, repos_by_name)
+
+        for repo_name in order:
+            repo = repos_by_name[repo_name]
+            src_dir = self.repo_paths.get(repo.name, self._resolve_repo_dir(repo))
+            if repo.source_subdir:
+                src_dir = src_dir / repo.source_subdir
+            if not src_dir.exists():
+                continue
+            self._prepare_repo_source(repo, src_dir)
+
+        print("Repo prepare-only completed.")
         return 0
 
     def run(self) -> int:

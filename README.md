@@ -192,6 +192,10 @@ uv run build.py --list-repos
 # Clone/fetch/checkout repos only (no build)
 uv run build.py --update-only
 
+# Clone/fetch/checkout repos and run source-prep hooks only
+uv run build.py --prepare-only
+uv run build.py --prepare-only --only Qt6
+
 # Print computed install prefixes
 uv run build.py --print-prefixes
 
@@ -212,6 +216,10 @@ uv run build.py --build-types Debug --only OpenImageIO --no-ffmpeg
 # Skip certain repos
 uv run build.py --skip libwebp,libheif
 ```
+
+`--prepare-only` is useful when a repo needs source hydration without starting a build. Current examples:
+- Qt6 missing submodules after a branch/ref change or partial checkout (`init-repository` is run automatically).
+- Repo-specific source prep hooks such as `glslang` external source staging when optimizer support is enabled.
 
 ## Platform Examples
 
