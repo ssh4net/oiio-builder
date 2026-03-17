@@ -2508,6 +2508,19 @@ endif()
             )
         return [make, *make_args]
 
+    def _ffmpeg_configured_prefix(self, build_dir: Path) -> str | None:
+        for candidate in (build_dir / "ffbuild" / "config.mak", build_dir / "ffbuild" / "config.sh"):
+            try:
+                for line in candidate.read_text(encoding="utf-8", errors="replace").splitlines():
+                    if not line.startswith("prefix="):
+                        continue
+                    value = line.partition("=")[2].strip()
+                    if value:
+                        return value
+            except OSError:
+                continue
+        return None
+
     def _autotools_windows_msys2_active(self) -> bool:
         return self.platform.os == "windows" and self._windows_msys2_detected()
 
@@ -5017,6 +5030,15 @@ endif()
             return False
         configure = ctx.src_dir / "configure"
         if not configure.exists():
+            return False
+        configured_prefix = self._ffmpeg_configured_prefix(ctx.build_dir)
+        desired_prefix = os.path.normcase(os.path.normpath(str(ctx.install_prefix)))
+        configured_prefix_norm = os.path.normcase(os.path.normpath(configured_prefix)) if configured_prefix else ""
+        if configured_prefix_norm and configured_prefix_norm != desired_prefix:
+            print(
+                f"[note] {ctx.repo.name} ({ctx.build_type}) prefix changed from {configured_prefix} to {ctx.install_prefix}; reinstall requires rebuild",
+                flush=True,
+            )
             return False
         self._ensure_ffmpeg_posix_line_endings(ctx.src_dir)
         ffmpeg_args = self._ffmpeg_configure_args(ctx)
