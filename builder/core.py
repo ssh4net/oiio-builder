@@ -46,6 +46,17 @@ def _resolve_executable_candidate(candidate: str | None, *, search_path: str | N
     return shutil.which(normalized, path=search_path)
 
 
+def _append_unique_candidate(candidates: list[str], seen: set[str], value: str | None) -> None:
+    normalized = _normalize_override(value)
+    if not normalized:
+        return
+    key = os.path.normcase(os.path.normpath(normalized.strip("\"'")))
+    if key in seen:
+        return
+    seen.add(key)
+    candidates.append(normalized)
+
+
 def _windows_nasm_probe_candidates(env: Mapping[str, str] | None = None) -> list[str]:
     merged_env = dict(os.environ)
     if env:
@@ -54,24 +65,25 @@ def _windows_nasm_probe_candidates(env: Mapping[str, str] | None = None) -> list
     candidates: list[str] = []
     seen: set[str] = set()
 
-    def add(value: str | None) -> None:
-        normalized = _normalize_override(value)
-        if not normalized:
-            return
-        key = os.path.normcase(os.path.normpath(normalized.strip("\"'")))
-        if key in seen:
-            return
-        seen.add(key)
-        candidates.append(normalized)
-
     for env_name in ("ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"):
         base = merged_env.get(env_name)
         if not base:
             continue
-        add(str(Path(base) / "NASM" / "nasm.exe"))
+        _append_unique_candidate(candidates, seen, str(Path(base) / "NASM" / "nasm.exe"))
 
-    add(r"C:\Program Files\NASM\nasm.exe")
-    add(r"C:\Program Files (x86)\NASM\nasm.exe")
+    _append_unique_candidate(candidates, seen, r"C:\Program Files\NASM\nasm.exe")
+    _append_unique_candidate(candidates, seen, r"C:\Program Files (x86)\NASM\nasm.exe")
+    return candidates
+
+
+def _macos_nasm_probe_candidates() -> list[str]:
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    for prefix in ("/opt/homebrew", "/usr/local"):
+        for tool in ("nasm", "yasm"):
+            _append_unique_candidate(candidates, seen, str(Path(prefix) / "bin" / tool))
+            _append_unique_candidate(candidates, seen, str(Path(prefix) / "opt" / tool / "bin" / tool))
     return candidates
 
 
@@ -100,6 +112,11 @@ def resolve_nasm_executable(env: Mapping[str, str] | None = None, *, platform_os
 
     if platform_os == "windows":
         for candidate in _windows_nasm_probe_candidates(env):
+            resolved = _resolve_executable_candidate(candidate, search_path=search_path)
+            if resolved:
+                return resolved
+    elif platform_os == "macos":
+        for candidate in _macos_nasm_probe_candidates():
             resolved = _resolve_executable_candidate(candidate, search_path=search_path)
             if resolved:
                 return resolved
