@@ -2100,6 +2100,7 @@ endif()
         libs: list[str] = []
         libdir = prefix / "lib"
         seen: set[str] = set()
+        minizip_requires_ppmd = self._minizip_exports_ppmd(prefix)
 
         libraw_openmp_value = str(self.config.global_cfg.libraw_enable_openmp).strip().lower()
         libraw_openmp_enabled = libraw_openmp_value in {"1", "on", "true", "yes"}
@@ -2180,8 +2181,9 @@ endif()
             add_windows_library(["swscale"])
             add_windows_library(["avutil"])
 
-            # minizip-ng deps (PPMD)
-            add_windows_library(["ppmd"])
+            # minizip-ng may export PPMD when built with MZ_PPMD=ON.
+            if minizip_requires_ppmd:
+                add_windows_library(["ppmd"])
 
             # Freetype deps (HarfBuzz)
             add_windows_library(["harfbuzz"])
@@ -2224,8 +2226,9 @@ endif()
                 for syslib in ("vdpau", "X11", "drm", "xcb", "Xau", "Xdmcp", "pthread", "atomic"):
                     add_entry(syslib)
 
-            # minizip-ng deps (PPMD)
-            add_lib("libppmd.a")
+            # minizip-ng may export PPMD when built with MZ_PPMD=ON.
+            if minizip_requires_ppmd:
+                add_lib("libppmd.a")
 
             # Freetype deps (HarfBuzz)
             add_lib("libharfbuzz.a")
@@ -3667,8 +3670,33 @@ endif()
             except OSError:
                 return
 
+    def _minizip_exports_ppmd(self, prefix: Path) -> bool:
+        cmake_dir = prefix / "lib" / "cmake" / "minizip-ng"
+        patterns = (
+            "find_dependency(PPMD",
+            "MINIZIP::ppmd",
+        )
+        for name in ("minizip-ng-config.cmake", "minizip-ng.cmake"):
+            path = cmake_dir / name
+            if not path.exists():
+                continue
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if any(pattern in text for pattern in patterns):
+                return True
+        return False
+
     def _ensure_ppmd_package(self, prefix: Path, build_type: str) -> None:
         if self.dry_run:
+            return
+
+        # Only materialize a synthetic PPMD package when the installed
+        # minizip-ng export actually requires it. This avoids reviving stale
+        # libppmd artifacts left in a prefix after minizip-ng was rebuilt with
+        # MZ_PPMD=OFF.
+        if not self._minizip_exports_ppmd(prefix):
             return
 
         libdir = prefix / "lib"
