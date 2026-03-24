@@ -62,6 +62,17 @@ def _select_remote(path: Path, url: str | None, ref: str | None, ref_type: str) 
     return remotes[0]
 
 
+def _run_git_update(cmd: list[str], *, dry_run: bool) -> None:
+    try:
+        run(cmd, dry_run=dry_run)
+    except subprocess.CalledProcessError:
+        if dry_run or "--quiet" not in cmd:
+            raise
+        noisy_cmd = [part for part in cmd if part != "--quiet"]
+        print(f"[note] Git command failed; retrying without --quiet: {' '.join(noisy_cmd)}", flush=True)
+        run(noisy_cmd, dry_run=False)
+
+
 def ensure_repo(path: Path, url: str | None, ref: str | None, ref_type: str, update: bool, dry_run: bool) -> None:
     if path.exists():
         if not (path / ".git").exists():
@@ -75,14 +86,14 @@ def ensure_repo(path: Path, url: str | None, ref: str | None, ref_type: str, upd
         else:
             fetch_cmd.append("--all")
         fetch_cmd.append("--tags")
-        run(fetch_cmd, dry_run=dry_run)
+        _run_git_update(fetch_cmd, dry_run=dry_run)
         if ref:
             run(["git", "-C", str(path), "checkout", ref], dry_run=dry_run)
             if ref_type == "branch":
                 pull_cmd = ["git", "-C", str(path), "pull", "--quiet", "--ff-only"]
                 if remote:
                     pull_cmd.extend([remote, ref])
-                run(pull_cmd, dry_run=dry_run)
+                _run_git_update(pull_cmd, dry_run=dry_run)
         return
 
     if not url:

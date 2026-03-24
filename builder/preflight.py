@@ -364,6 +364,42 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
             value = builder.toolchain.get(key)
             if value:
                 lines.append(f"  {key}: {value}")
+    if platform.os == "windows":
+        expected_cc = builder.toolchain.get("cc")
+        expected_cxx = builder.toolchain.get("cxx")
+        generator = str(config.global_cfg.windows.get("generator", "ninja-msvc")).strip().lower()
+        lines.append("Windows compiler:")
+        if expected_cc:
+            cc_path = shutil.which(expected_cc)
+            if cc_path:
+                lines.append(f"  cc: ok ({cc_path}) [{generator}]")
+            else:
+                missing_tools += 1
+                lines.append(f"  cc: missing ({expected_cc}) [{generator}]")
+        if expected_cxx and expected_cxx != expected_cc:
+            cxx_path = shutil.which(expected_cxx)
+            if cxx_path:
+                lines.append(f"  cxx: ok ({cxx_path}) [{generator}]")
+            else:
+                missing_tools += 1
+                lines.append(f"  cxx: missing ({expected_cxx}) [{generator}]")
+        if expected_cc == "cl":
+            lines.append("  hint: run from a Visual Studio Developer Prompt/PowerShell so cl.exe is on PATH.")
+        lines.append("Windows SDK tools:")
+        rc_path = builder._resolve_windows_sdk_tool("rc.exe", env)
+        mt_path = builder._resolve_windows_sdk_tool("mt.exe", env)
+        if rc_path:
+            lines.append(f"  rc: ok ({rc_path})")
+        else:
+            missing_tools += 1
+            lines.append("  rc: missing (Windows SDK resource compiler)")
+        if mt_path:
+            lines.append(f"  mt: ok ({mt_path})")
+        else:
+            missing_tools += 1
+            lines.append("  mt: missing (Windows SDK manifest tool)")
+        if not rc_path or not mt_path:
+            lines.append("  hint: install the Visual Studio C++ workload with the Windows 10/11 SDK.")
     lines.append("Tools:")
     checks = _tool_checks(platform, env)
     if platform.os == "linux" and any(repo.build_system == "qt6" for repo in builder.repos):
@@ -557,6 +593,32 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
                 if _is_debian_like(os_release):
                     lines.append("  install hint (Debian/Ubuntu): sudo apt-get install libvdpau-dev")
                 lines.append("  used for FFmpeg VDPAU hardware-acceleration support pulled into static OIIO link.")
+
+    # OpenImageIO iv can pull libsystemd through static Qt6 DBus linkage on Linux.
+    if (
+        platform.os == "linux"
+        and config.global_cfg.build_qt6
+        and any(repo.name == "OpenImageIO" for repo in builder.repos)
+    ):
+        lines.append("OpenImageIO/Qt6 (Linux transitive system libs):")
+        pkg_override = _normalize_override(env.get("PKG_CONFIG_EXECUTABLE") or env.get("PKG_CONFIG"))
+        pkg_candidates = [pkg_override] if pkg_override else ["pkg-config", "pkgconf"]
+        pkg_path, _ = _find_any(pkg_candidates)
+        build_env = _build_env_for_pkg_config(builder, "Release")
+
+        if not pkg_path:
+            lines.append("  pkg-config: missing (required to resolve libsystemd)")
+        else:
+            systemd_ok, systemd_version = _pkg_config_check(pkg_path, "libsystemd", build_env)
+            if systemd_ok:
+                version_note = f" ({systemd_version})" if systemd_version else ""
+                lines.append(f"  libsystemd: ok{version_note}")
+            else:
+                lines.append("  libsystemd: missing (ld.lld would fail with `-lsystemd`)")
+                os_release = _read_os_release()
+                if _is_debian_like(os_release):
+                    lines.append("  install hint (Debian/Ubuntu): sudo apt-get install libsystemd-dev")
+                lines.append("  used by static Qt6 DBus linkage pulled into the OpenImageIO `iv` link.")
 
     # nativefiledialog-extended Linux dependency checks
     if platform.os == "linux" and any(repo.name == "nativefiledialog-extended" for repo in builder.repos):

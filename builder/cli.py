@@ -116,9 +116,9 @@ def main() -> int:
     platform_info = detect_platform()
     if args.update_only and args.prepare_only:
         raise SystemExit("--update-only cannot be combined with --prepare-only")
-    if (args.update_only or args.prepare_only) and args.no_update:
-        raise SystemExit("--update-only/--prepare-only cannot be combined with --no-update")
-    if args.update_only or args.prepare_only or args.update:
+    if args.update_only and args.no_update:
+        raise SystemExit("--update-only cannot be combined with --no-update")
+    if args.update_only or args.update:
         no_update = False
     else:
         no_update = args.no_update or config.global_cfg.no_update

@@ -6,6 +6,18 @@ from typing import Any
 import os
 import tomllib
 
+_DEFAULT_QT6_MODULES = ["qtbase", "qttools"]
+_KNOWN_QT6_MODULES = {
+    "qtbase",
+    "qtdeclarative",
+    "qtshadertools",
+    "qtmultimedia",
+    "qtimageformats",
+    "qtsvg",
+    "qttools",
+    "qtwayland",
+}
+
 
 @dataclass
 class RepoConfig:
@@ -75,6 +87,7 @@ class GlobalConfig:
     build_ffmpeg: bool = True
     build_oiio: bool = True
     build_qt6: bool = False
+    qt6_modules: list[str] = field(default_factory=lambda: list(_DEFAULT_QT6_MODULES))
     build_dng_sdk: bool = False
     openimageio_patch_png_include: bool = True
     # Optional CPython source override (repo ref/ref_type).
@@ -240,6 +253,7 @@ def load_config(path: Path) -> Config:
             "build_ffmpeg",
             "build_oiio",
             "build_qt6",
+            "qt6_modules",
             "build_dng_sdk",
             "openimageio_patch_png_include",
             "cpython_ref",
@@ -322,6 +336,29 @@ def load_config(path: Path) -> Config:
     build_types = global_data.get("build_types", ["Debug", "Release", "ASAN"])
     build_types = [v.capitalize() if v.lower() != "asan" else "ASAN" for v in build_types]
 
+    qt6_modules_raw = global_data.get("qt6_modules", list(_DEFAULT_QT6_MODULES))
+    if qt6_modules_raw is None:
+        qt6_modules_raw = list(_DEFAULT_QT6_MODULES)
+    if not isinstance(qt6_modules_raw, list) or any(not isinstance(item, str) for item in qt6_modules_raw):
+        raise TypeError("[global].qt6_modules must be a list[str]")
+    qt6_modules: list[str] = []
+    seen_qt6_modules: set[str] = set()
+    for raw in qt6_modules_raw:
+        name = raw.strip().lower()
+        if not name:
+            continue
+        if name not in _KNOWN_QT6_MODULES:
+            raise ValueError(
+                f"Unknown module name in [global].qt6_modules: {raw!r}. "
+                f"Expected one of: {', '.join(sorted(_KNOWN_QT6_MODULES))}"
+            )
+        if name in seen_qt6_modules:
+            continue
+        seen_qt6_modules.add(name)
+        qt6_modules.append(name)
+    if not qt6_modules:
+        qt6_modules = list(_DEFAULT_QT6_MODULES)
+
     preferred_repo_order_raw = global_data.get("preferred_repo_order", [])
     if preferred_repo_order_raw is None:
         preferred_repo_order_raw = []
@@ -389,6 +426,7 @@ def load_config(path: Path) -> Config:
         build_ffmpeg=bool(global_data.get("build_ffmpeg", True)),
         build_oiio=bool(global_data.get("build_oiio", True)),
         build_qt6=bool(global_data.get("build_qt6", False)),
+        qt6_modules=qt6_modules,
         build_dng_sdk=bool(global_data.get("build_dng_sdk", False)),
         openimageio_patch_png_include=bool(global_data.get("openimageio_patch_png_include", True)),
         cpython_ref=cpython_ref,

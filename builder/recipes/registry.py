@@ -56,6 +56,7 @@ from . import (
     sqlite,
     spdlog,
     x265,
+    zstd,
 )
 
 _RECIPES: dict[str, ModuleType] = {
@@ -110,6 +111,7 @@ _RECIPES: dict[str, ModuleType] = {
     "sqlite": sqlite,
     "spdlog": spdlog,
     "x265": x265,
+    "zstd": zstd,
 }
 
 

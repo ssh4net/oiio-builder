@@ -182,6 +182,7 @@ class Builder:
     ) -> None:
         self.config = config
         self.platform = platform
+        self.config.global_cfg.build_root = self._host_build_root(self.config.global_cfg.build_root)
         self.dry_run = dry_run
         self.no_update = no_update
         self.force = force
@@ -219,6 +220,18 @@ class Builder:
         self._repo_source_prepared: set[str] = set()
         self._repo_source_prepare_locks: dict[str, threading.Lock] = {repo.name: threading.Lock() for repo in self.repos}
         self._repo_exclusive_build_locks: dict[str, threading.Lock] = {repo.name: threading.Lock() for repo in self.repos}
+
+    def _host_build_root(self, base_root: Path) -> Path:
+        host_dir = self.platform.os
+        if base_root.name.strip().lower() == host_dir:
+            return base_root
+        return base_root / host_dir
+
+    def _cmake_path_arg(self, value: str | Path) -> str:
+        text = str(value)
+        if self.platform.os == "windows":
+            return text.replace("\\", "/")
+        return text
 
     def _repo_log_path(self, repo_name: str, build_type: str, step: str) -> Path:
         safe_step = re.sub(r"[^A-Za-z0-9._-]+", "_", step).strip("._")
@@ -562,6 +575,170 @@ class Builder:
             parts.append(f"gen:{generator}")
         return ";".join(parts)
 
+    def _windows_generator(self) -> str:
+        return str(self.config.global_cfg.windows.get("generator", "ninja-msvc")).strip().lower()
+
+    def _windows_expected_compilers(self) -> tuple[str, str]:
+        generator = self._windows_generator()
+        if generator in {"msvc-clang-cl", "ninja-clang-cl"}:
+            return "clang-cl", "clang-cl"
+        return "cl", "cl"
+
+    def _windows_should_pin_cmake_compiler(self) -> bool:
+        return self.platform.os == "windows" and self._windows_generator() in {"ninja-msvc", "ninja-clang-cl"}
+
+    def _effective_host_env(self) -> dict[str, str]:
+        env = dict(os.environ)
+        env.update(self.config.global_cfg.env)
+        if self.platform.os == "windows":
+            env.update(self.config.global_cfg.windows_env)
+        return env
+
+    def _resolve_windows_compiler_path(self, compiler: str | None, env: dict[str, str] | None = None) -> str | None:
+        if self.platform.os != "windows" or not compiler:
+            return compiler
+
+        resolved_env = env or self._effective_host_env()
+        raw = str(compiler).strip().strip("\"'")
+        if not raw:
+            return None
+
+        direct = Path(raw)
+        if direct.is_absolute() and direct.exists():
+            return str(direct)
+
+        found = shutil.which(raw, path=resolved_env.get("PATH"))
+        if found:
+            return found
+
+        exe_name = raw if raw.lower().endswith(".exe") else f"{raw}.exe"
+        arch_dir = "arm64" if self.platform.arch == "arm64" else "x64"
+        host_arch = "Hostarm64" if self.platform.arch == "arm64" else "Hostx64"
+        candidates: list[Path] = []
+
+        def _append_if_exists(path: Path) -> None:
+            if path.exists():
+                candidates.append(path)
+
+        def _append_msvc_bins(root: Path) -> None:
+            if not root.exists():
+                return
+            versions = sorted((p for p in root.iterdir() if p.is_dir()), key=lambda p: p.name, reverse=True)
+            for version_dir in versions:
+                _append_if_exists(version_dir / "bin" / host_arch / arch_dir / exe_name)
+
+        if exe_name.lower() == "cl.exe":
+            vc_tools = resolved_env.get("VCToolsInstallDir")
+            if vc_tools:
+                _append_if_exists(Path(vc_tools) / "bin" / host_arch / arch_dir / exe_name)
+
+            vc_install = resolved_env.get("VCINSTALLDIR")
+            if vc_install:
+                _append_msvc_bins(Path(vc_install) / "Tools" / "MSVC")
+
+            vs_install = resolved_env.get("VSINSTALLDIR")
+            if vs_install:
+                _append_msvc_bins(Path(vs_install) / "VC" / "Tools" / "MSVC")
+
+            for env_key in ("ProgramFiles(x86)", "ProgramFiles"):
+                root = resolved_env.get(env_key)
+                if not root:
+                    continue
+                vs_root = Path(root) / "Microsoft Visual Studio"
+                if not vs_root.exists():
+                    continue
+                years = sorted((p for p in vs_root.iterdir() if p.is_dir()), key=lambda p: p.name, reverse=True)
+                for year_dir in years:
+                    for edition in ("BuildTools", "Community", "Professional", "Enterprise", "Preview"):
+                        _append_msvc_bins(year_dir / edition / "VC" / "Tools" / "MSVC")
+
+        if exe_name.lower() == "clang-cl.exe":
+            for env_key in ("VCToolsInstallDir", "VCINSTALLDIR", "VSINSTALLDIR"):
+                base = resolved_env.get(env_key)
+                if not base:
+                    continue
+                root = Path(base)
+                if env_key == "VCToolsInstallDir":
+                    if len(root.parents) > 1:
+                        llvm_root = root.parents[1] / "Llvm"
+                        _append_if_exists(llvm_root / arch_dir / "bin" / exe_name)
+                        _append_if_exists(llvm_root / "bin" / exe_name)
+                elif env_key == "VCINSTALLDIR":
+                    _append_if_exists(root / "Tools" / "Llvm" / arch_dir / "bin" / exe_name)
+                    _append_if_exists(root / "Tools" / "Llvm" / "bin" / exe_name)
+                else:
+                    _append_if_exists(root / "VC" / "Tools" / "Llvm" / arch_dir / "bin" / exe_name)
+                    _append_if_exists(root / "VC" / "Tools" / "Llvm" / "bin" / exe_name)
+
+            for base in (
+                Path("C:/Program Files/LLVM/bin"),
+                Path("C:/LLVM/bin"),
+            ):
+                _append_if_exists(base / exe_name)
+
+        return str(candidates[0]) if candidates else raw
+
+    def _resolve_windows_sdk_tool(self, tool_name: str, env: dict[str, str] | None = None) -> str | None:
+        if self.platform.os != "windows":
+            return None
+
+        resolved_env = env or self._effective_host_env()
+        raw = str(tool_name).strip().strip("\"'")
+        if not raw:
+            return None
+
+        direct = Path(raw)
+        if direct.is_absolute() and direct.exists():
+            return str(direct)
+
+        found = shutil.which(raw, path=resolved_env.get("PATH"))
+        if found:
+            return found
+
+        exe_name = raw if raw.lower().endswith(".exe") else f"{raw}.exe"
+        arch_dir = "arm64" if self.platform.arch == "arm64" else "x64"
+        candidates: list[Path] = []
+        seen: set[str] = set()
+
+        def _append_if_exists(path: Path) -> None:
+            norm = os.path.normcase(os.path.normpath(str(path)))
+            if norm in seen:
+                return
+            if path.exists():
+                seen.add(norm)
+                candidates.append(path)
+
+        bin_roots: list[Path] = []
+        for env_key in ("WindowsSdkVerBinPath", "WindowsSdkBinPath"):
+            value = resolved_env.get(env_key)
+            if value:
+                bin_roots.append(Path(value))
+
+        sdk_dir = resolved_env.get("WindowsSdkDir") or resolved_env.get("WindowsSDKDir")
+        sdk_version = resolved_env.get("WindowsSDKVersion") or resolved_env.get("WindowsSdkVersion")
+        if sdk_dir:
+            sdk_bin = Path(sdk_dir) / "bin"
+            if sdk_version:
+                bin_roots.append(sdk_bin / sdk_version)
+            bin_roots.append(sdk_bin)
+
+        for env_key in ("ProgramFiles(x86)", "ProgramFiles"):
+            root = resolved_env.get(env_key)
+            if not root:
+                continue
+            for kits_name in ("10", "11"):
+                bin_roots.append(Path(root) / "Windows Kits" / kits_name / "bin")
+
+        for root in bin_roots:
+            if not root.exists():
+                continue
+            _append_if_exists(root / arch_dir / exe_name)
+            version_dirs = sorted((p for p in root.iterdir() if p.is_dir()), key=lambda p: p.name, reverse=True)
+            for version_dir in version_dirs:
+                _append_if_exists(version_dir / arch_dir / exe_name)
+
+        return str(candidates[0]) if candidates else None
+
     def _which(self, name: str) -> str | None:
         for path in os.environ.get("PATH", "").split(os.pathsep):
             candidate = Path(path) / name
@@ -602,8 +779,6 @@ class Builder:
     def _resolve_toolchain(self) -> dict[str, str]:
         cfg = self.config.global_cfg
         toolchain: dict[str, str] = {}
-        if self.platform.os == "windows":
-            return toolchain
 
         if cfg.cc:
             toolchain["cc"] = cfg.cc
@@ -615,6 +790,15 @@ class Builder:
             toolchain["ar"] = cfg.ar
         if cfg.ranlib:
             toolchain["ranlib"] = cfg.ranlib
+
+        if self.platform.os == "windows":
+            cc, cxx = self._windows_expected_compilers()
+            host_env = self._effective_host_env()
+            toolchain.setdefault("cc", cc)
+            toolchain.setdefault("cxx", cxx)
+            toolchain["cc"] = self._resolve_windows_compiler_path(toolchain.get("cc"), host_env)
+            toolchain["cxx"] = self._resolve_windows_compiler_path(toolchain.get("cxx"), host_env)
+            return toolchain
 
         if self.platform.os == "macos":
             toolchain.setdefault("cc", self._xcrun_find("clang") or self._which("clang") or "clang")
@@ -772,12 +956,22 @@ class Builder:
                     env["CCACHE_DISABLE"] = "1"
 
         if self.platform.os == "windows":
+            for var in ("CC", "CXX", "CMAKE_C_COMPILER", "CMAKE_CXX_COMPILER"):
+                env.pop(var, None)
             effective_env = dict(os.environ)
             effective_env.update(env)
             nasm = resolve_nasm_executable(effective_env, platform_os="windows")
             if nasm:
                 env.setdefault("PATH", os.environ.get("PATH", ""))
                 self._prepend_windows_env_paths(env, "PATH", [Path(nasm).parent])
+            sdk_tool_dirs: list[Path] = []
+            for tool_name in ("rc.exe", "mt.exe"):
+                tool_path = self._resolve_windows_sdk_tool(tool_name, effective_env)
+                if tool_path:
+                    sdk_tool_dirs.append(Path(tool_path).parent)
+            if sdk_tool_dirs:
+                env.setdefault("PATH", os.environ.get("PATH", ""))
+                self._prepend_windows_env_paths(env, "PATH", sdk_tool_dirs)
 
         return env
 
@@ -914,7 +1108,7 @@ class Builder:
     def _base_flags(self, build_type: str) -> str:
         cfg = self.config.global_cfg
         if self.platform.os == "windows":
-            generator = str(cfg.windows.get("generator", "ninja-msvc")).strip().lower()
+            generator = self._windows_generator()
             # clang-cl needs explicit -m* target features for some x86 intrinsics
             # (e.g. SSSE3/SSE4.1) even though it defines _MSC_VER.
             clangcl_extra_flags = ""
@@ -2572,17 +2766,17 @@ endif()
         cfg = self.config.global_cfg
         args: list[str] = [
             f"-DCMAKE_BUILD_TYPE={ctx.build_type}",
-            f"-DCMAKE_INSTALL_PREFIX={ctx.install_prefix}",
-            f"-DCMAKE_PREFIX_PATH={ctx.install_prefix}",
-            f"-DCMAKE_INCLUDE_PATH={ctx.install_prefix / 'include'}",
-            f"-DCMAKE_LIBRARY_PATH={ctx.install_prefix / 'lib'}",
+            f"-DCMAKE_INSTALL_PREFIX={self._cmake_path_arg(ctx.install_prefix)}",
+            f"-DCMAKE_PREFIX_PATH={self._cmake_path_arg(ctx.install_prefix)}",
+            f"-DCMAKE_INCLUDE_PATH={self._cmake_path_arg(ctx.install_prefix / 'include')}",
+            f"-DCMAKE_LIBRARY_PATH={self._cmake_path_arg(ctx.install_prefix / 'lib')}",
             f"-DCMAKE_CXX_STANDARD={repo.cxx_standard or cfg.cxx_standard}",
             f"-DCMAKE_CXX_EXTENSIONS={'ON' if cfg.cxx_extensions else 'OFF'}",
             "-DPKG_CONFIG_USE_STATIC_LIBS=ON",
         ]
         if self._ccache_path:
-            args.append(f"-DCMAKE_C_COMPILER_LAUNCHER={self._ccache_path}")
-            args.append(f"-DCMAKE_CXX_COMPILER_LAUNCHER={self._ccache_path}")
+            args.append(f"-DCMAKE_C_COMPILER_LAUNCHER={self._cmake_path_arg(self._ccache_path)}")
+            args.append(f"-DCMAKE_CXX_COMPILER_LAUNCHER={self._cmake_path_arg(self._ccache_path)}")
 
         if self.platform.os == "windows":
             # MSBuild + VS generators sometimes hit file timestamp races in the generated
@@ -2592,6 +2786,13 @@ endif()
             generator = str(cfg.windows.get("generator", "ninja-msvc")).strip().lower()
             if generator in {"msvc", "msvc-clang-cl"}:
                 args.append("-DCMAKE_SUPPRESS_REGENERATION=ON")
+            effective_env = self._effective_host_env()
+            rc_compiler = self._resolve_windows_sdk_tool("rc.exe", effective_env)
+            mt_tool = self._resolve_windows_sdk_tool("mt.exe", effective_env)
+            if rc_compiler:
+                args.append(f"-DCMAKE_RC_COMPILER={self._cmake_path_arg(rc_compiler)}")
+            if mt_tool:
+                args.append(f"-DCMAKE_MT={self._cmake_path_arg(mt_tool)}")
 
         pkg_cfg = _normalize_override(cfg.env.get("PKG_CONFIG_EXECUTABLE") or cfg.env.get("PKG_CONFIG"))
         if self.platform.os == "windows":
@@ -2601,7 +2802,7 @@ endif()
         else:
             pkg_cfg = _normalize_override(os.environ.get("PKG_CONFIG_EXECUTABLE") or os.environ.get("PKG_CONFIG")) or pkg_cfg
         if pkg_cfg:
-            args.append(f"-DPKG_CONFIG_EXECUTABLE={pkg_cfg}")
+            args.append(f"-DPKG_CONFIG_EXECUTABLE={self._cmake_path_arg(pkg_cfg)}")
 
         doxygen = _normalize_override(cfg.env.get("DOXYGEN_EXECUTABLE"))
         if self.platform.os == "windows":
@@ -2609,7 +2810,7 @@ endif()
         else:
             doxygen = _normalize_override(os.environ.get("DOXYGEN_EXECUTABLE")) or doxygen
         if doxygen:
-            args.append(f"-DDOXYGEN_EXECUTABLE={doxygen}")
+            args.append(f"-DDOXYGEN_EXECUTABLE={self._cmake_path_arg(doxygen)}")
 
         effective_env = dict(os.environ)
         effective_env.update(cfg.env)
@@ -2617,7 +2818,7 @@ endif()
             effective_env.update(cfg.windows_env)
         nasm = resolve_nasm_executable(effective_env, platform_os=self.platform.os)
         if nasm:
-            args.append(f"-DCMAKE_ASM_NASM_COMPILER={nasm}")
+            args.append(f"-DCMAKE_ASM_NASM_COMPILER={self._cmake_path_arg(nasm)}")
 
         python_exec = _normalize_override(
             cfg.env.get("Python3_EXECUTABLE")
@@ -2674,8 +2875,9 @@ endif()
             args.append("-DPython_FIND_VIRTUALENV=ONLY")
 
         if python_exec:
-            args.append(f"-DPython3_EXECUTABLE={python_exec}")
-            args.append(f"-DPython_EXECUTABLE={python_exec}")
+            python_exec_arg = self._cmake_path_arg(python_exec)
+            args.append(f"-DPython3_EXECUTABLE={python_exec_arg}")
+            args.append(f"-DPython_EXECUTABLE={python_exec_arg}")
 
         if self.platform.os == "windows" and cpython_enabled:
             python_release_lib, python_debug_lib = self._prefix_windows_python_libraries(ctx.install_prefix)
@@ -2744,17 +2946,17 @@ endif()
                 f"-DCMAKE_MODULE_LINKER_FLAGS_INIT={linker_flags}",
             ]
 
-        if self.toolchain:
+        if self.toolchain and (self.platform.os != "windows" or self._windows_should_pin_cmake_compiler()):
             if "cc" in self.toolchain:
-                args.append(f"-DCMAKE_C_COMPILER={self.toolchain['cc']}")
+                args.append(f"-DCMAKE_C_COMPILER={self._cmake_path_arg(self.toolchain['cc'])}")
             if "cxx" in self.toolchain:
-                args.append(f"-DCMAKE_CXX_COMPILER={self.toolchain['cxx']}")
+                args.append(f"-DCMAKE_CXX_COMPILER={self._cmake_path_arg(self.toolchain['cxx'])}")
             if "ld" in self.toolchain:
-                args.append(f"-DCMAKE_LINKER={self.toolchain['ld']}")
+                args.append(f"-DCMAKE_LINKER={self._cmake_path_arg(self.toolchain['ld'])}")
             if "ar" in self.toolchain:
-                args.append(f"-DCMAKE_AR={self.toolchain['ar']}")
+                args.append(f"-DCMAKE_AR={self._cmake_path_arg(self.toolchain['ar'])}")
             if "ranlib" in self.toolchain:
-                args.append(f"-DCMAKE_RANLIB={self.toolchain['ranlib']}")
+                args.append(f"-DCMAKE_RANLIB={self._cmake_path_arg(self.toolchain['ranlib'])}")
 
         return args
 
@@ -2771,13 +2973,13 @@ endif()
                 return raw.strip()
             return "Visual Studio 17 2022"
 
-        generator = str(cfg.windows.get("generator", "ninja-msvc")).strip().lower()
+        generator = self._windows_generator()
         if generator == "msvc":
             return ["-G", _windows_vs_generator()]
         if generator == "msvc-clang-cl":
             return ["-G", _windows_vs_generator(), "-T", "ClangCL"]
         if generator == "ninja-clang-cl":
-            return ["-G", "Ninja", "-DCMAKE_C_COMPILER=clang-cl", "-DCMAKE_CXX_COMPILER=clang-cl"]
+            return ["-G", "Ninja"]
         # default: ninja + msvc
         return ["-G", "Ninja"]
 
@@ -2949,18 +3151,14 @@ endif()
         return env
 
     def _qt6_submodules(self) -> list[str]:
-        submodules = [
-            "qtbase",
-            "qtdeclarative",
-            "qtshadertools",
-            "qtmultimedia",
-            "qtimageformats",
-            "qtsvg",
-            "qttools",
-        ]
-        if self.platform.os == "linux":
-            submodules.append("qtwayland")
-        return submodules
+        configured = list(self.config.global_cfg.qt6_modules)
+        if not configured:
+            configured = ["qtbase"]
+        if "qtbase" not in configured:
+            configured.insert(0, "qtbase")
+        if self.platform.os != "linux":
+            configured = [name for name in configured if name != "qtwayland"]
+        return configured
 
     def _qt6_submodule_initialized(self, src_dir: Path, name: str) -> bool:
         path = src_dir / name
@@ -4864,37 +5062,36 @@ endif()
                 payload["vcpkg_export_zip_size"] = int(st.st_size)
                 payload["vcpkg_export_zip_mtime"] = int(st.st_mtime)
         if repo.build_system == "qt6":
-            qt_submodules = [
-                "qtbase",
-                "qtdeclarative",
-                "qtshadertools",
-                "qtmultimedia",
-                "qtimageformats",
-                "qtsvg",
-                "qttools",
-            ]
-            if self.platform.os == "linux":
-                qt_submodules.append("qtwayland")
+            qt_submodules = self._qt6_submodules()
+            qt_submodule_set = set(qt_submodules)
+            system_libs = {
+                "pcre": "system",
+                "zlib": "system",
+                "freetype": "system",
+                "harfbuzz": "system",
+                "libpng": "system",
+                "libjpeg": "system",
+            }
+            if "qtimageformats" in qt_submodule_set:
+                system_libs["tiff"] = "system"
+                system_libs["webp"] = "system"
             payload["qt6"] = {
                 "submodules": qt_submodules,
                 "mode": "debug" if ctx.build_type == "Debug" else "release",
                 "opengl": "desktop" if self.platform.os in {"linux", "macos"} else "default",
-                "qpa": ("xcb;wayland" if self.platform.os == "linux" else "default"),
+                "qpa": (
+                    "xcb;wayland"
+                    if self.platform.os == "linux" and "qtwayland" in qt_submodule_set
+                    else ("xcb" if self.platform.os == "linux" else "default")
+                ),
                 "qpa_default": ("xcb" if self.platform.os == "linux" else "default"),
                 "ssl": ("openssl-linked" if self.platform.os in {"linux", "windows"} else "default"),
                 "static_runtime": (self.platform.os == "windows"),
-                "system_libs": {
-                    "pcre": "system",
-                    "zlib": "system",
-                    "freetype": "system",
-                    "harfbuzz": "system",
-                    "libpng": "system",
-                    "libjpeg": "system",
-                    "tiff": "system",
-                    "webp": "system",
-                },
-                "disabled_features": ["gstreamer", "pipewire"],
-                "feature_ffmpeg": (self.platform.os != "windows" and self._ffmpeg_enabled()),
+                "system_libs": system_libs,
+                "disabled_features": (["gstreamer", "pipewire"] if "qtmultimedia" in qt_submodule_set else []),
+                "feature_ffmpeg": (
+                    self.platform.os != "windows" and "qtmultimedia" in qt_submodule_set and self._ffmpeg_enabled()
+                ),
                 "pkg_config_use_static_libs": True,
             }
         return payload
@@ -5356,9 +5553,10 @@ endif()
 
         install_prefix = self.prefixes[build_type]
         build_dir = self.config.global_cfg.build_root / build_type / repo.name
-        src_dir = self.repo_paths[repo.name]
+        repo_root = self.repo_paths[repo.name]
+        src_dir = repo_root
         if repo.source_subdir:
-            src_dir = src_dir / repo.source_subdir
+            src_dir = repo_root / repo.source_subdir
 
         ctx = BuildContext(repo=repo, build_type=build_type, build_dir=build_dir, install_prefix=install_prefix, src_dir=src_dir)
 
@@ -5429,7 +5627,7 @@ endif()
             self._ensure_libheif_consumer_definitions(install_prefix)
             self._ensure_libheif_windows_multiconfig_compat(install_prefix)
 
-        self._prepare_repo_source(repo, src_dir)
+        self._prepare_repo_source(repo, repo_root)
         if repo.name == "libjxl":
             self._make_openexr_pc_override(install_prefix, build_type)
         if repo.name == "libjxl" and build_type == "Debug":
@@ -5574,8 +5772,9 @@ endif()
                     )
 
             qt_submodules = self._qt6_submodules()
+            qt_submodule_set = set(qt_submodules)
 
-            if self.platform.os == "linux" and "qtwayland" in qt_submodules:
+            if self.platform.os == "linux" and "qtwayland" in qt_submodule_set:
                 if not shutil.which("wayland-scanner"):
                     raise RuntimeError(
                         "Qt6: wayland-scanner not found. Install Wayland development tools (wayland-scanner) to build qtwayland."
@@ -5583,7 +5782,7 @@ endif()
 
             pulse_ok = False
             alsa_ok = False
-            if self.platform.os == "linux":
+            if self.platform.os == "linux" and "qtmultimedia" in qt_submodule_set:
                 pulse_ok = subprocess.run(["pkg-config", "--exists", "libpulse"], env=env, check=False).returncode == 0
                 alsa_ok = subprocess.run(["pkg-config", "--exists", "alsa"], env=env, check=False).returncode == 0
                 if self._ffmpeg_enabled() and not pulse_ok and not alsa_ok:
@@ -5595,9 +5794,9 @@ endif()
 
             qt_args: list[str] = [
                 "-prefix",
-                str(install_prefix),
+                self._cmake_path_arg(install_prefix),
                 "-extprefix",
-                str(install_prefix),
+                self._cmake_path_arg(install_prefix),
                 "-opensource",
                 "-confirm-license",
                 "-static",
@@ -5615,11 +5814,11 @@ endif()
                 "-system-harfbuzz",
                 "-system-libpng",
                 "-system-libjpeg",
-                "-system-tiff",
-                "-system-webp",
-                "-no-feature-gstreamer",
-                "-no-feature-pipewire",
             ]
+            if "qtimageformats" in qt_submodule_set:
+                qt_args.extend(["-system-tiff", "-system-webp"])
+            if "qtmultimedia" in qt_submodule_set:
+                qt_args.extend(["-no-feature-gstreamer", "-no-feature-pipewire"])
 
             if build_type == "Debug":
                 qt_args.append("-debug")
@@ -5630,7 +5829,8 @@ endif()
                 qt_args.extend(["-opengl", "desktop"])
 
             if self.platform.os == "linux":
-                qt_args.extend(["-qpa", "xcb;wayland", "-default-qpa", "xcb"])
+                linux_qpa = "xcb;wayland" if "qtwayland" in qt_submodule_set else "xcb"
+                qt_args.extend(["-qpa", linux_qpa, "-default-qpa", "xcb"])
                 qt_args.append("-no-gtk")
 
             if self.platform.os in {"linux", "windows"}:
@@ -5638,7 +5838,7 @@ endif()
             if self.platform.os == "windows":
                 qt_args.extend(["-static-runtime", "-no-schannel"])
 
-            if self._ffmpeg_enabled():
+            if "qtmultimedia" in qt_submodule_set and self._ffmpeg_enabled():
                 if self.platform.os == "linux":
                     if pulse_ok:
                         qt_args.append("-feature-ffmpeg")
@@ -5655,14 +5855,14 @@ endif()
             cmake_args: list[str] = [
                 f"-DCMAKE_BUILD_TYPE={build_type}",
                 "-DCMAKE_FIND_PACKAGE_TARGETS_GLOBAL=TRUE",
-                f"-DCMAKE_PREFIX_PATH={install_prefix}",
-                f"-DCMAKE_INCLUDE_PATH={install_prefix / 'include'}",
-                f"-DCMAKE_LIBRARY_PATH={install_prefix / 'lib'}",
+                f"-DCMAKE_PREFIX_PATH={self._cmake_path_arg(install_prefix)}",
+                f"-DCMAKE_INCLUDE_PATH={self._cmake_path_arg(install_prefix / 'include')}",
+                f"-DCMAKE_LIBRARY_PATH={self._cmake_path_arg(install_prefix / 'lib')}",
                 "-DPKG_CONFIG_USE_STATIC_LIBS=ON",
             ]
             freetype_dir = install_prefix / "lib" / "cmake" / "freetype"
             if freetype_dir.exists():
-                cmake_args.append(f"-DFreetype_DIR={freetype_dir}")
+                cmake_args.append(f"-DFreetype_DIR={self._cmake_path_arg(freetype_dir)}")
             if self.platform.os == "macos":
                 # Qt's Apple checks require xcodebuild; allow CLT-only setups by
                 # supplying a reasonable Xcode version override.
@@ -5762,20 +5962,32 @@ endif()
                     f"-DCMAKE_MODULE_LINKER_FLAGS_INIT={linker_flags}",
                 ]
 
-            if self.toolchain:
+            if self.toolchain and (self.platform.os != "windows" or self._windows_should_pin_cmake_compiler()):
                 if "cc" in self.toolchain:
-                    cmake_args.append(f"-DCMAKE_C_COMPILER={self.toolchain['cc']}")
+                    cmake_args.append(f"-DCMAKE_C_COMPILER={self._cmake_path_arg(self.toolchain['cc'])}")
                 if "cxx" in self.toolchain:
-                    cmake_args.append(f"-DCMAKE_CXX_COMPILER={self.toolchain['cxx']}")
+                    cmake_args.append(f"-DCMAKE_CXX_COMPILER={self._cmake_path_arg(self.toolchain['cxx'])}")
                 if "ld" in self.toolchain:
-                    cmake_args.append(f"-DCMAKE_LINKER={self.toolchain['ld']}")
+                    cmake_args.append(f"-DCMAKE_LINKER={self._cmake_path_arg(self.toolchain['ld'])}")
                 if "ar" in self.toolchain:
-                    cmake_args.append(f"-DCMAKE_AR={self.toolchain['ar']}")
+                    cmake_args.append(f"-DCMAKE_AR={self._cmake_path_arg(self.toolchain['ar'])}")
                 if "ranlib" in self.toolchain:
-                    cmake_args.append(f"-DCMAKE_RANLIB={self.toolchain['ranlib']}")
+                    cmake_args.append(f"-DCMAKE_RANLIB={self._cmake_path_arg(self.toolchain['ranlib'])}")
 
-            if self.platform.os != "windows" and self._ffmpeg_enabled():
+            if self.platform.os != "windows" and "qtmultimedia" in qt_submodule_set and self._ffmpeg_enabled():
                 cmake_args.append(f"-DFFMPEG_DIR={install_prefix}")
+            if self.platform.os == "linux" and self.config.global_cfg.use_libcxx:
+                # Distro ICU static archives are typically built against libstdc++.
+                # Static Qt + libc++ consumers would then fail to link on std::* symbols.
+                cmake_args.append("-DFEATURE_icu=OFF")
+            if "qttools" in qt_submodule_set:
+                cmake_args.extend(
+                    [
+                        "-DFEATURE_clang=OFF",
+                        "-DFEATURE_clangcpp=OFF",
+                        "-DFEATURE_qdoc=OFF",
+                    ]
+                )
 
             full_cmd: list[str] = []
             if self.platform.os == "windows":
@@ -6737,12 +6949,13 @@ endif()
 
         for repo_name in order:
             repo = repos_by_name[repo_name]
-            src_dir = self.repo_paths.get(repo.name, self._resolve_repo_dir(repo))
+            repo_root = self.repo_paths.get(repo.name, self._resolve_repo_dir(repo))
+            src_dir = repo_root
             if repo.source_subdir:
-                src_dir = src_dir / repo.source_subdir
-            if not src_dir.exists():
+                src_dir = repo_root / repo.source_subdir
+            if not repo_root.exists() or not src_dir.exists():
                 continue
-            self._prepare_repo_source(repo, src_dir)
+            self._prepare_repo_source(repo, repo_root)
 
         print("Repo prepare-only completed.")
         return 0

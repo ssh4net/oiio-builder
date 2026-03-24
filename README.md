@@ -241,7 +241,12 @@ uv run build.py --build-types Debug,Release
 
 ### Windows (Visual Studio + clang-cl or MSVC)
 ```bat
+:: Ninja + MSVC (set windows.generator = "ninja-msvc")
+:: Run from a Visual Studio Developer Prompt/PowerShell so cl.exe is on PATH.
+uv run build.py --build-types Debug,Release
+
 :: Ninja + clang-cl
+:: (set windows.generator = "ninja-clang-cl")
 uv run build.py --config build.toml --build-types Debug,Release
 
 :: Visual Studio solution + clang-cl
@@ -257,6 +262,7 @@ When `windows.build_ffmpeg = true`, the builder picks one of two modes:
 2. **Prebuilt mode** (fallback): if MSYS2 is not detected, install/copy an **MSVC-built static** FFmpeg into the same prefix used by this script (headers under `<prefix>/include`, libs under `<prefix>/lib`).
 
 Notes:
+- For `windows.generator = "ninja-msvc"`, the builder explicitly configures `cl` / `cl`.
 - For `windows.generator = "ninja-clang-cl"` / `msvc-clang-cl`, FFmpeg is configured with `clang-cl`.
 - Source-build mode requires `bash` and `make` in `PATH` (from MSYS2).
 
@@ -293,8 +299,44 @@ Enable Qt6 builds by setting `build_qt6 = true` (recommended: in `build.user.tom
 build_qt6 = true
 ```
 
-What it builds (static):
-- `qtbase`, `qtdeclarative` (includes Quick Controls in Qt6), `qtshadertools`, `qtmultimedia`, `qtimageformats`, `qtsvg` (+ `qtwayland` on Linux)
+Default Qt module set (static):
+- `qtbase`, `qttools`. This covers OpenImageIO `iv` and the Qt Designer app while avoiding the QML/Quick/Multimedia stack.
+
+If you only want the smallest OpenImageIO-only Qt build, override it locally:
+```toml
+[global]
+build_qt6 = true
+qt6_modules = ["qtbase"]
+```
+
+If you want the larger gpupad-oriented Qt stack, override it locally:
+```toml
+[global]
+build_qt6 = true
+qt6_modules = ["qtbase", "qttools", "qtdeclarative", "qtshadertools", "qtmultimedia"]
+```
+
+To request a broader Qt stack, set `qt6_modules` explicitly in `build.user.toml`:
+```toml
+[global]
+build_qt6 = true
+qt6_modules = [
+  "qtbase",
+  "qttools",
+  "qtdeclarative",
+  "qtshadertools",
+  "qtmultimedia",
+  "qtimageformats",
+  "qtsvg",
+  "qtwayland", # Linux only
+]
+```
+
+Notes:
+- `qttools` is part of the default set. The builder disables Qt's Clang-backed tooling features (`clangcpp`/`qdoc`) to avoid distro-specific `lupdate` link failures against system LLVM/Clang packages while still building Designer.
+- On Linux with `use_libcxx = true`, the builder also disables Qt ICU support. Distro ICU static archives are commonly built against `libstdc++`, which breaks static Qt consumers linked with `libc++`.
+- `qtwayland` is Linux-only and is not included unless explicitly listed.
+- System FreeType and system HarfBuzz are used for the default Qt build.
 
 Build only Qt6:
 ```bash
@@ -315,8 +357,9 @@ Example:
 vcpkg export openssl:x64-windows-static --zip --output=vcpkg-export-openssl
 ```
 
-Linux notes (XCB + Wayland)
-- Qt is configured to build both XCB and Wayland QPA backends (`-qpa xcb;wayland`), so you need the relevant system development packages and `wayland-scanner` in `PATH`.
+Linux notes
+- The default Qt build uses XCB (`-qpa xcb`).
+- If you include `qtwayland` in `qt6_modules`, the builder switches to `-qpa xcb;wayland` and requires the relevant Wayland development packages plus `wayland-scanner` in `PATH`.
 
 ### Adobe DNG SDK + XMP (optional)
 
@@ -351,18 +394,26 @@ NASM_EXECUTABLE = "C:\\Program Files\\NASM\\nasm.exe"
 - **uv cache permission issues**: set `UV_CACHE_DIR` to a writable directory (e.g. `UV_CACHE_DIR=/tmp/uv-cache`).
 - **nativefiledialog-extended (Linux) missing/broken GTK deps**: the builder configures `nativefiledialog-extended` with the GTK3 backend (`NFD_PORTAL=OFF`). On Ubuntu/Debian install with `sudo apt-get install pkg-config libgtk-3-dev`, then verify `pkg-config --modversion gtk+-3.0`. To use the portal backend instead, override `NFD_PORTAL=ON`.
 - **Linux link error `ld.lld: error: unable to find library -lvdpau`**: install `libvdpau-dev` (`sudo apt-get install libvdpau-dev`). This library is used by FFmpeg VDPAU hardware-acceleration support and may be pulled transitively when statically linking OpenImageIO with FFmpeg enabled.
+- **Linux link error `ld.lld: error: unable to find library -lsystemd`**: install `libsystemd-dev` (`sudo apt-get install libsystemd-dev`). This library is pulled in by static Qt6 DBus linkage when linking the OpenImageIO `iv` app.
+- **OpenImageIO/Qt6 link errors mentioning `std::condition_variable`, `std::__once_*`, or `std::__throw_system_error` from `libicuuc.a` / `libicui18n.a`**: rebuild Qt6 after this builder change so Qt is configured with `FEATURE_icu=OFF` for Linux `libc++` builds.
 - **Qt6 static link errors mentioning `Brotli*` symbols**: rebuild `brotli` (or re-run `Qt6`) so the prefix has an `unofficial-brotli` CMake package shim.
 - **OpenImageIO link errors mentioning `g_unicode_*` / `g_bytes_*` from `libharfbuzz.a`**: rebuild `harfbuzz` (and `freetype`) so HarfBuzz is built without GLib integration for static linking.
 - **Missing optional repos**: `yaml-cpp`, `pystring`, `expat`, `pugixml`, `libxml2` are skipped if not present. On Windows, `libiconv` is expected via `external/vcpkg-export-libiconv.zip`.
 - **OpenMP not found (macOS/Linux)**: set `OpenMP_ROOT` in `build.toml` or environment.
 - **NASM not detected on Windows**: set `windows.env.NASM_EXECUTABLE = "C:/Program Files/NASM/nasm.exe"` in `build.user.toml`. The builder also probes the default NASM installer path automatically.
+- **Windows Ninja build unexpectedly tries `clang-cl`**: with `windows.generator = "ninja-msvc"` the builder now pins `cl` explicitly. If preflight still reports `cc: missing (cl)`, launch the build from a Visual Studio Developer Prompt/PowerShell.
+- **Windows CMake try-compile fails with `rc` or `CMAKE_MT-NOTFOUND`**: install the Windows 10/11 SDK via the Visual Studio C++ workload. The builder now probes `rc.exe` and `mt.exe` and reports them in preflight.
 - **ASAN failures on Windows**: prefer clang-cl and ensure the MSVC AddressSanitizer component is installed.
 - **PyOpenColorIO / PyOpenEXR link errors on Windows**: set `windows.msvc_runtime = "dynamic"` and `windows.python_wrappers = "on"` for wrapper builds.
 - **Preflight only**: run `uv run build.py` (no args) to see tool/repo readiness without building.
 
 ## Notes
 
-- The builder uses stamps in `./developer/_build/.stamps` (by default) to skip rebuilds when
+- The builder uses stamps under the effective host build root (for example,
+  `./developer/_build/linux/.stamps` or `./developer/_build/windows/.stamps`) to skip rebuilds when
   no repo/toolchain/flag changes are detected.
+- Build trees are host-specific under the configured `build_root`. For example, a base `developer/_build`
+  becomes `developer/_build/linux` under WSL/Linux and `developer/_build/windows` under native Windows.
+  This avoids CMake cache, log, and stamp collisions when the same checkout is used from both hosts.
 - Uncommitted working tree changes are not detected yet (use `--force` if needed).
 - Optional repos (e.g., `yaml-cpp`, `pystring`, `pugixml`, `expat`) are skipped if missing.
