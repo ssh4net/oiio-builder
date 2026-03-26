@@ -134,7 +134,10 @@ no_update = true
 # clangcl_extra_flags_append = "-mavx2 -mbmi -mbmi2 -mlzcnt"
 # Prefixes are configured globally via [global].install_prefix / [global].asan_prefix.
 # debug_postfix = "d"
-build_ffmpeg = false  # default OFF on Windows; when ON, MSYS2 shells source-build FFmpeg, otherwise prebuilt FFmpeg is expected
+build_ffmpeg = false  # default OFF on Windows; when ON, MSYS2 shells source-build FFmpeg, otherwise prebuilt FFmpeg in the prefix is expected
+# use_ffmpeg_from_prefix: when build_ffmpeg=false on standard Windows, let consumers
+# like OpenImageIO auto-use FFmpeg already installed in install_prefix (default: true)
+# use_ffmpeg_from_prefix = true
 # msvc_runtime: static|dynamic (default: static => /MT, /MTd)
 # msvc_runtime = "static"
 # python_wrappers: auto|on|off (default: auto)
@@ -151,10 +154,12 @@ build_ffmpeg = false  # default OFF on Windows; when ON, MSYS2 shells source-bui
 # OpenMP (libomp) for clang-cl builds (e.g. when libraw_enable_openmp="ON"):
 # OpenMP_ROOT = "C:/LLVM"
 # FFmpeg on Windows:
-# - The builder does not build FFmpeg natively on Windows.
-# - Install/copy an MSVC-built static FFmpeg into the same prefix used by this script
-#   (the global `install_prefix`), so headers are under `<prefix>/include`
-#   and libs are under `<prefix>/lib`.
+# - `windows.build_ffmpeg=true` + MSYS2 shell => source-build FFmpeg.
+# - Otherwise, install/copy an MSVC-built static FFmpeg into the same prefix used
+#   by this script (the global `install_prefix`), so headers are under
+#   `<prefix>/include` and libs are under `<prefix>/lib`.
+# - With `windows.use_ffmpeg_from_prefix=true` (default), OpenImageIO will
+#   auto-use FFmpeg from that prefix even when `windows.build_ffmpeg=false`.
 # Optional explicit overrides (should still point inside the same `<prefix>`):
 # FFMPEG_LIBAVCODEC = "<prefix>/lib/avcodecd.lib"
 # FFMPEG_LIBAVFORMAT = "<prefix>/lib/avformatd.lib"

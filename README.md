@@ -124,6 +124,7 @@ Key options:
 - `windows.generator`: choose one of `msvc`, `ninja-msvc`, `msvc-clang-cl`, `ninja-clang-cl`.
 - `windows.vs_generator`: optional CMake generator name override for `windows.generator=msvc`/`msvc-clang-cl` (e.g. `Visual Studio 18 2026` with CMake 4.2+).
 - `windows.build_ffmpeg`: defaults to `false`; when `true`, Windows builds use prebuilt FFmpeg by default, or native FFmpeg source build when run from MSYS2 (see below).
+- `windows.use_ffmpeg_from_prefix`: defaults to `true`; on standard Windows builds, OpenImageIO auto-uses FFmpeg already installed in the active prefix even when `windows.build_ffmpeg = false`.
 - `windows.msvc_runtime`: `static` (default, `/MT`/`/MTd`) or `dynamic` (`/MD`/`/MDd`).
 - `windows.python_wrappers`: `auto` (default), `on`, `off` for OpenColorIO/OpenEXR Python bindings.
   `auto` enables wrappers only when `windows.msvc_runtime=dynamic`.
@@ -298,13 +299,15 @@ FFmpeg (Windows mode):
 ```
 
 ### Windows: FFmpeg
-By default, `windows.build_ffmpeg = false` to keep OpenImageIO builds self-contained.
+By default, `windows.build_ffmpeg = false`, but `windows.use_ffmpeg_from_prefix = true`.
+That means standard Windows builds skip the FFmpeg repo step and let OpenImageIO use an MSVC-built static FFmpeg already installed in the active prefix.
 
 When `windows.build_ffmpeg = true`, the builder picks one of two modes:
 1. **MSYS2 source-build mode** (auto): if `MSYSTEM`/MSYS2 is detected, FFmpeg is built from source via `bash + make` with `--toolchain=msvc`.
 2. **Prebuilt mode** (fallback): if MSYS2 is not detected, install/copy an **MSVC-built static** FFmpeg into the same prefix used by this script (headers under `<prefix>/include`, libs under `<prefix>/lib`).
 
 Notes:
+- With `windows.build_ffmpeg = false`, only the prefix probe is used; the FFmpeg repo is not built.
 - For `windows.generator = "ninja-msvc"`, the builder explicitly configures `cl` / `cl`.
 - For `windows.generator = "ninja-clang-cl"` / `msvc-clang-cl`, FFmpeg is configured with `clang-cl`.
 - Source-build mode requires `bash` and `make` in `PATH` (from MSYS2).

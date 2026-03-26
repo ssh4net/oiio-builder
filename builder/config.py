@@ -287,6 +287,7 @@ def load_config(path: Path) -> Config:
             "vs_generator",
             "debug_postfix",
             "build_ffmpeg",
+            "use_ffmpeg_from_prefix",
             "msvc_runtime",
             "python_wrappers",
             "cpython_fetch_externals",

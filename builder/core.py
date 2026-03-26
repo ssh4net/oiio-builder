@@ -1351,6 +1351,21 @@ class Builder:
             return bool(override)
         return enabled
 
+    def _windows_use_ffmpeg_from_prefix(self) -> bool:
+        if self.platform.os != "windows":
+            return False
+        raw = self.config.global_cfg.windows.get("use_ffmpeg_from_prefix")
+        if raw is None:
+            return True
+        if isinstance(raw, bool):
+            return raw
+        value = str(raw).strip().lower()
+        if value in {"0", "false", "off", "no"}:
+            return False
+        if value in {"1", "true", "on", "yes"}:
+            return True
+        return True
+
     def _windows_python_wrappers_mode(self) -> str:
         mode = str(self.config.global_cfg.windows.get("python_wrappers", "auto")).strip().lower()
         if mode in {"on", "off", "auto"}:
@@ -1927,9 +1942,257 @@ class Builder:
 
         return args
 
+    def _oiio_ffmpeg_args(
+        self,
+        ctx: BuildContext,
+        *,
+        include_repo_roots: bool,
+        emit_missing_note: bool,
+    ) -> tuple[list[str], bool]:
+        cfg = self.config.global_cfg
+        args: list[str] = []
+        prefix_root = ctx.install_prefix.resolve()
+
+        def _normalize_ffmpeg_override(value: str | None) -> str | None:
+            if value is None:
+                return None
+            text = str(value).strip()
+            return text or None
+
+        def _ffmpeg_override(name: str) -> str | None:
+            if self.platform.os == "windows":
+                return _normalize_ffmpeg_override(cfg.windows_env.get(name) or cfg.env.get(name) or os.environ.get(name))
+            return _normalize_ffmpeg_override(cfg.env.get(name) or os.environ.get(name))
+
+        def _expand_override_path(value: str) -> Path:
+            expanded = Path(os.path.expandvars(value)).expanduser()
+            if expanded.is_absolute():
+                return expanded.resolve()
+            return (cfg.repo_root / expanded).resolve()
+
+        def _is_within_prefix(path: Path) -> bool:
+            try:
+                path.resolve().relative_to(prefix_root)
+                return True
+            except ValueError:
+                return False
+
+        ffmpeg_roots: list[Path] = []
+        ffmpeg_root_overrides: list[Path] = []
+        for key in ("FFmpeg_ROOT", "FFMPEG_ROOT"):
+            value = _ffmpeg_override(key)
+            if not value:
+                continue
+            expanded = _expand_override_path(value)
+            ffmpeg_root_overrides.append(expanded)
+            ffmpeg_roots.append(expanded)
+
+        if self.platform.os == "windows":
+            if ffmpeg_root_overrides:
+                for root in ffmpeg_root_overrides:
+                    if not _is_within_prefix(root):
+                        print(f"[note] ignoring FFmpeg_ROOT outside install prefix: {root}", flush=True)
+            ffmpeg_roots = [prefix_root]
+        elif not ffmpeg_root_overrides and include_repo_roots:
+            repo_ffmpeg_root = self.repo_paths.get("ffmpeg")
+            if repo_ffmpeg_root is None:
+                ffmpeg_repo = next((repo for repo in self.config.repos if repo.name == "ffmpeg"), None)
+                if ffmpeg_repo is not None:
+                    repo_ffmpeg_root = self._resolve_repo_dir(ffmpeg_repo)
+            if repo_ffmpeg_root is not None and repo_ffmpeg_root.exists():
+                ffmpeg_roots.append(repo_ffmpeg_root)
+
+            for candidate_name in ("ffmpeg", "FFmpeg", "FFMPEG"):
+                source_ffmpeg_root = cfg.src_root / candidate_name
+                if source_ffmpeg_root.exists():
+                    ffmpeg_roots.append(source_ffmpeg_root)
+
+        ffmpeg_roots.append(ctx.install_prefix)
+
+        deduped_roots: list[Path] = []
+        seen_roots: set[str] = set()
+        for root in ffmpeg_roots:
+            normalized = os.path.normcase(os.path.normpath(str(root)))
+            if normalized in seen_roots:
+                continue
+            seen_roots.add(normalized)
+            if root.exists():
+                deduped_roots.append(root)
+        ffmpeg_roots = deduped_roots
+
+        ffmpeg_include_override = _ffmpeg_override("FFMPEG_AVCODEC_INCLUDE_DIR") or _ffmpeg_override("FFMPEG_INCLUDE_DIR")
+        if ffmpeg_include_override:
+            candidate = _expand_override_path(ffmpeg_include_override)
+            if not _is_within_prefix(candidate):
+                print(f"[note] ignoring FFmpeg include override outside install prefix: {candidate}", flush=True)
+                ffmpeg_include = None
+            else:
+                ffmpeg_include = candidate
+        else:
+            ffmpeg_include = None
+            for root in ffmpeg_roots:
+                for candidate in (root / "include", root / "include" / "ffmpeg", root):
+                    if (
+                        (candidate / "libavcodec" / "version.h").exists()
+                        or (candidate / "libavcodec" / "version_major.h").exists()
+                        or (candidate / "libavcodec" / "avcodec.h").exists()
+                    ):
+                        ffmpeg_include = candidate
+                        break
+                if ffmpeg_include is not None:
+                    break
+        if ffmpeg_include is not None:
+            args.append(f"-DFFMPEG_AVCODEC_INCLUDE_DIR={ffmpeg_include.as_posix()}")
+            args.append(f"-DFFMPEG_INCLUDE_DIR={ffmpeg_include.as_posix()}")
+
+        ffmpeg_lib_dirs: list[Path] = []
+        for root in ffmpeg_roots:
+            ffmpeg_lib_dirs.extend(
+                [
+                    root / "lib",
+                    root / "lib64",
+                    root / "libavcodec",
+                    root / "libavformat",
+                    root / "libavutil",
+                    root / "libswscale",
+                ]
+            )
+        deduped_lib_dirs: list[Path] = []
+        seen_lib_dirs: set[str] = set()
+        for directory in ffmpeg_lib_dirs:
+            normalized = os.path.normcase(os.path.normpath(str(directory)))
+            if normalized in seen_lib_dirs:
+                continue
+            seen_lib_dirs.add(normalized)
+            if directory.exists():
+                deduped_lib_dirs.append(directory)
+        ffmpeg_lib_dirs = deduped_lib_dirs
+
+        def _pick_ffmpeg_lib(stem: str) -> Path | None:
+            if self.platform.os == "windows":
+                debug_postfix = str(cfg.windows.get("debug_postfix", "d"))
+                if ctx.build_type == "Debug":
+                    candidate_names = [
+                        f"{stem}{debug_postfix}.lib",
+                        f"lib{stem}{debug_postfix}.lib",
+                        f"{stem}.lib",
+                        f"lib{stem}.lib",
+                    ]
+                else:
+                    candidate_names = [
+                        f"{stem}.lib",
+                        f"lib{stem}.lib",
+                        f"{stem}{debug_postfix}.lib",
+                        f"lib{stem}{debug_postfix}.lib",
+                    ]
+            else:
+                candidate_names = [f"lib{stem}.a", f"lib{stem}.so", f"lib{stem}.dylib"]
+
+            for directory in ffmpeg_lib_dirs:
+                for name in candidate_names:
+                    candidate = directory / name
+                    if candidate.exists():
+                        return candidate
+
+            for directory in ffmpeg_lib_dirs:
+                if self.platform.os == "windows":
+                    patterns = [f"{stem}*.lib", f"lib{stem}*.lib"]
+                else:
+                    patterns = [f"lib{stem}.*"]
+                for pattern in patterns:
+                    matches = sorted(directory.glob(pattern))
+                    if matches:
+                        return matches[0]
+            return None
+
+        ffmpeg_codec_override = _ffmpeg_override("FFMPEG_LIBAVCODEC")
+        ffmpeg_format_override = _ffmpeg_override("FFMPEG_LIBAVFORMAT")
+        ffmpeg_util_override = _ffmpeg_override("FFMPEG_LIBAVUTIL")
+        ffmpeg_swscale_override = _ffmpeg_override("FFMPEG_LIBSWSCALE")
+
+        def _maybe_override_lib(value: str | None) -> Path | None:
+            if not value:
+                return None
+            candidate = _expand_override_path(value)
+            if not _is_within_prefix(candidate):
+                print(f"[note] ignoring FFmpeg lib override outside install prefix: {candidate}", flush=True)
+                return None
+            return candidate
+
+        ffmpeg_codec = _maybe_override_lib(ffmpeg_codec_override) or _pick_ffmpeg_lib("avcodec")
+        ffmpeg_format = _maybe_override_lib(ffmpeg_format_override) or _pick_ffmpeg_lib("avformat")
+        ffmpeg_util = _maybe_override_lib(ffmpeg_util_override) or _pick_ffmpeg_lib("avutil")
+        ffmpeg_swscale = _maybe_override_lib(ffmpeg_swscale_override) or _pick_ffmpeg_lib("swscale")
+
+        ffmpeg_root_hint: Path | None = None
+        if self.platform.os == "windows":
+            ffmpeg_root_hint = prefix_root
+        else:
+            ffmpeg_root_hint = ffmpeg_root_overrides[0] if ffmpeg_root_overrides else None
+        if ffmpeg_root_hint is None:
+            for chosen in (ffmpeg_codec, ffmpeg_format, ffmpeg_util, ffmpeg_swscale):
+                if chosen is None:
+                    continue
+                parent = chosen.parent
+                parent_name = parent.name.lower()
+                if parent_name in {"lib", "lib64", "libavcodec", "libavformat", "libavutil", "libswscale", "libswresample"}:
+                    ffmpeg_root_hint = parent.parent
+                else:
+                    ffmpeg_root_hint = parent
+                break
+        if ffmpeg_root_hint is None and ffmpeg_roots:
+            ffmpeg_root_hint = ffmpeg_roots[0]
+        if ffmpeg_root_hint is None:
+            ffmpeg_root_hint = ctx.install_prefix
+        args.append(f"-DFFmpeg_ROOT={ffmpeg_root_hint.as_posix()}")
+        args.append(f"-DFFMPEG_ROOT={ffmpeg_root_hint.as_posix()}")
+        if ffmpeg_codec is not None:
+            args.append(f"-DFFMPEG_LIBAVCODEC={ffmpeg_codec.as_posix()}")
+        if ffmpeg_format is not None:
+            args.append(f"-DFFMPEG_LIBAVFORMAT={ffmpeg_format.as_posix()}")
+        if ffmpeg_util is not None:
+            args.append(f"-DFFMPEG_LIBAVUTIL={ffmpeg_util.as_posix()}")
+        if ffmpeg_swscale is not None:
+            args.append(f"-DFFMPEG_LIBSWSCALE={ffmpeg_swscale.as_posix()}")
+
+        complete = (
+            ffmpeg_include is not None
+            and ffmpeg_codec is not None
+            and ffmpeg_format is not None
+            and ffmpeg_util is not None
+            and ffmpeg_swscale is not None
+        )
+        if self.platform.os == "windows" and emit_missing_note and not complete:
+            missing_libs: list[str] = []
+            if ffmpeg_codec is None:
+                missing_libs.append("avcodec")
+            if ffmpeg_format is None:
+                missing_libs.append("avformat")
+            if ffmpeg_util is None:
+                missing_libs.append("avutil")
+            if ffmpeg_swscale is None:
+                missing_libs.append("swscale")
+            searched = ", ".join(str(d) for d in ffmpeg_lib_dirs) if ffmpeg_lib_dirs else "<none>"
+            message = "[note] FFmpeg files missing"
+            if missing_libs:
+                message += " for " + ", ".join(missing_libs)
+            if ffmpeg_include is None:
+                message += " (headers not found)"
+            message += (
+                f"; searched: {searched}. Install MSVC-built static FFmpeg into the build prefix ({ctx.install_prefix}), "
+                "or define FFMPEG_LIBAV* overrides that point inside it."
+            )
+            print(message, flush=True)
+
+        return args, complete
+
     def _oiio_cache_args(self, ctx: BuildContext) -> list[str]:
         cfg = self.config.global_cfg
-        ffmpeg_enabled = self._ffmpeg_enabled()
+        ffmpeg_requested = self._ffmpeg_enabled()
+        ffmpeg_auto_from_prefix = (
+            self.platform.os == "windows" and not ffmpeg_requested and self._windows_use_ffmpeg_from_prefix()
+        )
+        ffmpeg_enabled = ffmpeg_requested
         args: list[str] = []
         self._ensure_bzip2_alias(ctx.install_prefix, ctx.build_type)
         self._ensure_ppmd_package(ctx.install_prefix, ctx.build_type)
@@ -1977,12 +2240,6 @@ class Builder:
         for key, value in defaults.items():
             values.setdefault(key, value)
 
-        if ffmpeg_enabled:
-            values.setdefault("USE_FFMPEG", "ON")
-
-        # Enable ffmpeg plugins whenever the feature is enabled in config.
-        values["USE_FFMPEG"] = "ON" if ffmpeg_enabled else "OFF"
-
         # Python is mandatory for OIIO in this setup.
         values["USE_PYTHON"] = "ON"
 
@@ -2012,9 +2269,6 @@ class Builder:
         if cfg.build_qt6:
             required.insert(0, "Qt6")
             required.insert(1, "OpenGL")
-        if ffmpeg_enabled:
-            required.insert(0, "FFmpeg")
-        args.append(f"-DOpenImageIO_REQUIRED_DEPS={';'.join(required)}")
 
         # Keep dependency discovery deterministic by hinting the shared prefix.
         root_vars = (
@@ -2257,241 +2511,21 @@ class Builder:
             args.append(f"-DLIBHEIF_INCLUDE_DIR={include_dir_posix}")
             args.append(f"-DLIBHEIF_LIBRARY={heif_library.as_posix()}")
 
+        ffmpeg_probe = ffmpeg_requested or ffmpeg_auto_from_prefix
+        if ffmpeg_probe:
+            ffmpeg_args, ffmpeg_complete = self._oiio_ffmpeg_args(
+                ctx,
+                include_repo_roots=not ffmpeg_auto_from_prefix,
+                emit_missing_note=ffmpeg_requested,
+            )
+            if ffmpeg_requested or ffmpeg_complete:
+                ffmpeg_enabled = True
+                values.setdefault("USE_FFMPEG", "ON")
+                args.extend(ffmpeg_args)
+        values["USE_FFMPEG"] = "ON" if ffmpeg_enabled else "OFF"
         if ffmpeg_enabled:
-            def _normalize_ffmpeg_override(value: str | None) -> str | None:
-                if value is None:
-                    return None
-                trimmed = value.strip()
-                if len(trimmed) >= 2 and trimmed[0] == trimmed[-1] and trimmed[0] in {"\"", "'"}:
-                    trimmed = trimmed[1:-1].strip()
-                return trimmed or None
-
-            def _ffmpeg_override(name: str) -> str | None:
-                if self.platform.os == "windows":
-                    return _normalize_ffmpeg_override(cfg.windows_env.get(name) or cfg.env.get(name) or os.environ.get(name))
-                return _normalize_ffmpeg_override(cfg.env.get(name) or os.environ.get(name))
-
-            def _expand_override_path(value: str) -> Path:
-                expanded = Path(os.path.expandvars(value)).expanduser()
-                if not expanded.is_absolute():
-                    expanded = (cfg.repo_root / expanded).resolve()
-                return expanded
-
-            prefix_root = ctx.install_prefix.resolve()
-            prefix_norm = os.path.normcase(os.path.normpath(str(prefix_root)))
-
-            def _is_within_prefix(candidate: Path) -> bool:
-                if self.platform.os != "windows":
-                    return True
-                cand_str = str(candidate)
-                try:
-                    cand_str = str(candidate.resolve())
-                except OSError:
-                    pass
-                cand_norm = os.path.normcase(os.path.normpath(cand_str))
-                try:
-                    common = os.path.commonpath([cand_norm, prefix_norm])
-                except ValueError:
-                    return False
-                return common == prefix_norm
-
-            ffmpeg_roots: list[Path] = []
-            ffmpeg_root_overrides: list[Path] = []
-            for key in ("FFmpeg_ROOT", "FFMPEG_ROOT"):
-                value = _ffmpeg_override(key)
-                if not value:
-                    continue
-                expanded = _expand_override_path(value)
-                ffmpeg_root_overrides.append(expanded)
-                ffmpeg_roots.append(expanded)
-
-            if self.platform.os == "windows":
-                # Enforce using the build prefix only. Prebuilt FFmpeg must be installed into the same
-                # prefix as other deps (CMAKE_INSTALL_PREFIX/CMAKE_PREFIX_PATH).
-                if ffmpeg_root_overrides:
-                    for root in ffmpeg_root_overrides:
-                        if os.path.normcase(os.path.normpath(str(root))) != prefix_norm:
-                            print(f"[note] ignoring FFmpeg_ROOT outside install prefix: {root}", flush=True)
-                ffmpeg_roots = [prefix_root]
-            elif not ffmpeg_root_overrides:
-                repo_ffmpeg_root = self.repo_paths.get("ffmpeg")
-                if repo_ffmpeg_root is None:
-                    ffmpeg_repo = next((repo for repo in self.config.repos if repo.name == "ffmpeg"), None)
-                    if ffmpeg_repo is not None:
-                        repo_ffmpeg_root = self._resolve_repo_dir(ffmpeg_repo)
-                if repo_ffmpeg_root is not None and repo_ffmpeg_root.exists():
-                    ffmpeg_roots.append(repo_ffmpeg_root)
-
-                for candidate_name in ("ffmpeg", "FFmpeg", "FFMPEG"):
-                    source_ffmpeg_root = cfg.src_root / candidate_name
-                    if source_ffmpeg_root.exists():
-                        ffmpeg_roots.append(source_ffmpeg_root)
-
-            ffmpeg_roots.append(ctx.install_prefix)
-
-            deduped_roots: list[Path] = []
-            seen_roots: set[str] = set()
-            for root in ffmpeg_roots:
-                normalized = os.path.normcase(os.path.normpath(str(root)))
-                if normalized in seen_roots:
-                    continue
-                seen_roots.add(normalized)
-                deduped_roots.append(root)
-            ffmpeg_roots = deduped_roots
-
-            ffmpeg_include_override = _ffmpeg_override("FFMPEG_AVCODEC_INCLUDE_DIR") or _ffmpeg_override("FFMPEG_INCLUDE_DIR")
-            if ffmpeg_include_override:
-                candidate = _expand_override_path(ffmpeg_include_override)
-                if not _is_within_prefix(candidate):
-                    print(f"[note] ignoring FFmpeg include override outside install prefix: {candidate}", flush=True)
-                    ffmpeg_include = None
-                else:
-                    ffmpeg_include = candidate
-            else:
-                ffmpeg_include = None
-                for root in ffmpeg_roots:
-                    for candidate in (root / "include", root / "include" / "ffmpeg", root):
-                        if (
-                            (candidate / "libavcodec" / "version.h").exists()
-                            or (candidate / "libavcodec" / "version_major.h").exists()
-                            or (candidate / "libavcodec" / "avcodec.h").exists()
-                        ):
-                            ffmpeg_include = candidate
-                            break
-                    if ffmpeg_include is not None:
-                        break
-            if ffmpeg_include is not None:
-                args.append(f"-DFFMPEG_AVCODEC_INCLUDE_DIR={ffmpeg_include.as_posix()}")
-                args.append(f"-DFFMPEG_INCLUDE_DIR={ffmpeg_include.as_posix()}")
-
-            ffmpeg_lib_dirs: list[Path] = []
-            for root in ffmpeg_roots:
-                ffmpeg_lib_dirs.extend(
-                    [
-                        root / "lib",
-                        root / "lib64",
-                        root / "libavcodec",
-                        root / "libavformat",
-                        root / "libavutil",
-                        root / "libswscale",
-                    ]
-                )
-            deduped_lib_dirs: list[Path] = []
-            seen_lib_dirs: set[str] = set()
-            for directory in ffmpeg_lib_dirs:
-                normalized = os.path.normcase(os.path.normpath(str(directory)))
-                if normalized in seen_lib_dirs:
-                    continue
-                seen_lib_dirs.add(normalized)
-                if directory.exists():
-                    deduped_lib_dirs.append(directory)
-            ffmpeg_lib_dirs = deduped_lib_dirs
-
-            def _pick_ffmpeg_lib(stem: str) -> Path | None:
-                if self.platform.os == "windows":
-                    debug_postfix = str(cfg.windows.get("debug_postfix", "d"))
-                    if ctx.build_type == "Debug":
-                        candidate_names = [
-                            f"{stem}{debug_postfix}.lib",
-                            f"lib{stem}{debug_postfix}.lib",
-                            f"{stem}.lib",
-                            f"lib{stem}.lib",
-                        ]
-                    else:
-                        candidate_names = [
-                            f"{stem}.lib",
-                            f"lib{stem}.lib",
-                            f"{stem}{debug_postfix}.lib",
-                            f"lib{stem}{debug_postfix}.lib",
-                        ]
-                else:
-                    candidate_names = [f"lib{stem}.a", f"lib{stem}.so", f"lib{stem}.dylib"]
-
-                for directory in ffmpeg_lib_dirs:
-                    for name in candidate_names:
-                        candidate = directory / name
-                        if candidate.exists():
-                            return candidate
-
-                for directory in ffmpeg_lib_dirs:
-                    if self.platform.os == "windows":
-                        patterns = [f"{stem}*.lib", f"lib{stem}*.lib"]
-                    else:
-                        patterns = [f"lib{stem}.*"]
-                    for pattern in patterns:
-                        matches = sorted(directory.glob(pattern))
-                        if matches:
-                            return matches[0]
-                return None
-
-            ffmpeg_codec_override = _ffmpeg_override("FFMPEG_LIBAVCODEC")
-            ffmpeg_format_override = _ffmpeg_override("FFMPEG_LIBAVFORMAT")
-            ffmpeg_util_override = _ffmpeg_override("FFMPEG_LIBAVUTIL")
-            ffmpeg_swscale_override = _ffmpeg_override("FFMPEG_LIBSWSCALE")
-
-            def _maybe_override_lib(value: str | None) -> Path | None:
-                if not value:
-                    return None
-                candidate = _expand_override_path(value)
-                if not _is_within_prefix(candidate):
-                    print(f"[note] ignoring FFmpeg lib override outside install prefix: {candidate}", flush=True)
-                    return None
-                return candidate
-
-            ffmpeg_codec = _maybe_override_lib(ffmpeg_codec_override) or _pick_ffmpeg_lib("avcodec")
-            ffmpeg_format = _maybe_override_lib(ffmpeg_format_override) or _pick_ffmpeg_lib("avformat")
-            ffmpeg_util = _maybe_override_lib(ffmpeg_util_override) or _pick_ffmpeg_lib("avutil")
-            ffmpeg_swscale = _maybe_override_lib(ffmpeg_swscale_override) or _pick_ffmpeg_lib("swscale")
-
-            ffmpeg_root_hint: Path | None = None
-            if self.platform.os == "windows":
-                ffmpeg_root_hint = prefix_root
-            else:
-                ffmpeg_root_hint = ffmpeg_root_overrides[0] if ffmpeg_root_overrides else None
-            if ffmpeg_root_hint is None:
-                for chosen in (ffmpeg_codec, ffmpeg_format, ffmpeg_util, ffmpeg_swscale):
-                    if chosen is None:
-                        continue
-                    parent = chosen.parent
-                    parent_name = parent.name.lower()
-                    if parent_name in {"lib", "lib64", "libavcodec", "libavformat", "libavutil", "libswscale", "libswresample"}:
-                        ffmpeg_root_hint = parent.parent
-                    else:
-                        ffmpeg_root_hint = parent
-                    break
-            if ffmpeg_root_hint is None and ffmpeg_roots:
-                ffmpeg_root_hint = ffmpeg_roots[0]
-            if ffmpeg_root_hint is None:
-                ffmpeg_root_hint = ctx.install_prefix
-            args.append(f"-DFFmpeg_ROOT={ffmpeg_root_hint.as_posix()}")
-            args.append(f"-DFFMPEG_ROOT={ffmpeg_root_hint.as_posix()}")
-            if ffmpeg_codec is not None:
-                args.append(f"-DFFMPEG_LIBAVCODEC={ffmpeg_codec.as_posix()}")
-            if ffmpeg_format is not None:
-                args.append(f"-DFFMPEG_LIBAVFORMAT={ffmpeg_format.as_posix()}")
-            if ffmpeg_util is not None:
-                args.append(f"-DFFMPEG_LIBAVUTIL={ffmpeg_util.as_posix()}")
-            if ffmpeg_swscale is not None:
-                args.append(f"-DFFMPEG_LIBSWSCALE={ffmpeg_swscale.as_posix()}")
-            if self.platform.os == "windows":
-                missing_libs: list[str] = []
-                if ffmpeg_codec is None:
-                    missing_libs.append("avcodec")
-                if ffmpeg_format is None:
-                    missing_libs.append("avformat")
-                if ffmpeg_util is None:
-                    missing_libs.append("avutil")
-                if ffmpeg_swscale is None:
-                    missing_libs.append("swscale")
-                if missing_libs:
-                    searched = ", ".join(str(d) for d in ffmpeg_lib_dirs) if ffmpeg_lib_dirs else "<none>"
-                    print(
-                        "[note] FFmpeg .lib files missing for "
-                        + ", ".join(missing_libs)
-                        + f"; searched: {searched}. Install MSVC-built static FFmpeg into the build prefix "
-                        f"({ctx.install_prefix}), or define FFMPEG_LIBAV* overrides that point inside it.",
-                        flush=True,
-                    )
+            required.insert(0, "FFmpeg")
+        args.append(f"-DOpenImageIO_REQUIRED_DEPS={';'.join(required)}")
 
         # Ensure static dependency linking is propagated for static builds.
         args.append(f"-DCMAKE_PROJECT_TOP_LEVEL_INCLUDES={self._oiio_linkstatic_include(ctx)}")

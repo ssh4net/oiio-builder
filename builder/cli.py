@@ -107,6 +107,7 @@ def main() -> int:
     if args.no_ffmpeg:
         config.global_cfg.build_ffmpeg = False
         config.global_cfg.windows["build_ffmpeg"] = False
+        config.global_cfg.windows["use_ffmpeg_from_prefix"] = False
 
     if args.only:
         config.only = {name.strip() for name in args.only.split(",") if name.strip()}
