@@ -89,9 +89,9 @@ build_ffmpeg = true
 build_oiio = true
 build_qt6 = false
 # Default Qt stack for OIIO iv + Designer:
-# qt6_modules = ["qtbase", "qttools"]
+# qt6_modules = ["qtbase", "qttools", "qtsvg"]
 # Example expanded stack:
-# qt6_modules = ["qtbase", "qttools", "qtdeclarative", "qtshadertools", "qtmultimedia", "qtimageformats", "qtsvg", "qtwayland"]
+qt6_modules = ["qtbase", "qttools", "qtdeclarative", "qtshadertools", "qtmultimedia", "qtimageformats", "qtsvg", "qtwayland"]
 build_dng_sdk = false
 openimageio_patch_png_include = true
 # CPython source override:

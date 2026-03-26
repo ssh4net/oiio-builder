@@ -210,6 +210,8 @@ class Builder:
         self._user_overrides_path = self.config.global_cfg.repo_root / "build.user.toml"
         self._repo_cmake_user_overrides = load_user_overrides(self._user_overrides_path)
         self._validate_user_overrides()
+        self._windows_msvc_env_cache: dict[str, str] | None = None
+        self._windows_msvc_env_loaded = False
 
         self.parallel_build_types = parallel_build_types
         if self.parallel_build_types and self.platform.os == "windows":
@@ -232,6 +234,55 @@ class Builder:
         if self.platform.os == "windows":
             return text.replace("\\", "/")
         return text
+
+    def _windows_path_to_msys(self, value: str | Path) -> str:
+        text = str(value).strip().strip("\"'")
+        if not text:
+            return text
+        if re.match(r"^[A-Za-z]:[\\/]", text):
+            drive = text[0].lower()
+            rest = text[2:].replace("\\", "/")
+            if not rest.startswith("/"):
+                rest = f"/{rest}"
+            return f"/{drive}{rest}"
+        return text.replace("\\", "/")
+
+    def _windows_split_env_path_list(self, value: str) -> list[str]:
+        text = value.strip()
+        if not text:
+            return []
+        if ";" in text:
+            return [part.strip() for part in text.split(";") if part.strip()]
+        return [part.strip() for part in text.split(":") if part.strip()]
+
+    def _adapt_windows_env_for_msys(self, env: dict[str, str]) -> None:
+        if self.platform.os != "windows" or not self._windows_msys2_detected():
+            return
+
+        env["MSYS2_PATH_TYPE"] = "inherit"
+
+        def _merge_path_lists(*raw_values: str | None) -> str:
+            merged: list[str] = []
+            seen: set[str] = set()
+            for raw in raw_values:
+                if not raw:
+                    continue
+                for part in self._windows_split_env_path_list(raw):
+                    converted = self._windows_path_to_msys(part)
+                    key = converted.rstrip("/").lower()
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    merged.append(converted)
+            return ":".join(merged)
+
+        merged_path = _merge_path_lists(os.environ.get("PATH"), env.get("PATH"))
+        if merged_path:
+            env["PATH"] = merged_path
+
+        merged_pkg = _merge_path_lists(os.environ.get("PKG_CONFIG_PATH"), env.get("PKG_CONFIG_PATH"))
+        if merged_pkg:
+            env["PKG_CONFIG_PATH"] = merged_pkg
 
     def _repo_log_path(self, repo_name: str, build_type: str, step: str) -> Path:
         safe_step = re.sub(r"[^A-Za-z0-9._-]+", "_", step).strip("._")
@@ -739,6 +790,77 @@ class Builder:
 
         return str(candidates[0]) if candidates else None
 
+    def _resolve_windows_vcvarsall(self, env: dict[str, str] | None = None) -> Path | None:
+        if self.platform.os != "windows":
+            return None
+
+        resolved_env = env or self._effective_host_env()
+        candidates: list[Path] = []
+
+        def _append(path: Path | None) -> None:
+            if path is None:
+                return
+            candidate = path / "Auxiliary" / "Build" / "vcvarsall.bat"
+            if candidate.exists():
+                candidates.append(candidate)
+
+        vc_install = resolved_env.get("VCINSTALLDIR")
+        if vc_install:
+            _append(Path(vc_install))
+
+        vs_install = resolved_env.get("VSINSTALLDIR")
+        if vs_install:
+            _append(Path(vs_install) / "VC")
+
+        compiler_path = self._resolve_windows_compiler_path("cl", resolved_env)
+        if compiler_path:
+            try:
+                compiler_file = Path(compiler_path)
+                if compiler_file.name.lower() == "cl.exe" and len(compiler_file.parents) >= 7:
+                    _append(compiler_file.parents[6])
+            except OSError:
+                pass
+
+        return candidates[0] if candidates else None
+
+    def _load_windows_msvc_env(self, env: dict[str, str]) -> dict[str, str]:
+        if self.platform.os != "windows":
+            return {}
+        if self._windows_msvc_env_loaded:
+            return dict(self._windows_msvc_env_cache or {})
+
+        self._windows_msvc_env_loaded = True
+        self._windows_msvc_env_cache = {}
+
+        vcvarsall = self._resolve_windows_vcvarsall(env)
+        if vcvarsall is None:
+            return {}
+
+        system_root = env.get("SystemRoot") or os.environ.get("SystemRoot") or r"C:\Windows"
+        cmd_exe = Path(system_root) / "System32" / "cmd.exe"
+        if not cmd_exe.exists():
+            return {}
+
+        arch_arg = "arm64" if self.platform.arch == "arm64" else "x64"
+        cmd = [str(cmd_exe), "/d", "/s", "/c", f'call "{vcvarsall}" {arch_arg} >nul && set']
+        try:
+            output = subprocess.check_output(cmd, env=env, text=True, errors="replace", stderr=subprocess.STDOUT)
+        except (subprocess.CalledProcessError, OSError):
+            return {}
+
+        captured: dict[str, str] = {}
+        for line in output.splitlines():
+            if not line or line.startswith("=") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            if not key:
+                continue
+            captured[key] = value
+            captured.setdefault(key.upper(), value)
+        self._windows_msvc_env_cache = captured
+        return dict(captured)
+
     def _which(self, name: str) -> str | None:
         for path in os.environ.get("PATH", "").split(os.pathsep):
             candidate = Path(path) / name
@@ -750,6 +872,111 @@ class Builder:
     def _which_in_env(name: str, env: dict[str, str]) -> str | None:
         search_path = env.get("PATH") or os.environ.get("PATH", "")
         return shutil.which(name, path=search_path)
+
+    def _resolve_windows_posix_shell(self, env: dict[str, str]) -> str | None:
+        if self.platform.os != "windows":
+            return None
+
+        for name in ("bash", "bash.exe", "sh", "sh.exe"):
+            resolved = self._which_in_env(name, env)
+            if resolved:
+                return resolved
+
+        candidates: list[str] = []
+        msystem_prefix = (
+            env.get("MSYSTEM_PREFIX")
+            or env.get("MINGW_PREFIX")
+            or self.config.global_cfg.windows_env.get("MSYSTEM_PREFIX")
+            or self.config.global_cfg.windows_env.get("MINGW_PREFIX")
+            or os.environ.get("MSYSTEM_PREFIX")
+            or os.environ.get("MINGW_PREFIX")
+        )
+        if msystem_prefix:
+            base = Path(str(msystem_prefix))
+            for name in ("bash.exe", "sh.exe", "bash", "sh"):
+                candidates.append(str(base / "bin" / name))
+
+        shell_env = env.get("SHELL") or os.environ.get("SHELL")
+        if shell_env:
+            shell_text = str(shell_env).strip().strip("\"'")
+            if shell_text:
+                if shell_text.startswith("/"):
+                    if msystem_prefix:
+                        prefix = Path(str(msystem_prefix))
+                        if shell_text.startswith("/usr/bin/"):
+                            candidates.append(str(prefix / "bin" / Path(shell_text).name))
+                        else:
+                            candidates.append(self._windows_path_to_msys(shell_text))
+                else:
+                    candidates.append(shell_text)
+
+        for candidate in (
+            r"C:\msys64\usr\bin\bash.exe",
+            r"C:\msys64\usr\bin\sh.exe",
+        ):
+            candidates.append(candidate)
+
+        seen: set[str] = set()
+        for candidate in candidates:
+            normalized = _normalize_override(candidate)
+            if not normalized:
+                continue
+            if normalized.startswith("/") and re.match(r"^/[A-Za-z]/", normalized):
+                drive = normalized[1].upper()
+                tail = normalized[2:].replace("/", "\\")
+                normalized = f"{drive}:{tail}"
+            key = os.path.normcase(os.path.normpath(normalized))
+            if key in seen:
+                continue
+            seen.add(key)
+            path = Path(normalized)
+            if path.exists():
+                return str(path)
+        return None
+
+    def _resolve_windows_msys_tool(self, env: dict[str, str], *names: str) -> str | None:
+        if self.platform.os != "windows":
+            return None
+
+        for name in names:
+            resolved = self._which_in_env(name, env)
+            if resolved:
+                return resolved
+
+        candidates: list[str] = []
+        msystem_prefix = (
+            env.get("MSYSTEM_PREFIX")
+            or env.get("MINGW_PREFIX")
+            or self.config.global_cfg.windows_env.get("MSYSTEM_PREFIX")
+            or self.config.global_cfg.windows_env.get("MINGW_PREFIX")
+            or os.environ.get("MSYSTEM_PREFIX")
+            or os.environ.get("MINGW_PREFIX")
+        )
+        if msystem_prefix:
+            prefix = Path(str(msystem_prefix))
+            for name in names:
+                candidates.append(str(prefix / "bin" / name))
+
+        for name in names:
+            candidates.append(str(Path(r"C:\msys64\usr\bin") / name))
+
+        seen: set[str] = set()
+        for candidate in candidates:
+            normalized = _normalize_override(candidate)
+            if not normalized:
+                continue
+            if normalized.startswith("/") and re.match(r"^/[A-Za-z]/", normalized):
+                drive = normalized[1].upper()
+                tail = normalized[2:].replace("/", "\\")
+                normalized = f"{drive}:{tail}"
+            key = os.path.normcase(os.path.normpath(normalized))
+            if key in seen:
+                continue
+            seen.add(key)
+            path = Path(normalized)
+            if path.exists():
+                return str(path)
+        return None
 
     def _resolve_ccache(self) -> str | None:
         cfg = self.config.global_cfg
@@ -960,10 +1187,66 @@ class Builder:
                 env.pop(var, None)
             effective_env = dict(os.environ)
             effective_env.update(env)
+            msys_tool_dirs: list[Path] = []
+            msystem_prefix = (
+                effective_env.get("MSYSTEM_PREFIX")
+                or effective_env.get("MINGW_PREFIX")
+                or self.config.global_cfg.windows_env.get("MSYSTEM_PREFIX")
+                or self.config.global_cfg.windows_env.get("MINGW_PREFIX")
+                or os.environ.get("MSYSTEM_PREFIX")
+                or os.environ.get("MINGW_PREFIX")
+            )
+            if msystem_prefix:
+                msys_bin = Path(str(msystem_prefix)) / "bin"
+                if msys_bin.exists():
+                    msys_tool_dirs.append(msys_bin)
+            for fallback in (Path(r"C:\msys64\usr\bin"), Path(r"C:\msys64\mingw64\bin")):
+                if fallback.exists():
+                    msys_tool_dirs.append(fallback)
+            if msys_tool_dirs:
+                env.setdefault("PATH", os.environ.get("PATH", ""))
+                self._prepend_windows_env_paths(env, "PATH", msys_tool_dirs)
+                effective_env = dict(os.environ)
+                effective_env.update(env)
+            msvc_env = self._load_windows_msvc_env(effective_env)
+            for key in (
+                "PATH",
+                "INCLUDE",
+                "LIB",
+                "LIBPATH",
+                "VCINSTALLDIR",
+                "VCToolsInstallDir",
+                "VSINSTALLDIR",
+                "WindowsSdkDir",
+                "WindowsSDKDir",
+                "WindowsSdkVersion",
+                "WindowsSDKVersion",
+                "WindowsSdkBinPath",
+                "WindowsSdkVerBinPath",
+                "UniversalCRTSdkDir",
+                "UCRTVersion",
+            ):
+                value = msvc_env.get(key)
+                if value:
+                    env[key] = value
+            effective_env = dict(os.environ)
+            effective_env.update(env)
+            compiler_dirs: list[Path] = []
+            for tool_name in ("cc", "cxx"):
+                compiler_path = self.toolchain.get(tool_name)
+                if compiler_path:
+                    compiler_dirs.append(Path(compiler_path).parent)
+            if compiler_dirs:
+                env.setdefault("PATH", os.environ.get("PATH", ""))
+                self._prepend_windows_env_paths(env, "PATH", compiler_dirs)
+                effective_env = dict(os.environ)
+                effective_env.update(env)
             nasm = resolve_nasm_executable(effective_env, platform_os="windows")
             if nasm:
                 env.setdefault("PATH", os.environ.get("PATH", ""))
                 self._prepend_windows_env_paths(env, "PATH", [Path(nasm).parent])
+                effective_env = dict(os.environ)
+                effective_env.update(env)
             sdk_tool_dirs: list[Path] = []
             for tool_name in ("rc.exe", "mt.exe"):
                 tool_path = self._resolve_windows_sdk_tool(tool_name, effective_env)
@@ -972,6 +1255,7 @@ class Builder:
             if sdk_tool_dirs:
                 env.setdefault("PATH", os.environ.get("PATH", ""))
                 self._prepend_windows_env_paths(env, "PATH", sdk_tool_dirs)
+            self._adapt_windows_env_for_msys(env)
 
         return env
 
@@ -2629,8 +2913,9 @@ endif()
     def _ffmpeg_configure_args(self, ctx: BuildContext) -> list[str]:
         cfg = self.config.global_cfg
         windows_native_ffmpeg = self.platform.os == "windows" and self._windows_ffmpeg_native_build_enabled()
+        prefix_arg = self._windows_path_to_msys(ctx.install_prefix) if windows_native_ffmpeg else str(ctx.install_prefix)
         args = [
-            f"--prefix={ctx.install_prefix}",
+            f"--prefix={prefix_arg}",
             "--disable-shared",
             "--enable-static",
             "--enable-pic",
@@ -2640,6 +2925,10 @@ endif()
         if windows_native_ffmpeg:
             # FFmpeg on Windows is built through MSYS2 makefiles while targeting
             # the same MSVC/clang-cl toolchain family as the CMake repos.
+            # Current FFmpeg HEAD enables an unstable swscale x86 backend that
+            # uses static initializers MSVC rejects in libswscale/x86/ops.c.
+            # Keep Windows source builds on the stable path until upstream or
+            # the repo pin changes.
             target_os = "win64" if self.platform.arch in {"x86_64", "arm64"} else "win32"
             ffmpeg_arch = "aarch64" if self.platform.arch == "arm64" else ("x86_64" if self.platform.arch == "x86_64" else self.platform.arch)
             args.extend(
@@ -2649,6 +2938,7 @@ endif()
                     "--toolchain=msvc",
                     "--ar=lib",
                     "--ranlib=:",
+                    "--disable-unstable",
                 ]
             )
             generator = str(cfg.windows.get("generator", "ninja-msvc")).strip().lower()
@@ -2670,28 +2960,33 @@ endif()
             else:
                 args.append("--enable-debug=3")
 
-        if "cc" in self.toolchain:
+        if "cc" in self.toolchain and not windows_native_ffmpeg:
             args.append(f"--cc={self.toolchain['cc']}")
-        if "cxx" in self.toolchain:
+        if "cxx" in self.toolchain and not windows_native_ffmpeg:
             args.append(f"--cxx={self.toolchain['cxx']}")
-        if "ar" in self.toolchain:
+        if "ar" in self.toolchain and not windows_native_ffmpeg:
             args.append(f"--ar={self.toolchain['ar']}")
-        if "ranlib" in self.toolchain:
+        if "ranlib" in self.toolchain and not windows_native_ffmpeg:
             args.append(f"--ranlib={self.toolchain['ranlib']}")
         if self.platform.os == "macos":
             sdkroot = self.toolchain.get("sdkroot")
             if sdkroot:
                 args.append(f"--sysroot={sdkroot}")
 
-        cflags, cxxflags, ldflags = self._non_cmake_flags(ctx.build_type)
-        include_dir = ctx.install_prefix / "include"
-        lib_dir = ctx.install_prefix / "lib"
-        cflags = f"{cflags} -I{include_dir}"
-        cxxflags = f"{cxxflags} -I{include_dir}"
-        ldflags = f"{ldflags} -L{lib_dir}"
-        args.append(f"--extra-cflags={cflags}")
-        args.append(f"--extra-cxxflags={cxxflags}")
-        args.append(f"--extra-ldflags={ldflags}")
+        if windows_native_ffmpeg:
+            runtime_flag = "-MTd" if ctx.build_type == "Debug" else "-MT"
+            args.append(f"--extra-cflags={runtime_flag}")
+            args.append(f"--extra-cxxflags={runtime_flag}")
+        else:
+            cflags, cxxflags, ldflags = self._non_cmake_flags(ctx.build_type)
+            include_dir = ctx.install_prefix / "include"
+            lib_dir = ctx.install_prefix / "lib"
+            cflags = f"{cflags} -I{include_dir}"
+            cxxflags = f"{cxxflags} -I{include_dir}"
+            ldflags = f"{ldflags} -L{lib_dir}"
+            args.append(f"--extra-cflags={cflags}")
+            args.append(f"--extra-cxxflags={cxxflags}")
+            args.append(f"--extra-ldflags={ldflags}")
         return args
 
     def _ffmpeg_configure_command(self, configure: Path, args: list[str], env: dict[str, str]) -> list[str]:
@@ -2700,13 +2995,13 @@ endif()
         if not self._windows_ffmpeg_native_build_enabled():
             return [str(configure), *args]
 
-        bash = self._which_in_env("bash", env) or self._which_in_env("bash.exe", env)
-        if not bash:
+        shell = self._resolve_windows_posix_shell(env)
+        if not shell:
             raise RuntimeError(
-                "FFmpeg native build on Windows requires MSYS2 bash in PATH. "
+                "FFmpeg native build on Windows requires an MSYS2 POSIX shell (bash/sh) in PATH. "
                 "Run from an MSYS2 shell (MSYSTEM set) or disable windows.build_ffmpeg."
             )
-        return [bash, configure.as_posix(), *args]
+        return [shell, configure.as_posix(), *args]
 
     def _ffmpeg_make_command(self, make_args: list[str], env: dict[str, str]) -> list[str]:
         if self.platform.os != "windows":
@@ -2714,7 +3009,7 @@ endif()
         if not self._windows_ffmpeg_native_build_enabled():
             return ["make", *make_args]
 
-        make = self._which_in_env("make", env) or self._which_in_env("mingw32-make", env)
+        make = self._resolve_windows_msys_tool(env, "make", "mingw32-make", "make.exe", "mingw32-make.exe")
         if not make:
             raise RuntimeError(
                 "FFmpeg native build on Windows requires MSYS2 make in PATH. "
@@ -2742,13 +3037,13 @@ endif()
         if not self._autotools_windows_msys2_active():
             return [str(configure), *args]
 
-        bash = self._which_in_env("bash", env) or self._which_in_env("bash.exe", env)
-        if not bash:
+        shell = self._resolve_windows_posix_shell(env)
+        if not shell:
             raise RuntimeError(
-                "Windows autotools builds require MSYS2 bash in PATH. "
+                "Windows autotools builds require an MSYS2 POSIX shell (bash/sh) in PATH. "
                 "Run from an MSYS2 shell (MSYSTEM set)."
             )
-        return [bash, configure.as_posix(), *args]
+        return [shell, configure.as_posix(), *args]
 
     def _autotools_make_command(self, make_args: list[str], env: dict[str, str]) -> list[str]:
         if not self._autotools_windows_msys2_active():

@@ -254,6 +254,49 @@ uv run build.py --config build.toml --build-types Debug,Release
 uv run build.py --build-types Debug,Release
 ```
 
+### Windows: MSYS2 bootstrap
+If you want FFmpeg source builds or any Windows autotools repo, install MSYS2 from the official distribution:
+
+- https://www.msys2.org/
+
+Start an MSYS2 shell on Windows (UCRT64 is fine) and install the minimum tools this builder expects:
+
+```bash
+pacman -S --needed base-devel unzip cmake ninja git
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source "$HOME/.local/bin/env"
+```
+
+If your MSYS profile still does not expose `cmp` or `make`, install them explicitly too:
+
+```bash
+pacman -S --needed diffutils make
+```
+
+`base-devel`/`diffutils`/`make` are required for FFmpeg/autotools source builds because they provide core MSYS tools such as `cmp` and `make`.
+
+Enable Windows FFmpeg source builds in your local `build.user.toml`:
+
+```toml
+[windows]
+build_ffmpeg = true
+```
+
+Then verify the shell is usable for this repo:
+
+```bash
+uv run build.py --preflight
+```
+
+For FFmpeg source builds, preflight should report:
+
+```text
+FFmpeg (Windows mode):
+  source build: enabled (MSYS2 environment detected)
+  shell: ok (...)
+  make: ok (...)
+```
+
 ### Windows: FFmpeg
 By default, `windows.build_ffmpeg = false` to keep OpenImageIO builds self-contained.
 

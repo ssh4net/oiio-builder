@@ -422,13 +422,13 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
         lines.append("FFmpeg (Windows mode):")
         if builder._windows_ffmpeg_native_build_enabled():
             lines.append("  source build: enabled (MSYS2 environment detected)")
-            bash_path, _ = _find_any(["bash", "bash.exe"])
+            shell_path, shell_name = _find_any(["bash", "bash.exe", "sh", "sh.exe"])
             make_path, make_name = _find_any(["make", "mingw32-make"])
-            if bash_path:
-                lines.append(f"  bash: ok ({bash_path})")
+            if shell_path:
+                lines.append(f"  shell: ok ({shell_path}) ({shell_name})")
             else:
                 missing_tools += 1
-                lines.append("  bash: missing [required for FFmpeg source build]")
+                lines.append("  shell: missing [required for FFmpeg source build; need MSYS2 bash/sh]")
             if make_path:
                 lines.append(f"  make: ok ({make_path}) ({make_name})")
             else:

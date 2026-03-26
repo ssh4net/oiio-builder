@@ -120,7 +120,15 @@ def run(
         return
     merged_env = os.environ.copy()
     if env:
-        merged_env.update(env)
+        if os.name == "nt":
+            for key, value in env.items():
+                lower = key.lower()
+                for existing in list(merged_env):
+                    if existing.lower() == lower:
+                        merged_env.pop(existing, None)
+                merged_env[key] = value
+        else:
+            merged_env.update(env)
 
     if not log_path:
         subprocess.run(cmd, cwd=cwd, env=merged_env, check=True)
