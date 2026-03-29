@@ -2246,7 +2246,8 @@ class Builder:
         if self.platform.os == "linux" and cfg.build_qt6 and not values.get("OIIO_IV_EXTRA_IV_LIBRARIES"):
             # Qt6 static DBus linkage on Linux may require systemd symbols
             # via libdbus-1.a (_dbus_listen_systemd_sockets).
-            values["OIIO_IV_EXTRA_IV_LIBRARIES"] = "dbus-1;systemd"
+            if self._qt_exports_dbus(ctx.install_prefix):
+                values["OIIO_IV_EXTRA_IV_LIBRARIES"] = "dbus-1;systemd"
 
         # Always embed plugins for consistent single-binary plugin loading across platforms.
         values["EMBEDPLUGINS"] = "ON"
@@ -4232,6 +4233,28 @@ endif()
                 return True
         return False
 
+    def _qt_exports_dbus(self, prefix: Path) -> bool:
+        # Key off the QtGui export that iv actually consumes, not on the
+        # presence of standalone Qt6DBus package files, which may be stale
+        # leftovers in a prefix after Qt was rebuilt with -no-dbus.
+        cmake_files = (
+            prefix / "lib" / "cmake" / "Qt6Gui" / "Qt6GuiTargets.cmake",
+        )
+        patterns = (
+            "Qt6::DBus",
+            "dbus-1",
+        )
+        for path in cmake_files:
+            if not path.exists():
+                continue
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if any(pattern in text for pattern in patterns):
+                return True
+        return False
+
     def _ensure_ppmd_package(self, prefix: Path, build_type: str) -> None:
         if self.dry_run:
             return
@@ -5404,6 +5427,9 @@ endif()
             if "qtimageformats" in qt_submodule_set:
                 system_libs["tiff"] = "system"
                 system_libs["webp"] = "system"
+            disabled_features = ["gstreamer", "pipewire"] if "qtmultimedia" in qt_submodule_set else []
+            if self.platform.os == "linux":
+                disabled_features.extend(["dbus", "glib"])
             payload["qt6"] = {
                 "submodules": qt_submodules,
                 "mode": "debug" if ctx.build_type == "Debug" else "release",
@@ -5417,7 +5443,7 @@ endif()
                 "ssl": ("openssl-linked" if self.platform.os in {"linux", "windows"} else "default"),
                 "static_runtime": (self.platform.os == "windows"),
                 "system_libs": system_libs,
-                "disabled_features": (["gstreamer", "pipewire"] if "qtmultimedia" in qt_submodule_set else []),
+                "disabled_features": sorted(disabled_features),
                 "feature_ffmpeg": (
                     self.platform.os != "windows" and "qtmultimedia" in qt_submodule_set and self._ffmpeg_enabled()
                 ),
@@ -6160,7 +6186,9 @@ endif()
             if self.platform.os == "linux":
                 linux_qpa = "xcb;wayland" if "qtwayland" in qt_submodule_set else "xcb"
                 qt_args.extend(["-qpa", linux_qpa, "-default-qpa", "xcb"])
-                qt_args.append("-no-gtk")
+                # Keep static Qt self-contained on Linux and avoid distro GLib/DBus
+                # transitive deps leaking into downstream links.
+                qt_args.extend(["-no-gtk", "-no-dbus", "-no-glib"])
 
             if self.platform.os in {"linux", "windows"}:
                 qt_args.append("-openssl-linked")
