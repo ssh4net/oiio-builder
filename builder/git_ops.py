@@ -73,6 +73,23 @@ def _run_git_update(cmd: list[str], *, dry_run: bool) -> None:
         run(noisy_cmd, dry_run=False)
 
 
+def _build_fetch_cmd(path: Path, remote: str | None, ref: str | None, ref_type: str) -> list[str]:
+    cmd = ["git", "-C", str(path), "fetch", "--quiet"]
+    if remote:
+        cmd.append(remote)
+    else:
+        cmd.append("--all")
+
+    if ref and ref_type == "tag":
+        # Avoid unrelated retagged upstream tags breaking updates for branch/commit repos.
+        if remote:
+            cmd.extend(["--force", "tag", ref])
+        else:
+            cmd.append("--tags")
+
+    return cmd
+
+
 def ensure_repo(path: Path, url: str | None, ref: str | None, ref_type: str, update: bool, dry_run: bool) -> None:
     if path.exists():
         if not (path / ".git").exists():
@@ -80,12 +97,7 @@ def ensure_repo(path: Path, url: str | None, ref: str | None, ref_type: str, upd
         if not update:
             return
         remote = _select_remote(path, url, ref, ref_type)
-        fetch_cmd = ["git", "-C", str(path), "fetch", "--quiet"]
-        if remote:
-            fetch_cmd.append(remote)
-        else:
-            fetch_cmd.append("--all")
-        fetch_cmd.append("--tags")
+        fetch_cmd = _build_fetch_cmd(path, remote, ref, ref_type)
         _run_git_update(fetch_cmd, dry_run=dry_run)
         if ref:
             run(["git", "-C", str(path), "checkout", ref], dry_run=dry_run)
