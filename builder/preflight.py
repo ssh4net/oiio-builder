@@ -357,6 +357,32 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
         prefix = builder.prefixes.get(key)
         if prefix:
             lines.append(f"  install_prefix[{key}]: {prefix}")
+    lines.append("Prefix contracts:")
+    if builder._prefix_contract_enabled():
+        for install_prefix, build_types in builder._unique_prefix_items():
+            check = builder.check_prefix_contract(install_prefix, build_types)
+            build_types_label = ",".join(build_types)
+            if check.state == "ok":
+                lines.append(f"  {install_prefix} [{build_types_label}]: ok")
+            elif check.state == "soft-mismatch":
+                lines.append(f"  {install_prefix} [{build_types_label}]: warning")
+                for item in check.soft_mismatches:
+                    lines.append(f"    soft: {item}")
+            elif check.state == "missing-empty":
+                lines.append(f"  {install_prefix} [{build_types_label}]: not created yet")
+            elif check.state == "missing-populated":
+                missing_assets += 1
+                lines.append(f"  {install_prefix} [{build_types_label}]: missing contract for populated prefix")
+                lines.append(f"    expected: {check.files['json']}")
+            else:
+                missing_assets += 1
+                lines.append(f"  {install_prefix} [{build_types_label}]: mismatch")
+                for item in check.hard_mismatches:
+                    lines.append(f"    hard: {item}")
+                for item in check.soft_mismatches:
+                    lines.append(f"    soft: {item}")
+    else:
+        lines.append("  disabled")
 
     if builder.toolchain:
         lines.append("Toolchain:")

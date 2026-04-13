@@ -54,6 +54,11 @@ def main() -> int:
         action="store_true",
         help="Clone/fetch/checkout repos, run source-prep hooks (e.g. Qt init-repository), then exit",
     )
+    parser.add_argument(
+        "--apply-prefix-contract",
+        action="store_true",
+        help="With --prepare-only, write/update managed CMakeUserPresets.json shims that point at the active prefix contract",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Print commands only")
     parser.add_argument(
         "--no-ffmpeg",
@@ -117,6 +122,8 @@ def main() -> int:
     platform_info = detect_platform()
     if args.update_only and args.prepare_only:
         raise SystemExit("--update-only cannot be combined with --prepare-only")
+    if args.apply_prefix_contract and not args.prepare_only:
+        raise SystemExit("--apply-prefix-contract requires --prepare-only")
     if args.update_only and args.no_update:
         raise SystemExit("--update-only cannot be combined with --no-update")
     if args.update_only or args.update:
@@ -137,6 +144,7 @@ def main() -> int:
         reinstall=args.reinstall,
         reinstall_all=args.reinstall_all,
         parallel_build_types=args.parallel_build_types,
+        apply_prefix_contract=args.apply_prefix_contract,
     )
 
     if args.list_repos:

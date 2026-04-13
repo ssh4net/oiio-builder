@@ -64,6 +64,7 @@ class GlobalConfig:
     only: set[str] = field(default_factory=set)
     skip: set[str] = field(default_factory=set)
     no_update: bool = True
+    write_prefix_contract: bool = True
     windows: dict[str, Any] = field(default_factory=dict)
     windows_env: dict[str, str] = field(default_factory=dict)
     # Build group toggles
@@ -232,6 +233,7 @@ def load_config(path: Path) -> Config:
             "asan_suffix",
             "env",
             "no_update",
+            "write_prefix_contract",
             # Group toggles
             "build_gl_stack",
             "build_imageio_stack",
@@ -407,6 +409,7 @@ def load_config(path: Path) -> Config:
         windows={str(k): v for k, v in windows_section.items()},
         windows_env=windows_env,
         no_update=bool(global_data.get("no_update", True)),
+        write_prefix_contract=bool(global_data.get("write_prefix_contract", True)),
         build_gl_stack=bool(global_data.get("build_gl_stack", True)),
         build_imageio_stack=bool(global_data.get("build_imageio_stack", True)),
         build_exr_stack=bool(global_data.get("build_exr_stack", True)),

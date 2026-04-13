@@ -108,6 +108,7 @@ Key options:
 - `install_prefix`: canonical install prefix root (cross-platform).
 - `asan_prefix`: optional explicit ASAN prefix (cross-platform).
 - `prefix_base`: legacy fallback prefix root used when `install_prefix` is not set.
+- `write_prefix_contract`: write and maintain a managed prefix contract bundle under `<prefix>/.oiio-builder/` (default: `true`).
 - `build_types`: list of configs to build (`Debug`, `Release`, `ASAN`).
 - `preferred_repo_order`: optional list of repo names that influences build order when multiple repos are ready (deps still win).
 - `use_libcxx`: default on macOS/Linux; set `false` to use libstdc++.
@@ -181,6 +182,27 @@ If a repo is up-to-date but its marker is missing or mismatched (for example: yo
 prefix directory), the builder automatically re-runs the repo install step instead of skipping it.
 Use `--reinstall` / `--reinstall-all` to force reinstall even when markers are present.
 
+## Prefix Contract Bundle
+
+Each active install prefix can carry a managed contract bundle under:
+
+`<prefix>/.oiio-builder/`
+
+Files:
+- `prefix-contract.json`: authoritative ABI/policy contract used by preflight.
+- `prefix-init-cache.cmake`: safe shared cache defaults for `cmake -C`.
+- `prefix-contract.cmake`: helper variables/functions for projects that want to opt into the contract from CMake.
+- `prefix-presets.json`: hidden configure preset fragments that can be included from a source tree.
+
+The contract is intended to protect a prefix from accidental reuse with incompatible settings such as:
+- `libc++` vs `libstdc++`
+- default static vs shared builds
+- PIC on/off
+- Windows CRT mode (`/MT` vs `/MD`)
+- ASAN vs non-ASAN prefixes
+
+Preflight reports contract state per computed prefix. A populated prefix without a matching contract is treated as an error.
+
 ## Common Commands
 
 ```bash
@@ -196,6 +218,7 @@ uv run build.py --update-only
 # Clone/fetch/checkout repos and run source-prep hooks only
 uv run build.py --prepare-only
 uv run build.py --prepare-only --only Qt6
+uv run build.py --prepare-only --only OpenImageIO --apply-prefix-contract
 
 # Print computed install prefixes
 uv run build.py --print-prefixes
@@ -221,6 +244,8 @@ uv run build.py --skip libwebp,libheif
 `--prepare-only` is useful when a repo needs source hydration without starting a build. Current examples:
 - Qt6 missing submodules after a branch/ref change or partial checkout (`init-repository` is run automatically).
 - Repo-specific source prep hooks such as `glslang` external source staging when optimizer support is enabled.
+- It also backfills the managed prefix contract bundle for the active prefixes.
+- With `--apply-prefix-contract`, the builder also writes managed `CMakeUserPresets.json` shims into CMake source trees when no unmanaged file is present already.
 
 ## Platform Examples
 

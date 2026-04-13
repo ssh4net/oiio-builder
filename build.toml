@@ -8,6 +8,12 @@ build_root = "./developer/_build"
 prefix_layout = "by-build-type"
 install_prefix = "./developer/install"
 asan_prefix = "./developer/asan"
+# Write a managed contract bundle under each active prefix:
+#   <prefix>/.oiio-builder/prefix-contract.json
+#   <prefix>/.oiio-builder/prefix-init-cache.cmake
+#   <prefix>/.oiio-builder/prefix-contract.cmake
+#   <prefix>/.oiio-builder/prefix-presets.json
+write_prefix_contract = true
 # Legacy fallback root if install_prefix is unset:
 # prefix_base = "./developer/install"
 # Build types can be narrowed via --build-types Debug,Release

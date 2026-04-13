@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
+import hashlib
 import json
 import os
 import re
@@ -133,6 +134,16 @@ class BuildContext:
     src_dir: Path
 
 
+@dataclass
+class PrefixContractCheck:
+    prefix: Path
+    build_types: list[str]
+    state: str
+    hard_mismatches: list[str]
+    soft_mismatches: list[str]
+    files: dict[str, Path]
+
+
 class BuildReport:
     def __init__(self, build_types: list[str], order: list[str], prefixes: dict[str, Path]) -> None:
         self.build_types = build_types
@@ -179,6 +190,7 @@ class Builder:
         reinstall: bool = False,
         reinstall_all: bool = False,
         parallel_build_types: bool = False,
+        apply_prefix_contract: bool = False,
     ) -> None:
         self.config = config
         self.platform = platform
@@ -214,6 +226,7 @@ class Builder:
         self._windows_msvc_env_loaded = False
 
         self.parallel_build_types = parallel_build_types
+        self.apply_prefix_contract = apply_prefix_contract
         if self.parallel_build_types and self.platform.os == "windows":
             raise SystemExit("--parallel-build-types is supported only on macOS/Linux.")
         self._parallel_build_type_count = 1
@@ -367,6 +380,369 @@ class Builder:
         }
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    def _prefix_contract_enabled(self) -> bool:
+        return bool(self.config.global_cfg.write_prefix_contract or self.apply_prefix_contract)
+
+    def _unique_prefix_items(self) -> list[tuple[Path, list[str]]]:
+        ordered_types = [build_type for build_type in self._build_type_order() if build_type in self.prefixes]
+        grouped: dict[str, tuple[Path, list[str]]] = {}
+        for build_type in ordered_types:
+            prefix = self.prefixes[build_type]
+            key = os.path.normcase(os.path.normpath(str(prefix)))
+            existing = grouped.get(key)
+            if existing is None:
+                grouped[key] = (prefix, [build_type])
+            else:
+                existing[1].append(build_type)
+        return list(grouped.values())
+
+    def _prefix_contract_dir(self, install_prefix: Path) -> Path:
+        return install_prefix / ".oiio-builder"
+
+    def _prefix_contract_file_paths(self, install_prefix: Path) -> dict[str, Path]:
+        root = self._prefix_contract_dir(install_prefix)
+        return {
+            "json": root / "prefix-contract.json",
+            "cmake": root / "prefix-contract.cmake",
+            "init_cache": root / "prefix-init-cache.cmake",
+            "presets": root / "prefix-presets.json",
+        }
+
+    def _prefix_contract_token(self, install_prefix: Path) -> str:
+        normalized = os.path.normcase(os.path.normpath(str(install_prefix)))
+        return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
+
+    def _prefix_contract_cxx_stdlib(self) -> str:
+        if self.platform.os == "windows":
+            return "msvc"
+        return "libc++" if self.config.global_cfg.use_libcxx else "libstdc++"
+
+    def _prefix_contract_glibcxx_cxx11_abi(self) -> int | None:
+        if self.platform.os == "windows" or self.config.global_cfg.use_libcxx:
+            return None
+
+        candidates = [
+            self.config.global_cfg.env.get("_GLIBCXX_USE_CXX11_ABI"),
+            self.config.global_cfg.env.get("GLIBCXX_USE_CXX11_ABI"),
+            os.environ.get("_GLIBCXX_USE_CXX11_ABI"),
+            os.environ.get("GLIBCXX_USE_CXX11_ABI"),
+        ]
+        for key in ("CFLAGS", "CXXFLAGS"):
+            raw = self.config.global_cfg.env.get(key)
+            if raw:
+                match = re.search(r"-D_GLIBCXX_USE_CXX11_ABI=(0|1)", raw)
+                if match:
+                    return int(match.group(1))
+        for raw in candidates:
+            if raw is None:
+                continue
+            text = str(raw).strip()
+            if text in {"0", "1"}:
+                return int(text)
+        return None
+
+    def _prefix_contract_runtime(self) -> str | None:
+        if self.platform.os != "windows":
+            return None
+        runtime_mode = self._windows_runtime_mode()
+        if runtime_mode == "static":
+            return "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+        if runtime_mode == "dynamic":
+            return "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+        raw = self.config.global_cfg.windows.get("msvc_runtime")
+        if raw is None:
+            return None
+        return str(raw).strip() or None
+
+    def _prefix_contract_sanitizers(self, build_types: list[str]) -> list[str]:
+        if build_types == ["ASAN"]:
+            return ["address"]
+        return []
+
+    def _prefix_contract_payload(self, install_prefix: Path, build_types: list[str]) -> dict[str, object]:
+        cfg = self.config.global_cfg
+        return {
+            "schema": 1,
+            "install_prefix": str(install_prefix),
+            "build_types": list(build_types),
+            "platform": {
+                "os": self.platform.os,
+                "arch": self.platform.arch,
+            },
+            "abi": {
+                "cxx_stdlib": self._prefix_contract_cxx_stdlib(),
+                "glibcxx_cxx11_abi": self._prefix_contract_glibcxx_cxx11_abi(),
+                "build_shared_libs_default": not cfg.static_default,
+                "position_independent_code": bool(cfg.pic),
+                "msvc_runtime": self._prefix_contract_runtime(),
+                "sanitizers": self._prefix_contract_sanitizers(build_types),
+            },
+            "policy": {
+                "cxx_standard": int(cfg.cxx_standard),
+                "cxx_extensions": bool(cfg.cxx_extensions),
+                "pkg_config_use_static_libs": True,
+                "use_lld": bool(cfg.use_lld),
+            },
+            "toolchain": {
+                "fingerprint": self._toolchain_fingerprint(),
+            },
+        }
+
+    def _prefix_contract_cache_variables(self, install_prefix: Path) -> dict[str, object]:
+        cfg = self.config.global_cfg
+        cache: dict[str, object] = {
+            "BUILD_SHARED_LIBS": not cfg.static_default,
+            "CMAKE_POSITION_INDEPENDENT_CODE": bool(cfg.pic),
+            "CMAKE_CXX_STANDARD": int(cfg.cxx_standard),
+            "CMAKE_CXX_EXTENSIONS": bool(cfg.cxx_extensions),
+            "CMAKE_PREFIX_PATH": self._cmake_path_arg(install_prefix),
+            "PKG_CONFIG_USE_STATIC_LIBS": True,
+        }
+        if self.platform.os == "windows":
+            cache["CMAKE_POLICY_DEFAULT_CMP0091"] = "NEW"
+            runtime = self._prefix_contract_runtime()
+            if runtime:
+                cache["CMAKE_MSVC_RUNTIME_LIBRARY"] = runtime
+        return cache
+
+    def _cmake_bool(self, value: bool) -> str:
+        return "ON" if value else "OFF"
+
+    def _cmake_quote(self, value: object) -> str:
+        text = str(value)
+        text = text.replace("\\", "\\\\").replace("\"", "\\\"")
+        return f"\"{text}\""
+
+    def _prefix_init_cache_text(self, install_prefix: Path) -> str:
+        cache = self._prefix_contract_cache_variables(install_prefix)
+        lines = [
+            "# Generated by oiio-builder.",
+            "# Safe shared cache defaults for consumers of this prefix.",
+            f"# Prefix: {install_prefix}",
+            "",
+        ]
+        bool_keys = {"BUILD_SHARED_LIBS", "CMAKE_POSITION_INDEPENDENT_CODE", "CMAKE_CXX_EXTENSIONS", "PKG_CONFIG_USE_STATIC_LIBS"}
+        for key in sorted(cache.keys()):
+            value = cache[key]
+            if key in bool_keys:
+                lines.append(f"set({key} {self._cmake_bool(bool(value))} CACHE BOOL \"Managed by oiio-builder\" FORCE)")
+            elif isinstance(value, int):
+                lines.append(f"set({key} {value} CACHE STRING \"Managed by oiio-builder\" FORCE)")
+            else:
+                lines.append(
+                    f"set({key} {self._cmake_quote(value)} CACHE STRING \"Managed by oiio-builder\" FORCE)"
+                )
+        lines.append("")
+        return "\n".join(lines)
+
+    def _prefix_contract_cmake_text(self, install_prefix: Path, build_types: list[str]) -> str:
+        payload = self._prefix_contract_payload(install_prefix, build_types)
+        abi = payload["abi"]
+        policy = payload["policy"]
+        assert isinstance(abi, dict)
+        assert isinstance(policy, dict)
+        prefix_var = self._cmake_quote(self._cmake_path_arg(install_prefix))
+        lines = [
+            "# Generated by oiio-builder.",
+            "# Helper variables/functions for the prefix contract described in prefix-contract.json.",
+            "",
+            f"set(OIIO_BUILDER_PREFIX_CONTRACT_SCHEMA {payload['schema']})",
+            f"set(OIIO_BUILDER_PREFIX_PATH {prefix_var})",
+            f"set(OIIO_BUILDER_PREFIX_CXX_STDLIB {self._cmake_quote(abi['cxx_stdlib'])})",
+            f"set(OIIO_BUILDER_PREFIX_BUILD_SHARED_LIBS_DEFAULT {self._cmake_bool(bool(abi['build_shared_libs_default']))})",
+            f"set(OIIO_BUILDER_PREFIX_POSITION_INDEPENDENT_CODE {self._cmake_bool(bool(abi['position_independent_code']))})",
+            f"set(OIIO_BUILDER_PREFIX_CXX_STANDARD {policy['cxx_standard']})",
+            f"set(OIIO_BUILDER_PREFIX_CXX_EXTENSIONS {self._cmake_bool(bool(policy['cxx_extensions']))})",
+            f"set(OIIO_BUILDER_PREFIX_PKG_CONFIG_USE_STATIC_LIBS {self._cmake_bool(bool(policy['pkg_config_use_static_libs']))})",
+        ]
+        runtime = abi.get("msvc_runtime")
+        if runtime:
+            lines.append(f"set(OIIO_BUILDER_PREFIX_MSVC_RUNTIME_LIBRARY {self._cmake_quote(runtime)})")
+        glibcxx = abi.get("glibcxx_cxx11_abi")
+        if glibcxx is None:
+            lines.append("set(OIIO_BUILDER_PREFIX_GLIBCXX_USE_CXX11_ABI \"\")")
+        else:
+            lines.append(f"set(OIIO_BUILDER_PREFIX_GLIBCXX_USE_CXX11_ABI {glibcxx})")
+        lines.extend(
+            [
+                "",
+                "function(oiio_builder_apply_prefix_contract)",
+                "  set(BUILD_SHARED_LIBS ${OIIO_BUILDER_PREFIX_BUILD_SHARED_LIBS_DEFAULT} CACHE BOOL \"Managed by oiio-builder\" FORCE)",
+                "  set(CMAKE_POSITION_INDEPENDENT_CODE ${OIIO_BUILDER_PREFIX_POSITION_INDEPENDENT_CODE} CACHE BOOL \"Managed by oiio-builder\" FORCE)",
+                "  set(CMAKE_CXX_STANDARD ${OIIO_BUILDER_PREFIX_CXX_STANDARD} CACHE STRING \"Managed by oiio-builder\" FORCE)",
+                "  set(CMAKE_CXX_EXTENSIONS ${OIIO_BUILDER_PREFIX_CXX_EXTENSIONS} CACHE BOOL \"Managed by oiio-builder\" FORCE)",
+                "  set(PKG_CONFIG_USE_STATIC_LIBS ${OIIO_BUILDER_PREFIX_PKG_CONFIG_USE_STATIC_LIBS} CACHE BOOL \"Managed by oiio-builder\" FORCE)",
+                "  if(DEFINED OIIO_BUILDER_PREFIX_MSVC_RUNTIME_LIBRARY AND NOT OIIO_BUILDER_PREFIX_MSVC_RUNTIME_LIBRARY STREQUAL \"\")",
+                "    set(CMAKE_POLICY_DEFAULT_CMP0091 NEW CACHE STRING \"Managed by oiio-builder\" FORCE)",
+                "    set(CMAKE_MSVC_RUNTIME_LIBRARY ${OIIO_BUILDER_PREFIX_MSVC_RUNTIME_LIBRARY} CACHE STRING \"Managed by oiio-builder\" FORCE)",
+                "  endif()",
+                "  if(DEFINED CMAKE_PREFIX_PATH AND NOT CMAKE_PREFIX_PATH STREQUAL \"\")",
+                "    set(_oiio_builder_prefix_path_list ${CMAKE_PREFIX_PATH})",
+                "    list(PREPEND _oiio_builder_prefix_path_list ${OIIO_BUILDER_PREFIX_PATH})",
+                "    list(REMOVE_DUPLICATES _oiio_builder_prefix_path_list)",
+                "    set(CMAKE_PREFIX_PATH ${_oiio_builder_prefix_path_list} CACHE STRING \"Managed by oiio-builder\" FORCE)",
+                "  else()",
+                "    set(CMAKE_PREFIX_PATH ${OIIO_BUILDER_PREFIX_PATH} CACHE STRING \"Managed by oiio-builder\" FORCE)",
+                "  endif()",
+                "endfunction()",
+                "",
+            ]
+        )
+        return "\n".join(lines)
+
+    def _prefix_contract_presets_text(self, install_prefix: Path) -> str:
+        token = self._prefix_contract_token(install_prefix)
+        contract_name = f"oiio-builder-contract-{token}"
+        prefix_name = f"oiio-builder-prefix-{token}"
+        cache = self._prefix_contract_cache_variables(install_prefix)
+        prefix_path = cache.pop("CMAKE_PREFIX_PATH")
+        payload = {
+            "version": 4,
+            "vendor": {
+                "oiio-builder": {
+                    "managed": True,
+                    "schema": 1,
+                    "installPrefix": str(install_prefix),
+                    "token": token,
+                }
+            },
+            "configurePresets": [
+                {
+                    "name": contract_name,
+                    "hidden": True,
+                    "cacheVariables": cache,
+                },
+                {
+                    "name": prefix_name,
+                    "hidden": True,
+                    "inherits": [contract_name],
+                    "cacheVariables": {
+                        "CMAKE_PREFIX_PATH": prefix_path,
+                    },
+                },
+            ],
+        }
+        return json.dumps(payload, indent=2) + "\n"
+
+    def _write_managed_text_file(self, path: Path, text: str, *, label: str) -> None:
+        if self.dry_run:
+            print(f"[dry-run] write {label}: {path}", flush=True)
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        existing = None
+        if path.exists():
+            try:
+                existing = path.read_text(encoding="utf-8")
+            except OSError:
+                existing = None
+        if existing == text:
+            return
+        path.write_text(text, encoding="utf-8")
+        print(f"[write] {label}: {path}", flush=True)
+
+    def _ensure_prefix_contracts(self) -> None:
+        if not self._prefix_contract_enabled():
+            return
+        for install_prefix, build_types in self._unique_prefix_items():
+            paths = self._prefix_contract_file_paths(install_prefix)
+            payload = self._prefix_contract_payload(install_prefix, build_types)
+            self._write_managed_text_file(
+                paths["json"],
+                json.dumps(payload, indent=2, sort_keys=True) + "\n",
+                label="prefix contract",
+            )
+            self._write_managed_text_file(
+                paths["init_cache"],
+                self._prefix_init_cache_text(install_prefix),
+                label="prefix init cache",
+            )
+            self._write_managed_text_file(
+                paths["cmake"],
+                self._prefix_contract_cmake_text(install_prefix, build_types),
+                label="prefix contract cmake",
+            )
+            self._write_managed_text_file(
+                paths["presets"],
+                self._prefix_contract_presets_text(install_prefix),
+                label="prefix presets",
+            )
+
+    def _prefix_has_non_metadata_content(self, install_prefix: Path) -> bool:
+        if not install_prefix.exists() or not install_prefix.is_dir():
+            return False
+        try:
+            for child in install_prefix.iterdir():
+                if child.name == ".oiio-builder":
+                    continue
+                return True
+        except OSError:
+            return False
+        return False
+
+    def _contract_value(self, data: dict[str, object], path: tuple[str, ...]) -> object:
+        current: object = data
+        for key in path:
+            if not isinstance(current, dict) or key not in current:
+                return None
+            current = current[key]
+        return current
+
+    def check_prefix_contract(self, install_prefix: Path, build_types: list[str]) -> PrefixContractCheck:
+        files = self._prefix_contract_file_paths(install_prefix)
+        json_path = files["json"]
+        if not json_path.exists():
+            state = "missing-populated" if self._prefix_has_non_metadata_content(install_prefix) else "missing-empty"
+            return PrefixContractCheck(install_prefix, build_types, state, [], [], files)
+
+        try:
+            current = json.loads(json_path.read_text(encoding="utf-8"))
+        except Exception:
+            return PrefixContractCheck(install_prefix, build_types, "invalid", ["invalid JSON"], [], files)
+        if not isinstance(current, dict):
+            return PrefixContractCheck(install_prefix, build_types, "invalid", ["contract is not a JSON object"], [], files)
+
+        expected = self._prefix_contract_payload(install_prefix, build_types)
+        hard_fields = [
+            (("schema",), "schema"),
+            (("platform", "os"), "platform.os"),
+            (("platform", "arch"), "platform.arch"),
+            (("abi", "cxx_stdlib"), "abi.cxx_stdlib"),
+            (("abi", "glibcxx_cxx11_abi"), "abi.glibcxx_cxx11_abi"),
+            (("abi", "build_shared_libs_default"), "abi.build_shared_libs_default"),
+            (("abi", "position_independent_code"), "abi.position_independent_code"),
+            (("abi", "msvc_runtime"), "abi.msvc_runtime"),
+            (("abi", "sanitizers"), "abi.sanitizers"),
+        ]
+        soft_fields = [
+            (("policy", "cxx_standard"), "policy.cxx_standard"),
+            (("policy", "cxx_extensions"), "policy.cxx_extensions"),
+            (("policy", "pkg_config_use_static_libs"), "policy.pkg_config_use_static_libs"),
+            (("policy", "use_lld"), "policy.use_lld"),
+        ]
+        hard_mismatches: list[str] = []
+        soft_mismatches: list[str] = []
+        for path, label in hard_fields:
+            lhs = self._contract_value(current, path)
+            rhs = self._contract_value(expected, path)
+            if lhs != rhs:
+                hard_mismatches.append(f"{label}: expected {rhs!r}, found {lhs!r}")
+        for path, label in soft_fields:
+            lhs = self._contract_value(current, path)
+            rhs = self._contract_value(expected, path)
+            if lhs != rhs:
+                soft_mismatches.append(f"{label}: expected {rhs!r}, found {lhs!r}")
+
+        missing_aux = [name for name in ("cmake", "init_cache", "presets") if not files[name].exists()]
+        if missing_aux:
+            hard_mismatches.append(f"missing generated files: {', '.join(missing_aux)}")
+
+        state = "ok"
+        if hard_mismatches:
+            state = "mismatch"
+        elif soft_mismatches:
+            state = "soft-mismatch"
+        return PrefixContractCheck(install_prefix, build_types, state, hard_mismatches, soft_mismatches, files)
 
     def _filter_repos(self) -> list[RepoConfig]:
         configured_repos = [r for r in self.config.repos if r.enabled]
@@ -3461,6 +3837,86 @@ endif()
             return True
         return False
 
+    def _source_tree_dir(self, repo: RepoConfig, repo_root: Path) -> Path:
+        if repo.source_subdir:
+            return repo_root / repo.source_subdir
+        return repo_root
+
+    def _source_tree_contract_shim_text(self, repo: RepoConfig, source_dir: Path) -> str:
+        includes: list[str] = []
+        configure_presets: list[dict[str, object]] = []
+        seen_include_paths: set[str] = set()
+        for build_type in self._build_type_order():
+            install_prefix = self.prefixes.get(build_type)
+            if install_prefix is None:
+                continue
+            presets_path = self._prefix_contract_file_paths(install_prefix)["presets"]
+            include_path = str(presets_path.resolve())
+            if include_path not in seen_include_paths:
+                seen_include_paths.add(include_path)
+                includes.append(include_path)
+            token = self._prefix_contract_token(install_prefix)
+            preset_name = f"oiio-builder-{build_type.lower()}"
+            configure_presets.append(
+                {
+                    "name": preset_name,
+                    "displayName": f"oiio-builder {build_type}",
+                    "description": f"{repo.name}: build against/install into {install_prefix}",
+                    "inherits": [f"oiio-builder-prefix-{token}"],
+                    "binaryDir": f"${{sourceDir}}/out/build/{preset_name}",
+                    "cacheVariables": {
+                        "CMAKE_BUILD_TYPE": build_type,
+                        "CMAKE_INSTALL_PREFIX": self._cmake_path_arg(install_prefix),
+                    },
+                }
+            )
+
+        payload = {
+            "version": 4,
+            "vendor": {
+                "oiio-builder": {
+                    "managed": True,
+                    "schema": 1,
+                    "repo": repo.name,
+                    "sourceDir": str(source_dir),
+                }
+            },
+            "include": includes,
+            "configurePresets": configure_presets,
+        }
+        return json.dumps(payload, indent=2) + "\n"
+
+    def _is_managed_prefix_contract_shim(self, path: Path) -> bool:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return False
+        if not isinstance(data, dict):
+            return False
+        vendor = data.get("vendor")
+        if not isinstance(vendor, dict):
+            return False
+        oiio_builder = vendor.get("oiio-builder")
+        if not isinstance(oiio_builder, dict):
+            return False
+        return bool(oiio_builder.get("managed"))
+
+    def _apply_prefix_contract_to_source_tree(self, repo: RepoConfig, repo_root: Path) -> None:
+        source_dir = self._source_tree_dir(repo, repo_root)
+        if not (source_dir / "CMakeLists.txt").exists():
+            return
+
+        shim_path = source_dir / "CMakeUserPresets.json"
+        if shim_path.exists() and not self._is_managed_prefix_contract_shim(shim_path):
+            print(
+                f"[skip] {repo.name}: existing unmanaged {shim_path.name} present at {source_dir}",
+                flush=True,
+            )
+            return
+
+        text = self._source_tree_contract_shim_text(repo, source_dir)
+        self._write_managed_text_file(shim_path, text, label=f"{repo.name} source preset shim")
+
     def _prepare_repo_source(self, repo: RepoConfig, src_dir: Path) -> None:
         lock = self._repo_source_prepare_locks.get(repo.name)
         if lock is None:
@@ -3471,6 +3927,8 @@ endif()
             if repo.name == "glew":
                 self._patch_glew_macos(src_dir)
             recipe_registry.patch_source(repo.name, self, src_dir)
+            if self.apply_prefix_contract:
+                self._apply_prefix_contract_to_source_tree(repo, src_dir)
             self._repo_source_prepared.add(repo.name)
 
     def _source_prep_env(self) -> dict[str, str]:
@@ -7303,6 +7761,7 @@ endif()
         )
         repos_by_name = {repo.name: repo for repo in self.repos}
         self._sync_repos(order, repos_by_name)
+        self._ensure_prefix_contracts()
 
         for repo_name in order:
             repo = repos_by_name[repo_name]
@@ -7330,6 +7789,7 @@ endif()
 
         # Resolve paths and clone/update repos.
         self._sync_repos(order, repos_by_name)
+        self._ensure_prefix_contracts()
 
         if self.parallel_build_types and self.platform.os in {"macos", "linux"} and len(build_types) > 1:
             self._run_parallel_build_types(build_types, order, repos_by_name, report)
