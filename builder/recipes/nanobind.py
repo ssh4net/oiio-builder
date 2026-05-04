@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from .policy import imageio_enabled
 
-
-def enabled(builder, _repo) -> bool:
-    return imageio_enabled(builder)
+def enabled(_builder, _repo) -> bool:
+    # Nanobind is used by OpenMeta in addition to the imageio stack.
+    return True

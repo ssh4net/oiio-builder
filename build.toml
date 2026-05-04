@@ -475,6 +475,25 @@ build_system = "cmake"
 deps = ["imath", "libdeflate", "openjph", "zlib-ng", "pybind11", "cpython"]
 
 [[repos]]
+name = "rapidobj"
+dir = "rapidobj"
+url = "https://github.com/guybrush77/rapidobj.git"
+build_system = "cmake"
+
+[[repos]]
+name = "miniply"
+dir = "miniply"
+url = "https://github.com/ssh4net/miniply.git"
+build_system = "cmake"
+
+[[repos]]
+name = "OpenMeta"
+dir = "OpenMeta"
+url = "https://github.com/ssh4net/OpenMeta.git"
+build_system = "cmake"
+deps = ["zlib-ng", "brotli", "expat", "nanobind", "cpython", "dng-sdk"]
+
+[[repos]]
 name = "expat"
 dir = "expat"
 dir_candidates = ["libexpat"]

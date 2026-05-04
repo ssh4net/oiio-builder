@@ -1,0 +1,4 @@
+[cmake.cache]
+RAPIDOBJ_BuildTests = false
+RAPIDOBJ_BuildTools = false
+RAPIDOBJ_BuildExamples = false

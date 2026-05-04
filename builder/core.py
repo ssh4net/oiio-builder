@@ -7726,6 +7726,12 @@ endif()
 
     def _sync_repos(self, order: list[str], repos_by_name: dict[str, RepoConfig]) -> None:
         """Resolve repo paths and perform clone/fetch/checkout/update."""
+        if self.dry_run and not self.no_update:
+            print(
+                "[note] --dry-run prints git update commands but does not advance checkouts; "
+                "stamp checks use the current local HEAD.",
+                flush=True,
+            )
         for repo_name in order:
             repo = repos_by_name[repo_name]
             repo_dir = self._resolve_repo_dir(repo)

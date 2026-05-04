@@ -90,6 +90,33 @@ def _build_fetch_cmd(path: Path, remote: str | None, ref: str | None, ref_type: 
     return cmd
 
 
+def _has_tracked_changes(path: Path) -> bool:
+    return bool(_git_lines(path, ["status", "--porcelain", "--untracked-files=no"]))
+
+
+def _current_branch(path: Path) -> str | None:
+    branch = _git_output(path, ["rev-parse", "--abbrev-ref", "HEAD"])
+    if not branch or branch == "HEAD":
+        return None
+    return branch
+
+
+def _build_current_branch_pull_cmd(path: Path, remote: str | None) -> list[str] | None:
+    branch = _current_branch(path)
+    if not branch:
+        return None
+
+    upstream = _git_output(path, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"])
+    cmd = ["git", "-C", str(path), "pull", "--quiet", "--ff-only"]
+    if upstream:
+        return cmd
+
+    if remote:
+        cmd.extend([remote, branch])
+        return cmd
+    return None
+
+
 def ensure_repo(path: Path, url: str | None, ref: str | None, ref_type: str, update: bool, dry_run: bool) -> None:
     if path.exists():
         if not (path / ".git").exists():
@@ -99,12 +126,22 @@ def ensure_repo(path: Path, url: str | None, ref: str | None, ref_type: str, upd
         remote = _select_remote(path, url, ref, ref_type)
         fetch_cmd = _build_fetch_cmd(path, remote, ref, ref_type)
         _run_git_update(fetch_cmd, dry_run=dry_run)
+        if _has_tracked_changes(path):
+            print(
+                f"[skip-update] {path}: tracked local changes present; fetched remotes but skipped checkout/pull",
+                flush=True,
+            )
+            return
         if ref:
             run(["git", "-C", str(path), "checkout", ref], dry_run=dry_run)
             if ref_type == "branch":
                 pull_cmd = ["git", "-C", str(path), "pull", "--quiet", "--ff-only"]
                 if remote:
                     pull_cmd.extend([remote, ref])
+                _run_git_update(pull_cmd, dry_run=dry_run)
+        else:
+            pull_cmd = _build_current_branch_pull_cmd(path, remote)
+            if pull_cmd:
                 _run_git_update(pull_cmd, dry_run=dry_run)
         return
 
