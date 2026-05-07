@@ -3654,6 +3654,13 @@ endif()
                 continue
         return None
 
+    def _prepare_ffmpeg_build_dir(self, ctx: BuildContext) -> None:
+        # FFmpeg's included dependency files can outlive source renames across
+        # updates and then make looks for files that no longer exist.
+        if not self.dry_run and ctx.build_dir.exists():
+            shutil.rmtree(ctx.build_dir, ignore_errors=True)
+        ctx.build_dir.mkdir(parents=True, exist_ok=True)
+
     def _autotools_windows_msys2_active(self) -> bool:
         return self.platform.os == "windows" and self._windows_msys2_detected()
 
@@ -6772,7 +6779,7 @@ endif()
             banner(f"{repo.name} ({build_type}) - install")
             run(install_cmd, cwd=str(build_dir), env=env, dry_run=self.dry_run, log_path=str(self._repo_log_path(repo.name, build_type, "install")))
         elif repo.build_system == "ffmpeg":
-            build_dir.mkdir(parents=True, exist_ok=True)
+            self._prepare_ffmpeg_build_dir(ctx)
             configure = src_dir / "configure"
             if not configure.exists():
                 raise RuntimeError(f"Missing configure script for {repo.name}: {configure}")

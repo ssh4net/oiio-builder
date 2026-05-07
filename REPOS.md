@@ -1,6 +1,6 @@
 # Repositories
 
-Repositories referenced by `build_MOS_stack_until_OIIO.sh` with current local clones and their origin URLs.
+Repositories referenced by `build_MOS_stack_until_OIIO.sh` plus builder-only additions, with current local clones and their origin URLs.
 
 | Script label | Local dir | Origin URL | Notes |
 | --- | --- | --- | --- |
@@ -22,6 +22,9 @@ Repositories referenced by `build_MOS_stack_until_OIIO.sh` with current local cl
 | giflib | — | — | missing local clone |
 | Imath | Imath | https://github.com/AcademySoftwareFoundation/Imath.git |  |
 | OpenEXR | openexr | https://github.com/AcademySoftwareFoundation/openexr.git |  |
+| rapidobj | rapidobj | https://github.com/guybrush77/rapidobj.git | Header-only CMake package; builder disables tests/tools/examples |
+| miniply | miniply | https://github.com/ssh4net/miniply.git | Small C++ library; builder disables CLI tools |
+| OpenMeta | OpenMeta | https://github.com/ssh4net/OpenMeta.git | Builds library + Python wheel; can use optional `dng_sdk` package |
 | openjph | openjph | https://github.com/ssh4net/OpenJPH.git |  |
 | googletest | googletest | https://github.com/google/googletest.git |  |
 | libjxl | libjxl | https://github.com/libjxl/libjxl.git |  |

@@ -78,7 +78,7 @@ def _detect_shared_needed_libs(path: Path, *, readelf: str | None, objdump: str 
     if readelf:
         code, out = _run_capture([readelf, "-d", str(path)])
         if code == 0:
-            return re.findall(r"Shared library: \\[(.*?)\\]", out)
+            return re.findall(r"Shared library: \[(.*?)\]", out)
     if objdump:
         code, out = _run_capture([objdump, "-p", str(path)])
         if code == 0:
@@ -108,11 +108,10 @@ def _classify_stdlib_from_needed(needed: list[str]) -> str:
 
 def _detect_stdlib_from_nm(path: Path, *, nm: str, max_lines: int) -> str:
     markers: set[str] = set()
-    saw_any_std = False
-    saw_any_cxx = False
 
-    def scan(cmd: list[str]) -> None:
-        nonlocal saw_any_std, saw_any_cxx, markers
+    def scan(cmd: list[str]) -> tuple[bool, bool]:
+        saw_any_std = False
+        saw_any_cxx = False
         for line in _iter_output_lines(cmd, max_lines=max_lines):
             if "std::" in line:
                 saw_any_std = True
@@ -126,13 +125,18 @@ def _detect_stdlib_from_nm(path: Path, *, nm: str, max_lines: int) -> str:
             if "std::__cxx11::" in line or "__gnu_cxx::" in line or "GLIBCXX_" in line:
                 markers.add(_CXX_STDLIB_LIBSTDCXX)
             if len(markers) > 1:
-                return
+                break
+        return saw_any_std, saw_any_cxx
 
     # Prefer undefined symbols (usually much smaller output).
-    scan([nm, "-u", "-C", str(path)])
-    if not markers and not saw_any_cxx:
-        # Fall back to scanning defined symbols (some archives are self-contained).
-        scan([nm, "-C", str(path)])
+    saw_any_std, saw_any_cxx = scan([nm, "-u", "-C", str(path)])
+    if not markers:
+        # Fall back to scanning defined symbols before guessing. Static archives
+        # often expose libc++ markers only in defined symbols, while undefined
+        # references may show generic `std::...` names that are ambiguous.
+        defined_saw_any_std, defined_saw_any_cxx = scan([nm, "-C", str(path)])
+        saw_any_std = saw_any_std or defined_saw_any_std
+        saw_any_cxx = saw_any_cxx or defined_saw_any_cxx
 
     if len(markers) > 1:
         return _CXX_STDLIB_MIXED
