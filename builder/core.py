@@ -998,6 +998,17 @@ class Builder:
 
         def _resolve_prefix(raw: str) -> Path:
             expanded = os.path.expanduser(os.path.expandvars(str(raw)))
+            drive_match = re.match(r"^([A-Za-z]):[\\/](.*)$", expanded)
+            if self.platform.os != "windows" and drive_match is not None:
+                drive = drive_match.group(1).lower()
+                rest = drive_match.group(2).replace("\\", "/")
+                mount_root = Path("/mnt") / drive
+                if mount_root.exists() or os.environ.get("WSL_INTEROP") or os.environ.get("WSL_DISTRO_NAME"):
+                    return mount_root / rest
+                raise RuntimeError(
+                    f"Windows drive-style prefix {raw!r} is not valid on {self.platform.os}; "
+                    "use a POSIX absolute path for [global].install_prefix."
+                )
             path = Path(expanded)
             if not path.is_absolute():
                 path = (cfg.repo_root / path).resolve()
@@ -1689,6 +1700,62 @@ class Builder:
             f"{fix_block}"
         )
 
+    def _normalize_posix_shell_scripts(self, repo_name: str, paths: list[Path]) -> None:
+        if self.platform.os == "windows":
+            return
+
+        changed: list[str] = []
+        for path in paths:
+            if not path.exists() or not path.is_file():
+                continue
+            data = path.read_bytes()
+            if b"\r\n" not in data:
+                continue
+            changed.append(path.name)
+
+        if changed:
+            preview = ", ".join(changed[:4])
+            if len(changed) > 4:
+                preview += f", +{len(changed) - 4} more"
+            if self.dry_run:
+                print(f"[dry-run] {repo_name}: normalize CRLF line endings for POSIX scripts: {preview}", flush=True)
+                return
+            for path in paths:
+                if not path.exists() or not path.is_file():
+                    continue
+                data = path.read_bytes()
+                if b"\r\n" in data:
+                    path.write_bytes(data.replace(b"\r\n", b"\n"))
+            print(f"[note] {repo_name}: normalized CRLF line endings for POSIX scripts: {preview}", flush=True)
+
+    def _clean_cpython_posix_source_artifacts(self, src_dir: Path) -> None:
+        if self.platform.os == "windows":
+            return
+
+        artifacts = [
+            src_dir / "python",
+            src_dir / "_bootstrap_python",
+            src_dir / "Programs" / "python.o",
+            src_dir / "Python" / "frozen_modules" / "MANIFEST",
+        ]
+        artifacts.extend(sorted((src_dir / "Python" / "frozen_modules").glob("*.h")))
+
+        removed: list[str] = []
+        for artifact in artifacts:
+            if not artifact.exists() or not artifact.is_file():
+                continue
+            rel = str(artifact.relative_to(src_dir))
+            removed.append(rel)
+            if not self.dry_run:
+                artifact.unlink()
+
+        if removed:
+            preview = ", ".join(removed[:3])
+            if len(removed) > 3:
+                preview += f", +{len(removed) - 3} more"
+            prefix = "[dry-run]" if self.dry_run else "[note]"
+            print(f"{prefix} cpython: remove source-tree build artifacts before out-of-tree build: {preview}", flush=True)
+
     def _env_for_build(self, build_type: str, prefix: Path) -> dict[str, str]:
         env = dict(self.config.global_cfg.env)
         if self.platform.os == "windows":
@@ -1717,6 +1784,30 @@ class Builder:
             seen.add(normalized)
             deduped_paths.append(path_item)
         env["PKG_CONFIG_PATH"] = os.pathsep.join(deduped_paths)
+
+        if self.platform.os == "linux":
+            runtime_paths = [
+                str(prefix / "lib"),
+                str(prefix / "lib64"),
+            ]
+            existing_runtime = [
+                env.get("LD_LIBRARY_PATH", ""),
+                os.environ.get("LD_LIBRARY_PATH", ""),
+            ]
+            for value in existing_runtime:
+                if value:
+                    runtime_paths.extend(value.split(os.pathsep))
+            deduped_runtime_paths: list[str] = []
+            seen_runtime: set[str] = set()
+            for path_item in runtime_paths:
+                if not path_item:
+                    continue
+                normalized = os.path.normcase(os.path.normpath(path_item))
+                if normalized in seen_runtime:
+                    continue
+                seen_runtime.add(normalized)
+                deduped_runtime_paths.append(path_item)
+            env["LD_LIBRARY_PATH"] = os.pathsep.join(deduped_runtime_paths)
 
         if self._ccache_path:
             fallback_cache_dir = self.config.global_cfg.build_root / ".ccache"
@@ -6373,6 +6464,25 @@ endif()
         configure = src_dir / "configure"
         if not configure.exists():
             raise RuntimeError(f"Missing configure script for cpython: {configure}")
+        self._normalize_posix_shell_scripts(
+            ctx.repo.name,
+            [
+                configure,
+                src_dir / "config.guess",
+                src_dir / "config.sub",
+                src_dir / "install-sh",
+                src_dir / "pyconfig.h.in",
+                src_dir / "Makefile.pre.in",
+                src_dir / "Misc" / "python.pc.in",
+                src_dir / "Misc" / "python-embed.pc.in",
+                src_dir / "Misc" / "python-config.sh.in",
+                src_dir / "Modules" / "makesetup",
+                src_dir / "Modules" / "Setup",
+                src_dir / "Modules" / "Setup.bootstrap.in",
+                src_dir / "Modules" / "Setup.stdlib.in",
+            ],
+        )
+        self._clean_cpython_posix_source_artifacts(src_dir)
 
         if not self.dry_run and (build_dir / "Makefile").exists():
             shutil.rmtree(build_dir, ignore_errors=True)
@@ -6394,6 +6504,9 @@ endif()
             py_env["CXXFLAGS"] = cxxflags
         if ldflags:
             py_env["LDFLAGS"] = ldflags
+        if (install_prefix / "lib" / "pkgconfig" / "sqlite3.pc").exists():
+            py_env.setdefault("LIBSQLITE3_CFLAGS", f"-I{(install_prefix / 'include').as_posix()}")
+            py_env.setdefault("LIBSQLITE3_LIBS", f"-L{(install_prefix / 'lib').as_posix()} -lsqlite3 -lz -lm")
 
         configure_cmd = [
             str(configure),

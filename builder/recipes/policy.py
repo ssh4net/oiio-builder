@@ -27,8 +27,4 @@ def qt6_enabled(builder) -> bool:
 
 def cpython_requested(builder) -> bool:
     cfg = _cfg(builder)
-    if not bool(getattr(cfg, "build_cpython", True)):
-        return False
-    if builder.platform.os == "windows":
-        return True
-    return bool(getattr(cfg, "cpython_ref", None))
+    return bool(getattr(cfg, "build_cpython", True))

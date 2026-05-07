@@ -114,9 +114,7 @@ Key options:
 - `use_libcxx`: default on macOS/Linux; set `false` to use libstdc++.
 - `use_ccache`: enable `ccache` compiler launcher on macOS/Linux (default: `true`). Disable with `--no-ccache` or `use_ccache=false`. Configure cache paths via `[global.env]` (`CCACHE_DIR`, `CCACHE_TEMPDIR`, `CCACHE_MAXSIZE`, …).
 - `build_*` toggles: enable/disable stacks (GL, EXR, image IO, etc.).
-- `build_cpython`: build CPython from source (`https://github.com/python/cpython.git`).
-  - On Windows: enabled by default.
-  - On Linux/macOS: built only when `cpython_ref` is explicitly set.
+- `build_cpython`: build CPython from source (`https://github.com/python/cpython.git`), enabled by default on all platforms.
 - `sqlite` is built ahead of `cpython` when CPython is requested.
 - `cpython_ref`: optional CPython git ref override (example: `3.13`, `v3.12.11`, commit SHA).
 - `cpython_ref_type`: `branch` (default), `tag`, or `commit` for `cpython_ref`.

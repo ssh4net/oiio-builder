@@ -103,7 +103,6 @@ openimageio_patch_png_include = true
 # CPython source override:
 # - default repo ref is branch "3.13" (see [[repos]] cpython below)
 # - set cpython_ref/cpython_ref_type to build a different branch/tag/commit
-#   (Linux/macOS builds CPython only when cpython_ref is explicitly set)
 # cpython_ref = "3.13"
 # cpython_ref_type = "branch"
 
@@ -405,12 +404,12 @@ build_system = "cmake"
 [[repos]]
 name = "sqlite"
 dir = "sqlite"
-# Windows-only: imported from a vcpkg export zip placed under `external/`.
+# Windows: imported from a vcpkg export zip placed under `external/`.
+# POSIX: built from the upstream source tree with its repo-root `configure`.
 # Default expected path: `external/vcpkg-export-sqlite.zip`
 # Override: set `SQLITE_VCPKG_EXPORT_ZIP` in `[windows.env]` or the process env.
 url = "https://github.com/sqlite/sqlite.git"
 build_system = "autotools"
-source_subdir = "autoconf"
 
 [[repos]]
 name = "highway"
