@@ -5,7 +5,7 @@ from pathlib import Path
 from .policy import imageio_enabled
 
 
-STAMP_REVISION = "4"
+STAMP_REVISION = "5"
 
 
 def enabled(builder, _repo) -> bool:
@@ -102,6 +102,43 @@ def patch_source(_builder, src_dir: Path) -> None:
 
     text = "\n".join(lines) + ("\n" if original_text.endswith("\n") else "")
 
+    include_block = """\
+# OIIO_BUILDER_INCLUDE_ORDER_BEGIN
+# Keep LibRaw source headers ahead of any previously installed prefix headers.
+include_directories(BEFORE ${CMAKE_CURRENT_BINARY_DIR}/
+                           ${LIBRAW_PATH}/
+                  )
+# OIIO_BUILDER_INCLUDE_ORDER_END
+"""
+
+    include_marker = "OIIO_BUILDER_INCLUDE_ORDER_BEGIN"
+    if include_marker not in text:
+        old_include_block = """\
+include_directories(${CMAKE_CURRENT_BINARY_DIR}/
+                    ${LIBRAW_PATH}/
+                   )
+"""
+        if old_include_block in text:
+            text = text.replace(old_include_block, include_block, 1)
+    else:
+        lines = text.splitlines()
+        begin = next((i for i, line in enumerate(lines) if include_marker in line), None)
+        if begin is not None:
+            end = next((i for i in range(begin + 1, len(lines)) if "OIIO_BUILDER_INCLUDE_ORDER_END" in lines[i]), None)
+            replacement = include_block.rstrip("\n").splitlines()
+            if end is not None and lines[begin : end + 1] != replacement:
+                lines[begin : end + 1] = replacement
+                text = "\n".join(lines) + "\n"
+
+    target_include_replacements = {
+        "target_include_directories(raw\n        PUBLIC": "target_include_directories(raw BEFORE\n        PUBLIC",
+        "target_include_directories(raw_r\n        PUBLIC": "target_include_directories(raw_r BEFORE\n        PUBLIC",
+    }
+    for needle, replacement in target_include_replacements.items():
+        if needle in text:
+            text = text.replace(needle, replacement, 1)
+    patched_text_changed = text != original_text
+
     option_block = """\
 # OIIO_BUILDER_DNGSDK_BEGIN
 option(ENABLE_DNGSDK "Build library with Adobe DNG SDK support (USE_DNGSDK)" OFF)
@@ -158,7 +195,7 @@ endif()
                 blocks_changed = True
         if blocks_changed:
             cmake_lists.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        elif changed:
+        elif patched_text_changed:
             cmake_lists.write_text(text, encoding="utf-8")
         return
 

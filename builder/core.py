@@ -266,6 +266,8 @@ class Builder:
             return []
         if ";" in text:
             return [part.strip() for part in text.split(";") if part.strip()]
+        if re.match(r"^[A-Za-z]:[\\/]", text) and text.count(":") == 1:
+            return [text]
         return [part.strip() for part in text.split(":") if part.strip()]
 
     def _adapt_windows_env_for_msys(self, env: dict[str, str]) -> None:
@@ -866,13 +868,88 @@ class Builder:
                 ]
         else:
             candidates = [prefix / "bin" / "python3", prefix / "bin" / "python"]
-        return next((candidate for candidate in candidates if candidate.exists()), None)
+        expected_version = self._prefix_python_major_minor(prefix)
+        for candidate in candidates:
+            if not candidate.exists():
+                continue
+            if self.platform.os != "windows" or expected_version is None:
+                return candidate
+            if self._python_executable_major_minor(candidate) == expected_version:
+                return candidate
+        return None
+
+    def _prefix_python_major_minor(self, prefix: Path) -> tuple[int, int] | None:
+        patchlevel = prefix / "include" / "patchlevel.h"
+        if not patchlevel.exists():
+            return None
+        text = patchlevel.read_text(encoding="utf-8", errors="replace")
+        major = re.search(r"^\s*#\s*define\s+PY_MAJOR_VERSION\s+(\d+)\s*$", text, re.MULTILINE)
+        minor = re.search(r"^\s*#\s*define\s+PY_MINOR_VERSION\s+(\d+)\s*$", text, re.MULTILINE)
+        if major is None or minor is None:
+            return None
+        return int(major.group(1)), int(minor.group(1))
+
+    def _prefix_python_lib_stem(self, prefix: Path) -> str | None:
+        version = self._prefix_python_major_minor(prefix)
+        if version is None:
+            return None
+        return f"python{version[0]}{version[1]}"
+
+    def _python_executable_major_minor(self, executable: Path) -> tuple[int, int] | None:
+        try:
+            proc = subprocess.run(
+                [str(executable), "-c", "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if proc.returncode != 0:
+            return None
+        match = re.search(r"(\d+)\.(\d+)", proc.stdout)
+        if match is None:
+            return None
+        return int(match.group(1)), int(match.group(2))
+
+    def _host_python_executable_for_prefix(self, prefix: Path) -> str | None:
+        expected_version = self._prefix_python_major_minor(prefix)
+        if expected_version is None:
+            return None
+
+        candidates: list[Path] = []
+        sys_executable = Path(sys.executable)
+        if sys_executable.is_file():
+            candidates.append(sys_executable)
+        for env_name in ("VIRTUAL_ENV", "CONDA_PREFIX"):
+            env_value = os.environ.get(env_name)
+            if not env_value:
+                continue
+            env_root = Path(env_value)
+            if self.platform.os == "windows":
+                candidates.append(env_root / "Scripts" / "python.exe")
+            else:
+                candidates.append(env_root / "bin" / "python3")
+                candidates.append(env_root / "bin" / "python")
+
+        seen: set[str] = set()
+        for candidate in candidates:
+            key = os.path.normcase(os.path.normpath(str(candidate)))
+            if key in seen:
+                continue
+            seen.add(key)
+            if candidate.is_file() and self._python_executable_major_minor(candidate) == expected_version:
+                return str(candidate)
+        return None
 
     def _prefix_windows_python_libraries(self, prefix: Path) -> tuple[Path | None, Path | None]:
         debug_postfix = str(self.config.global_cfg.windows.get("debug_postfix", "d"))
         lib_dirs = [prefix / "libs", prefix / "lib"]
         release_candidates: list[Path] = []
         debug_candidates: list[Path] = []
+        version_stem = self._prefix_python_lib_stem(prefix)
 
         for lib_dir in lib_dirs:
             if not lib_dir.exists():
@@ -888,9 +965,17 @@ class Builder:
                 else:
                     release_candidates.append(candidate)
 
+        if version_stem:
+            debug_stems = {f"{version_stem}_{debug_postfix}", f"{version_stem}{debug_postfix}"}
+            versioned_release = [path for path in release_candidates if path.stem.lower() == version_stem]
+            versioned_debug = [path for path in debug_candidates if path.stem.lower() in debug_stems]
+            if versioned_release or versioned_debug:
+                release_candidates = versioned_release
+                debug_candidates = versioned_debug
+
         def _priority(path: Path) -> tuple[int, str]:
             stem = path.stem.lower()
-            # Prefer versioned libs (python312.lib / python312_d.lib) over
+            # Prefer versioned libs (python313.lib / python313_d.lib) over
             # generic import libs (python3.lib / python3_d.lib).
             if re.fullmatch(r"python\d{2,}(_[a-z])?", stem):
                 return 0, path.name.lower()
@@ -905,8 +990,6 @@ class Builder:
         debug_lib = debug_candidates[0] if debug_candidates else None
         if debug_lib is None:
             debug_lib = release_lib
-        if release_lib is None:
-            release_lib = debug_lib
         return release_lib, debug_lib
 
     def _compute_prefixes(self) -> dict[str, Path]:
@@ -1248,6 +1331,124 @@ class Builder:
     def _which_in_env(name: str, env: dict[str, str]) -> str | None:
         search_path = env.get("PATH") or os.environ.get("PATH", "")
         return shutil.which(name, path=search_path)
+
+    @staticmethod
+    def _windows_is_posix_ninja(path: str | Path) -> bool:
+        text = re.sub(r"/+", "/", str(path).replace("\\", "/").lower())
+        base = text.rsplit("/", 1)[-1]
+        if base not in {"ninja", "ninja.exe"}:
+            return False
+        return "/usr/bin/" in text or ("/cygwin" in text and "/bin/" in text)
+
+    def _windows_ninja_generator_active(self) -> bool:
+        return self.platform.os == "windows" and self._windows_generator() in {"ninja-msvc", "ninja-clang-cl"}
+
+    def _windows_path_tool_candidates(self, tool_name: str, env: dict[str, str]) -> list[Path]:
+        candidates: list[Path] = []
+        seen: set[str] = set()
+        raw_path = env.get("PATH") or os.environ.get("PATH") or ""
+        for entry in self._windows_split_env_path_list(raw_path):
+            cleaned = entry.strip().strip("\"'")
+            if not cleaned:
+                continue
+            for leaf in (f"{tool_name}.exe", tool_name):
+                candidate = Path(cleaned) / leaf
+                key = os.path.normcase(os.path.normpath(str(candidate)))
+                if key in seen:
+                    continue
+                seen.add(key)
+                if candidate.is_file() and os.access(candidate, os.X_OK):
+                    candidates.append(candidate)
+        return candidates
+
+    def _windows_native_ninja_probe_candidates(self, env: dict[str, str]) -> list[Path]:
+        candidates = self._windows_path_tool_candidates("ninja", env)
+
+        cmake = self._which_in_env("cmake", env)
+        if cmake:
+            candidates.append(Path(cmake).with_name("ninja.exe"))
+
+        for env_name in ("VSINSTALLDIR", "VCINSTALLDIR"):
+            value = env.get(env_name) or os.environ.get(env_name)
+            if not value:
+                continue
+            root = Path(value)
+            if env_name == "VCINSTALLDIR":
+                root = root.parent
+            candidates.append(root / "Common7" / "IDE" / "CommonExtensions" / "Microsoft" / "CMake" / "Ninja" / "ninja.exe")
+
+        for env_name in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"):
+            value = env.get(env_name) or os.environ.get(env_name)
+            if not value:
+                continue
+            base = Path(value)
+            candidates.append(base / "CMake" / "bin" / "ninja.exe")
+            vs_base = base / "Microsoft Visual Studio"
+            if vs_base.is_dir():
+                candidates.extend(
+                    vs_base.glob("*/**/Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja/ninja.exe")
+                )
+
+        unique: list[Path] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            key = os.path.normcase(os.path.normpath(str(candidate)))
+            if key in seen:
+                continue
+            seen.add(key)
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                unique.append(candidate)
+        return unique
+
+    def _resolve_windows_native_ninja(self, env: dict[str, str] | None = None) -> str:
+        if self.platform.os != "windows":
+            raise RuntimeError("native Windows ninja resolution is only valid on Windows")
+
+        effective_env = env or self._effective_host_env()
+        search_path = effective_env.get("PATH") or os.environ.get("PATH", "")
+
+        for key in ("CMAKE_MAKE_PROGRAM", "NINJA"):
+            override = _normalize_override(effective_env.get(key) or os.environ.get(key))
+            if not override:
+                continue
+            resolved = _resolve_executable_candidate(override, search_path=search_path)
+            if not resolved:
+                raise RuntimeError(f"{key} is set to {override!r}, but that executable was not found")
+            if self._windows_is_posix_ninja(resolved):
+                raise RuntimeError(
+                    f"{key} points to MSYS2/Cygwin POSIX Ninja ({resolved}); use a native Windows ninja.exe"
+                )
+            return resolved
+
+        skipped_posix: list[str] = []
+        for candidate in self._windows_native_ninja_probe_candidates(effective_env):
+            if self._windows_is_posix_ninja(candidate):
+                skipped_posix.append(str(candidate))
+                continue
+            return str(candidate)
+
+        if skipped_posix:
+            bad = skipped_posix[0]
+            raise RuntimeError(
+                "Windows Ninja generators require a native Windows ninja.exe. "
+                f"CMake would pick POSIX Ninja from MSYS2/Cygwin ({bad}), which breaks MSVC try-compile commands. "
+                "Install/use the Ninja bundled with CMake or Visual Studio, put it earlier in PATH, "
+                "or set windows.env.CMAKE_MAKE_PROGRAM to that native ninja.exe."
+            )
+
+        raise RuntimeError(
+            "Windows Ninja generators require native Windows ninja.exe, but none was found. "
+            "Install Ninja via CMake/Visual Studio/winget, set windows.env.CMAKE_MAKE_PROGRAM, "
+            "or use windows.generator = \"msvc\"."
+        )
+
+    def _cmake_make_program_args(self, *, force_windows_ninja: bool = False) -> list[str]:
+        if self.platform.os != "windows":
+            return []
+        if not force_windows_ninja and not self._windows_ninja_generator_active():
+            return []
+        ninja = self._resolve_windows_native_ninja(self._effective_host_env())
+        return [f"-DCMAKE_MAKE_PROGRAM={self._cmake_path_arg(ninja)}"]
 
     def _resolve_windows_posix_shell(self, env: dict[str, str]) -> str | None:
         if self.platform.os != "windows":
@@ -2619,6 +2820,8 @@ class Builder:
         # Python is mandatory for OIIO in this setup.
         values["USE_PYTHON"] = "ON"
 
+        values["USE_QT"] = "ON" if cfg.build_qt6 else "OFF"
+
         if self.platform.os == "linux" and cfg.build_qt6 and not values.get("OIIO_IV_EXTRA_IV_LIBRARIES"):
             # Qt6 static DBus linkage on Linux may require systemd symbols
             # via libdbus-1.a (_dbus_listen_systemd_sockets).
@@ -3094,8 +3297,18 @@ endif()
             # Freetype deps (HarfBuzz)
             add_windows_library(["harfbuzz"])
 
-            # System libs needed by static deps (minizip-ng, FFmpeg, etc.)
-            for syslib in ("bcrypt.lib", "ncrypt.lib", "crypt32.lib", "ws2_32.lib", "secur32.lib"):
+            # System libs needed by static deps (minizip-ng, FFmpeg, etc.).
+            # FFmpeg builds with Media Foundation support reference IIDs from
+            # mfuuid/strmiids through avcodec's mfenc/mf_utils objects.
+            for syslib in (
+                "bcrypt.lib",
+                "ncrypt.lib",
+                "crypt32.lib",
+                "ws2_32.lib",
+                "secur32.lib",
+                "mfuuid.lib",
+                "strmiids.lib",
+            ):
                 add_entry(syslib)
             # `ucrt(d).lib` are the import libraries for the UCRT DLL and should
             # not be forced for `/MT` builds (it causes CRT mixing).
@@ -3562,6 +3775,8 @@ endif()
                 prefix_python = self._prefix_python_executable(ctx.install_prefix, ctx.build_type)
                 if prefix_python is not None:
                     python_exec = prefix_python.as_posix()
+            if self.platform.os == "windows" and not python_exec:
+                python_exec = self._host_python_executable_for_prefix(ctx.install_prefix)
 
         # Keep Python resolution portable by default:
         # - do not hardcode an absolute interpreter path unless user-provided;
@@ -3599,7 +3814,7 @@ endif()
                 if ctx.build_type == "Debug":
                     chosen = python_debug_lib or python_release_lib
                 else:
-                    chosen = python_release_lib or python_debug_lib
+                    chosen = python_release_lib
                 if chosen is not None:
                     chosen_posix = chosen.as_posix()
                     args.append(f"-DPython3_LIBRARY={chosen_posix}")
@@ -3685,9 +3900,9 @@ endif()
         if generator == "msvc-clang-cl":
             return ["-G", _windows_vs_generator(), "-T", "ClangCL"]
         if generator == "ninja-clang-cl":
-            return ["-G", "Ninja"]
+            return ["-G", "Ninja", *self._cmake_make_program_args()]
         # default: ninja + msvc
-        return ["-G", "Ninja"]
+        return ["-G", "Ninja", *self._cmake_make_program_args()]
 
     def _resolve_repo_dir(self, repo: RepoConfig) -> Path:
         cfg = self.config.global_cfg
@@ -6317,14 +6532,50 @@ endif()
         lib_dst.mkdir(parents=True, exist_ok=True)
         libs_compat_dst.mkdir(parents=True, exist_ok=True)
         bin_dst.mkdir(parents=True, exist_ok=True)
+        debug_postfix = str(self.config.global_cfg.windows.get("debug_postfix", "d"))
+
+        def _is_debug_python_artifact(path: Path) -> bool:
+            stem = path.stem.lower()
+            return (
+                stem.endswith(f"_{debug_postfix}")
+                or stem in {f"python{debug_postfix}", f"pythonw{debug_postfix}"}
+                or re.fullmatch(rf"python\d{{2,}}{re.escape(debug_postfix)}", stem) is not None
+            )
+
+        stale_specs = [
+            (lib_dst, "python*.lib"),
+            (libs_compat_dst, "python*.lib"),
+            (install_prefix, "python*.dll"),
+            (install_prefix, "python*.exe"),
+            (install_prefix, "python*.pdb"),
+            (bin_dst, "python*.dll"),
+            (bin_dst, "python*.exe"),
+            (bin_dst, "python*.pdb"),
+        ]
+        remove_debug_artifacts = ctx.build_type == "Debug"
+        for directory, pattern in stale_specs:
+            for stale in directory.glob(pattern):
+                if _is_debug_python_artifact(stale) == remove_debug_artifacts:
+                    stale.unlink()
 
         include_src = src_dir / "Include"
         if include_src.is_dir():
             shutil.copytree(include_src, include_dst, dirs_exist_ok=True)
-        for pyconfig_candidate in (src_dir / "PC" / "pyconfig.h", src_dir / "PCbuild" / "pyconfig.h"):
+        pyconfig_dst = include_dst / "pyconfig.h"
+        if pyconfig_dst.exists():
+            pyconfig_dst.unlink()
+        pyconfig_candidates = (
+            output_dir / "pyconfig.h",
+            src_dir / "PCbuild" / "pyconfig.h",
+            src_dir / "PC" / "pyconfig.h",
+            src_dir / "PC" / "pyconfig.h.in",
+        )
+        for pyconfig_candidate in pyconfig_candidates:
             if pyconfig_candidate.exists():
-                shutil.copy2(pyconfig_candidate, include_dst / "pyconfig.h")
+                shutil.copy2(pyconfig_candidate, pyconfig_dst)
                 break
+        if not pyconfig_dst.exists():
+            raise RuntimeError(f"Could not locate generated CPython pyconfig.h under: {src_dir / 'PCbuild'}")
 
         for lib_file in sorted(output_dir.glob("python*.lib")):
             shutil.copy2(lib_file, lib_dst / lib_file.name)
@@ -6339,7 +6590,6 @@ endif()
         if stdlib_src.is_dir():
             shutil.copytree(stdlib_src, install_prefix / "Lib", dirs_exist_ok=True)
 
-        debug_postfix = str(self.config.global_cfg.windows.get("debug_postfix", "d"))
         debug_libs = list(lib_dst.glob(f"python*{debug_postfix}.lib")) + list(lib_dst.glob(f"python*_{debug_postfix}.lib"))
         if ctx.build_type == "Debug" and not debug_libs:
             release_libs = [p for p in sorted(lib_dst.glob("python*.lib")) if not p.name.lower().endswith(f"{debug_postfix}.lib")]
@@ -6689,6 +6939,7 @@ endif()
             cxxflags = self._base_flags(build_type)
             if self.platform.os == "windows":
                 cmake_args.append("-DCMAKE_POLICY_DEFAULT_CMP0091=NEW")
+                cmake_args.extend(self._cmake_make_program_args(force_windows_ninja=True))
                 runtime_mode = self._windows_runtime_mode()
                 if runtime_mode == "static":
                     runtime = "MultiThreadedDebug" if build_type == "Debug" else "MultiThreaded"

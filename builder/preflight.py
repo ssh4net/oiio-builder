@@ -212,7 +212,10 @@ endif ()
         tmp_path = Path(tmp_dir)
         (tmp_path / "CMakeLists.txt").write_text(cmake_lists, encoding="utf-8")
         cmd = [cmake_path, "-S", str(tmp_path), "-B", str(tmp_path / "build")]
-        cmd.extend(builder._cmake_generator_args())
+        try:
+            cmd.extend(builder._cmake_generator_args())
+        except RuntimeError as exc:
+            return None, {}, str(exc)
         proc = subprocess.run(
             cmd,
             env=env,
@@ -294,7 +297,7 @@ def _build_env_for_pkg_config(builder: Builder, build_type: str) -> dict[str, st
     return env
 
 
-def _tool_checks(platform: PlatformInfo, env: dict[str, str]) -> list[ToolCheck]:
+def _tool_checks(platform: PlatformInfo, env: dict[str, str], *, skip_ninja: bool = False) -> list[ToolCheck]:
     doxygen_override = _normalize_override(env.get("DOXYGEN_EXECUTABLE"))
     pkg_override = _normalize_override(env.get("PKG_CONFIG_EXECUTABLE") or env.get("PKG_CONFIG"))
     nasm_override = resolve_nasm_executable(env, platform_os=platform.os)
@@ -311,11 +314,12 @@ def _tool_checks(platform: PlatformInfo, env: dict[str, str]) -> list[ToolCheck]
     checks = [
         ToolCheck("git", ["git"], True),
         ToolCheck("cmake", ["cmake"], True),
-        ToolCheck("ninja", ["ninja"], True),
         ToolCheck("pkg-config", [pkg_override] if pkg_override else ["pkg-config", "pkgconf"], True),
         ToolCheck("doxygen", [doxygen_override] if doxygen_override else ["doxygen"], True),
         ToolCheck("sphinx-build", ["sphinx-build", "sphinx-build-3"], True),
     ]
+    if not skip_ninja:
+        checks.insert(2, ToolCheck("ninja", ["ninja"], True))
     if platform.os in {"macos", "linux"}:
         checks.append(ToolCheck("make", ["make", "gmake"], True))
     if platform.arch == "x86_64":
@@ -426,8 +430,17 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
             lines.append("  mt: missing (Windows SDK manifest tool)")
         if not rc_path or not mt_path:
             lines.append("  hint: install the Visual Studio C++ workload with the Windows 10/11 SDK.")
+        if builder._windows_ninja_generator_active():
+            lines.append("Windows Ninja:")
+            try:
+                native_ninja = builder._resolve_windows_native_ninja(env)
+            except RuntimeError as exc:
+                missing_tools += 1
+                lines.append(f"  ninja: unusable ({exc})")
+            else:
+                lines.append(f"  ninja: ok ({native_ninja})")
     lines.append("Tools:")
-    checks = _tool_checks(platform, env)
+    checks = _tool_checks(platform, env, skip_ninja=platform.os == "windows")
     if platform.os == "linux" and any(repo.build_system == "qt6" for repo in builder.repos):
         checks.append(ToolCheck("wayland-scanner", ["wayland-scanner"], True, "qtwayland"))
     for check in checks:

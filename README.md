@@ -285,10 +285,10 @@ If you want FFmpeg source builds or any Windows autotools repo, install MSYS2 fr
 
 - https://www.msys2.org/
 
-Start an MSYS2 shell on Windows (UCRT64 is fine) and install the minimum tools this builder expects:
+Start an MSYS2 shell on Windows (UCRT64 is fine) and install the minimum POSIX tools this builder expects:
 
 ```bash
-pacman -S --needed base-devel unzip cmake ninja git
+pacman -S --needed base-devel unzip git
 curl -LsSf https://astral.sh/uv/install.sh | sh
 source "$HOME/.local/bin/env"
 ```
@@ -300,6 +300,7 @@ pacman -S --needed diffutils make
 ```
 
 `base-devel`/`diffutils`/`make` are required for FFmpeg/autotools source builds because they provide core MSYS tools such as `cmp` and `make`.
+MSVC CMake builds still need a native Windows `cmake.exe` and `ninja.exe` from CMake, Visual Studio, or another Windows-native install; do not let `C:/msys64/usr/bin/ninja.exe` be the Ninja used by `windows.generator = "ninja-msvc"`.
 
 Enable Windows FFmpeg source builds in your local `build.user.toml`:
 
@@ -473,6 +474,7 @@ NASM_EXECUTABLE = "C:\\Program Files\\NASM\\nasm.exe"
 - **OpenMP not found (macOS/Linux)**: set `OpenMP_ROOT` in `build.toml` or environment.
 - **NASM not detected on Windows**: set `windows.env.NASM_EXECUTABLE = "C:/Program Files/NASM/nasm.exe"` in `build.user.toml`. The builder also probes the default NASM installer path automatically.
 - **Windows Ninja build unexpectedly tries `clang-cl`**: with `windows.generator = "ninja-msvc"` the builder now pins `cl` explicitly. If preflight still reports `cc: missing (cl)`, launch the build from a Visual Studio Developer Prompt/PowerShell.
+- **Windows CMake try-compile fails with `/bin/sh: ... cl.EXE: command not found`**: CMake picked MSYS2 POSIX Ninja (`C:/msys64/usr/bin/ninja.exe`). Put a native Ninja from CMake or Visual Studio earlier in `PATH`, set `windows.env.CMAKE_MAKE_PROGRAM = "C:/Program Files/CMake/bin/ninja.exe"`, or switch to `windows.generator = "msvc"`.
 - **Windows CMake try-compile fails with `rc` or `CMAKE_MT-NOTFOUND`**: install the Windows 10/11 SDK via the Visual Studio C++ workload. The builder now probes `rc.exe` and `mt.exe` and reports them in preflight.
 - **ASAN failures on Windows**: prefer clang-cl and ensure the MSVC AddressSanitizer component is installed.
 - **PyOpenColorIO / PyOpenEXR link errors on Windows**: set `windows.msvc_runtime = "dynamic"` and `windows.python_wrappers = "on"` for wrapper builds.

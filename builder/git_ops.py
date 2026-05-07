@@ -6,6 +6,12 @@ import subprocess
 from .runner import run
 
 
+_DEFAULT_BRANCH_RENAMES = {
+    "master": "main",
+    "main": "master",
+}
+
+
 def git_head(path: Path) -> str | None:
     git_dir = path / ".git"
     if not git_dir.exists():
@@ -32,6 +38,15 @@ def _git_lines(path: Path, args: list[str]) -> list[str]:
     if not output:
         return []
     return [line.strip() for line in output.splitlines() if line.strip()]
+
+
+def _git_success(path: Path, args: list[str]) -> bool:
+    return subprocess.run(
+        ["git", "-C", str(path), *args],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    ).returncode == 0
 
 
 def _select_remote(path: Path, url: str | None, ref: str | None, ref_type: str) -> str | None:
@@ -74,7 +89,7 @@ def _run_git_update(cmd: list[str], *, dry_run: bool) -> None:
 
 
 def _build_fetch_cmd(path: Path, remote: str | None, ref: str | None, ref_type: str) -> list[str]:
-    cmd = ["git", "-C", str(path), "fetch", "--quiet"]
+    cmd = ["git", "-C", str(path), "fetch", "--quiet", "--prune"]
     if remote:
         cmd.append(remote)
     else:
@@ -99,6 +114,70 @@ def _current_branch(path: Path) -> str | None:
     if not branch or branch == "HEAD":
         return None
     return branch
+
+
+def _local_branch_exists(path: Path, branch: str) -> bool:
+    return _git_output(path, ["show-ref", "--verify", f"refs/heads/{branch}"]) is not None
+
+
+def _remote_branch_exists(path: Path, remote: str, branch: str) -> bool:
+    return _git_output(path, ["show-ref", "--verify", f"refs/remotes/{remote}/{branch}"]) is not None
+
+
+def _is_ancestor(path: Path, ancestor: str, descendant: str) -> bool:
+    return _git_success(path, ["merge-base", "--is-ancestor", ancestor, descendant])
+
+
+def _tracking_ref(path: Path, remote: str | None) -> str | None:
+    upstream = _git_output(path, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"])
+    if upstream:
+        return upstream
+
+    branch = _current_branch(path)
+    if branch and remote and _remote_branch_exists(path, remote, branch):
+        return f"{remote}/{branch}"
+    return None
+
+
+def _has_local_commits(path: Path, remote: str | None) -> bool:
+    tracking_ref = _tracking_ref(path, remote)
+    if not tracking_ref:
+        return False
+    return not _is_ancestor(path, "HEAD", tracking_ref)
+
+
+def _repair_default_branch_rename(path: Path, remote: str | None, *, dry_run: bool) -> None:
+    if not remote:
+        return
+
+    branch = _current_branch(path)
+    if not branch:
+        return
+
+    replacement = _DEFAULT_BRANCH_RENAMES.get(branch)
+    if not replacement:
+        return
+
+    if _remote_branch_exists(path, remote, branch):
+        return
+    if not _remote_branch_exists(path, remote, replacement):
+        return
+
+    remote_ref = f"{remote}/{replacement}"
+    target_ref = replacement if _local_branch_exists(path, replacement) else "HEAD"
+    if not _is_ancestor(path, target_ref, remote_ref):
+        print(
+            f"[skip-update] {path}: {remote}/{branch} is gone, but {target_ref} cannot fast-forward to {remote_ref}",
+            flush=True,
+        )
+        return
+
+    print(f"[note] {path}: {remote}/{branch} is gone; switching to {remote_ref}", flush=True)
+    if _local_branch_exists(path, replacement):
+        run(["git", "-C", str(path), "switch", replacement], dry_run=dry_run)
+    else:
+        run(["git", "-C", str(path), "branch", "-m", branch, replacement], dry_run=dry_run)
+    run(["git", "-C", str(path), "branch", "--set-upstream-to", remote_ref, replacement], dry_run=dry_run)
 
 
 def _build_current_branch_pull_cmd(path: Path, remote: str | None) -> list[str] | None:
@@ -134,12 +213,25 @@ def ensure_repo(path: Path, url: str | None, ref: str | None, ref_type: str, upd
             return
         if ref:
             run(["git", "-C", str(path), "checkout", ref], dry_run=dry_run)
+            if _has_local_commits(path, remote):
+                print(
+                    f"[skip-update] {path}: local commits present; fetched remotes but skipped pull",
+                    flush=True,
+                )
+                return
             if ref_type == "branch":
                 pull_cmd = ["git", "-C", str(path), "pull", "--quiet", "--ff-only"]
                 if remote:
                     pull_cmd.extend([remote, ref])
                 _run_git_update(pull_cmd, dry_run=dry_run)
         else:
+            _repair_default_branch_rename(path, remote, dry_run=dry_run)
+            if _has_local_commits(path, remote):
+                print(
+                    f"[skip-update] {path}: local commits present; fetched remotes but skipped pull",
+                    flush=True,
+                )
+                return
             pull_cmd = _build_current_branch_pull_cmd(path, remote)
             if pull_cmd:
                 _run_git_update(pull_cmd, dry_run=dry_run)
