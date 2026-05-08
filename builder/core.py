@@ -850,21 +850,21 @@ class Builder:
             debug_postfix = str(self.config.global_cfg.windows.get("debug_postfix", "d"))
             if build_type == "Debug":
                 candidates = [
-                    prefix / f"python_{debug_postfix}.exe",
-                    prefix / f"python{debug_postfix}.exe",
-                    prefix / "python.exe",
                     prefix / "bin" / f"python_{debug_postfix}.exe",
                     prefix / "bin" / f"python{debug_postfix}.exe",
                     prefix / "bin" / "python.exe",
+                    prefix / f"python_{debug_postfix}.exe",
+                    prefix / f"python{debug_postfix}.exe",
+                    prefix / "python.exe",
                 ]
             else:
                 candidates = [
-                    prefix / "python.exe",
                     prefix / "bin" / "python.exe",
-                    prefix / f"python_{debug_postfix}.exe",
-                    prefix / f"python{debug_postfix}.exe",
                     prefix / "bin" / f"python_{debug_postfix}.exe",
                     prefix / "bin" / f"python{debug_postfix}.exe",
+                    prefix / "python.exe",
+                    prefix / f"python_{debug_postfix}.exe",
+                    prefix / f"python{debug_postfix}.exe",
                 ]
         else:
             candidates = [prefix / "bin" / "python3", prefix / "bin" / "python"]
@@ -3625,6 +3625,49 @@ endif()
             return ["--without-fastfloat", "--without-threaded"]
         return []
 
+    def _prepare_autotools_build_dir(self, ctx: BuildContext) -> None:
+        # Autotools probes leave configured makefiles and probe results in the
+        # build dir. Recreate it for full rebuilds so prefix/libc++ mode flips
+        # cannot reuse stale configure state.
+        if not self.dry_run and ctx.build_dir.exists():
+            shutil.rmtree(ctx.build_dir, ignore_errors=True)
+        ctx.build_dir.mkdir(parents=True, exist_ok=True)
+
+    def _autotools_build_env(
+        self,
+        ctx: BuildContext,
+        env: dict[str, str],
+    ) -> dict[str, str]:
+        use_msys2_autotools = self._autotools_windows_msys2_active()
+        cflags, cxxflags, ldflags = self._non_cmake_flags(ctx.build_type)
+        if self.platform.os in {"linux", "macos"} and self.config.global_cfg.use_libcxx:
+            # Autotools commonly uses CC, not CXX, for feature/link probes.
+            # Keep the C++ standard-library driver flag on CXXFLAGS only.
+            ldflags = ldflags.replace("-stdlib=libc++", "").strip()
+
+        include_dir = ctx.install_prefix / "include"
+        lib_dir = ctx.install_prefix / "lib"
+        include_arg = include_dir.as_posix() if use_msys2_autotools else str(include_dir)
+        lib_arg = lib_dir.as_posix() if use_msys2_autotools else str(lib_dir)
+
+        result = {
+            **env,
+            "CFLAGS": f"{cflags} -I{include_arg}",
+            "CXXFLAGS": f"{cxxflags} -I{include_arg}",
+            "LDFLAGS": f"{ldflags} -L{lib_arg}".strip(),
+            "CPPFLAGS": f"-I{include_arg}",
+        }
+        if self.platform.os != "windows":
+            if "cc" in self.toolchain:
+                result["CC"] = self.toolchain["cc"]
+            if "cxx" in self.toolchain:
+                result["CXX"] = self.toolchain["cxx"]
+            if "ar" in self.toolchain:
+                result["AR"] = self.toolchain["ar"]
+            if "ranlib" in self.toolchain:
+                result["RANLIB"] = self.toolchain["ranlib"]
+        return result
+
     def _ffmpeg_configure_args(self, ctx: BuildContext) -> list[str]:
         cfg = self.config.global_cfg
         windows_native_ffmpeg = self.platform.os == "windows" and self._windows_ffmpeg_native_build_enabled()
@@ -6356,19 +6399,8 @@ endif()
         use_msys2_autotools = self._autotools_windows_msys2_active()
         if self.platform.os == "windows" and not use_msys2_autotools:
             return False
-        cflags, cxxflags, ldflags = self._non_cmake_flags(ctx.build_type)
-        include_dir = ctx.install_prefix / "include"
-        lib_dir = ctx.install_prefix / "lib"
-        include_arg = include_dir.as_posix() if use_msys2_autotools else str(include_dir)
-        lib_arg = lib_dir.as_posix() if use_msys2_autotools else str(lib_dir)
         prefix_arg = ctx.install_prefix.as_posix() if use_msys2_autotools else str(ctx.install_prefix)
-        install_env = {
-            **env,
-            "CFLAGS": f"{cflags} -I{include_arg}",
-            "CXXFLAGS": f"{cxxflags} -I{include_arg}",
-            "LDFLAGS": f"{ldflags} -L{lib_arg}",
-            "CPPFLAGS": f"-I{include_arg}",
-        }
+        install_env = self._autotools_build_env(ctx, env)
         configure_args = [f"--prefix={prefix_arg}", "--disable-shared", "--enable-static", *self._autotools_args(repo)]
         cmd = self._autotools_configure_command(configure, configure_args, install_env)
         print_cmd("configure command", cmd)
@@ -6703,7 +6735,6 @@ endif()
 
         for pattern in ("python*.dll", "python*.exe", "python*.pdb"):
             for file_path in sorted(output_dir.glob(pattern)):
-                shutil.copy2(file_path, install_prefix / file_path.name)
                 shutil.copy2(file_path, bin_dst / file_path.name)
 
         stdlib_src = src_dir / "Lib"
@@ -6853,7 +6884,7 @@ endif()
             banner(f"{repo.name} ({build_type}) - install")
             run(install_cmd, env=env, dry_run=self.dry_run, log_path=str(self._repo_log_path(repo.name, build_type, "install")))
         elif repo.build_system == "autotools":
-            build_dir.mkdir(parents=True, exist_ok=True)
+            self._prepare_autotools_build_dir(ctx)
             configure = src_dir / "configure"
             if not configure.exists():
                 raise RuntimeError(f"Missing configure script for {repo.name}: {configure}")
@@ -6863,19 +6894,8 @@ endif()
                     f"{repo.name}: Windows autotools builds require MSYS2 shell/tools in PATH "
                     "(MSYSTEM set, plus bash+make)."
                 )
-            cflags, cxxflags, ldflags = self._non_cmake_flags(build_type)
-            include_dir = install_prefix / "include"
-            lib_dir = install_prefix / "lib"
-            include_arg = include_dir.as_posix() if use_msys2_autotools else str(include_dir)
-            lib_arg = lib_dir.as_posix() if use_msys2_autotools else str(lib_dir)
             prefix_arg = install_prefix.as_posix() if use_msys2_autotools else str(install_prefix)
-            env = {
-                **env,
-                "CFLAGS": f"{cflags} -I{include_arg}",
-                "CXXFLAGS": f"{cxxflags} -I{include_arg}",
-                "LDFLAGS": f"{ldflags} -L{lib_arg}",
-                "CPPFLAGS": f"-I{include_arg}",
-            }
+            env = self._autotools_build_env(ctx, env)
             configure_args = [f"--prefix={prefix_arg}", "--disable-shared", "--enable-static", *self._autotools_args(repo)]
             cmd = self._autotools_configure_command(configure, configure_args, env)
             print_cmd("configure command", cmd)
