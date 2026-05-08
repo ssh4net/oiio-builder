@@ -6680,19 +6680,13 @@ endif()
         lib_dst = install_prefix / "lib"
         libs_compat_dst = install_prefix / "libs"
         bin_dst = install_prefix / "bin"
+        dlls_dst = install_prefix / "DLLs"
         include_dst.mkdir(parents=True, exist_ok=True)
         lib_dst.mkdir(parents=True, exist_ok=True)
         libs_compat_dst.mkdir(parents=True, exist_ok=True)
         bin_dst.mkdir(parents=True, exist_ok=True)
+        dlls_dst.mkdir(parents=True, exist_ok=True)
         debug_postfix = str(self.config.global_cfg.windows.get("debug_postfix", "d"))
-
-        def _is_debug_python_artifact(path: Path) -> bool:
-            stem = path.stem.lower()
-            return (
-                stem.endswith(f"_{debug_postfix}")
-                or stem in {f"python{debug_postfix}", f"pythonw{debug_postfix}"}
-                or re.fullmatch(rf"python\d{{2,}}{re.escape(debug_postfix)}", stem) is not None
-            )
 
         stale_specs = [
             (lib_dst, "python*.lib"),
@@ -6700,15 +6694,20 @@ endif()
             (install_prefix, "python*.dll"),
             (install_prefix, "python*.exe"),
             (install_prefix, "python*.pdb"),
+            (install_prefix, "vcruntime*.dll"),
+            (install_prefix, "vcruntime*.pdb"),
             (bin_dst, "python*.dll"),
             (bin_dst, "python*.exe"),
             (bin_dst, "python*.pdb"),
+            (bin_dst, "vcruntime*.dll"),
+            (bin_dst, "vcruntime*.pdb"),
+            (dlls_dst, "*.pyd"),
+            (dlls_dst, "*.dll"),
+            (dlls_dst, "*.pdb"),
         ]
-        remove_debug_artifacts = ctx.build_type == "Debug"
         for directory, pattern in stale_specs:
             for stale in directory.glob(pattern):
-                if _is_debug_python_artifact(stale) == remove_debug_artifacts:
-                    stale.unlink()
+                stale.unlink()
 
         include_src = src_dir / "Include"
         if include_src.is_dir():
@@ -6736,6 +6735,26 @@ endif()
         for pattern in ("python*.dll", "python*.exe", "python*.pdb"):
             for file_path in sorted(output_dir.glob(pattern)):
                 shutil.copy2(file_path, bin_dst / file_path.name)
+        for pattern in ("vcruntime*.dll", "vcruntime*.pdb"):
+            for file_path in sorted(output_dir.glob(pattern)):
+                shutil.copy2(file_path, bin_dst / file_path.name)
+
+        dlls_members: list[Path] = []
+        dlls_members.extend(sorted(output_dir.glob("*.pyd")))
+        for dll_file in sorted(output_dir.glob("*.dll")):
+            stem = dll_file.stem.lower()
+            if stem.startswith("python") or stem.startswith("vcruntime") or stem == "pyshellext":
+                continue
+            dlls_members.append(dll_file)
+        for file_path in dlls_members:
+            shutil.copy2(file_path, dlls_dst / file_path.name)
+            pdb_file = file_path.with_suffix(".pdb")
+            if pdb_file.exists():
+                shutil.copy2(pdb_file, dlls_dst / pdb_file.name)
+
+        license_src = output_dir / "LICENSE.txt"
+        if license_src.exists():
+            shutil.copy2(license_src, install_prefix / "LICENSE.txt")
 
         stdlib_src = src_dir / "Lib"
         if stdlib_src.is_dir():
