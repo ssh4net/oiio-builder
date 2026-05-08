@@ -2872,6 +2872,8 @@ class Builder:
             "OIIO_BUILD_TOOLS",
             "OIIO_BUILD_TESTS",
             "OIIO_IV_EXTRA_IV_LIBRARIES",
+            "OIIO_INTERNALIZE_FMT",
+            "OIIO_USE_COMPILED_FMT",
             "USE_PYTHON",
             "USE_JXL",
             "USE_FREETYPE",
@@ -2910,6 +2912,11 @@ class Builder:
 
         # Python is mandatory for OIIO in this setup.
         values["USE_PYTHON"] = "ON"
+
+        # Keep OIIO aligned with spdlog/rawgl: one compiled fmt library,
+        # not header-only fmt definitions embedded in OIIO objects.
+        values["OIIO_INTERNALIZE_FMT"] = "OFF"
+        values["OIIO_USE_COMPILED_FMT"] = "ON"
 
         values["USE_QT"] = "ON" if cfg.build_qt6 else "OFF"
 

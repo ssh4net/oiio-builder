@@ -5,7 +5,7 @@ from pathlib import Path
 from .policy import imageio_enabled
 
 
-STAMP_REVISION = "3"
+STAMP_REVISION = "4"
 
 
 def enabled(builder, _repo) -> bool:
@@ -13,7 +13,119 @@ def enabled(builder, _repo) -> bool:
     return imageio_enabled(builder) and bool(cfg.build_oiio)
 
 
+def _patch_compiled_fmt_option(src_dir: Path) -> None:
+    def replace_once(path: Path, old: str, new: str, description: str) -> None:
+        if not path.exists():
+            raise RuntimeError(f"OpenImageIO {description} patch target is missing: {path}")
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if new in text:
+            return
+        if old not in text:
+            raise RuntimeError(f"OpenImageIO {description} patch no longer matches upstream source: {path}")
+        path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+    externalpackages = src_dir / "src" / "cmake" / "externalpackages.cmake"
+    old = """\
+# fmtlib
+set_option (OIIO_INTERNALIZE_FMT "Copy fmt headers into <install>/include/OpenImageIO/detail/fmt" ON)
+checked_find_package (fmt REQUIRED
+                      VERSION_MIN 9.0
+                      BUILD_LOCAL missing
+                     )
+get_target_property(FMT_INCLUDE_DIR fmt::fmt-header-only INTERFACE_INCLUDE_DIRECTORIES)
+"""
+    new = """\
+# fmtlib
+set_option (OIIO_INTERNALIZE_FMT "Copy fmt headers into <install>/include/OpenImageIO/detail/fmt" ON)
+set_option (OIIO_USE_COMPILED_FMT "Link against compiled fmt::fmt instead of header-only fmt" OFF)
+if (OIIO_USE_COMPILED_FMT)
+    set (OIIO_USE_COMPILED_FMT_VALUE 1)
+else ()
+    set (OIIO_USE_COMPILED_FMT_VALUE 0)
+endif ()
+checked_find_package (fmt REQUIRED
+                      VERSION_MIN 9.0
+                      BUILD_LOCAL missing
+                     )
+if (OIIO_USE_COMPILED_FMT)
+    get_target_property(FMT_INCLUDE_DIR fmt::fmt INTERFACE_INCLUDE_DIRECTORIES)
+else ()
+    get_target_property(FMT_INCLUDE_DIR fmt::fmt-header-only INTERFACE_INCLUDE_DIRECTORIES)
+endif ()
+"""
+    replace_once(externalpackages, old, new, "compiled fmt CMake option")
+
+    oiioversion = src_dir / "src" / "include" / "OpenImageIO" / "oiioversion.h.in"
+    if not oiioversion.exists():
+        raise RuntimeError(f"OpenImageIO version header patch target is missing: {oiioversion}")
+    text = oiioversion.read_text(encoding="utf-8", errors="replace")
+    marker = "#define OIIO_USE_COMPILED_FMT @OIIO_USE_COMPILED_FMT_VALUE@"
+    if marker not in text:
+        anchor = "#define OIIO_VERSION_RELEASE_TYPE @PROJECT_VERSION_RELEASE_TYPE@\n"
+        replacement = anchor + marker + "\n"
+        if anchor not in text:
+            raise RuntimeError(f"OpenImageIO version header patch no longer matches upstream source: {oiioversion}")
+        text = text.replace(anchor, replacement, 1)
+        oiioversion.write_text(text, encoding="utf-8")
+
+    fmt_header = src_dir / "src" / "include" / "OpenImageIO" / "detail" / "fmt.h"
+    old = """\
+// We want the header-only implementation of fmt
+#ifndef FMT_HEADER_ONLY
+#    define FMT_HEADER_ONLY
+#endif
+
+// Disable fmt exceptions
+#ifndef FMT_EXCEPTIONS
+#    define FMT_EXCEPTIONS 0
+#endif
+"""
+    new = """\
+// By default OIIO uses the header-only implementation of fmt. Builds that opt
+// into compiled external fmt must use the same mode in OIIO and consumers.
+#ifndef OIIO_USE_COMPILED_FMT
+#    define OIIO_USE_COMPILED_FMT 0
+#endif
+#if !OIIO_USE_COMPILED_FMT
+#    ifndef FMT_HEADER_ONLY
+#        define FMT_HEADER_ONLY
+#    endif
+
+// Disable fmt exceptions for the header-only implementation.
+#    ifndef FMT_EXCEPTIONS
+#        define FMT_EXCEPTIONS 0
+#    endif
+#endif
+"""
+    replace_once(fmt_header, old, new, "fmt header mode")
+
+    libutil = src_dir / "src" / "libutil" / "CMakeLists.txt"
+    old = """\
+    if (OIIO_INTERNALIZE_FMT OR fmt_LOCAL_BUILD)
+        add_dependencies(${targetname} fmt_internal_target)
+    else ()
+        target_link_libraries (${targetname}
+                               PUBLIC fmt::fmt-header-only)
+    endif ()
+"""
+    new = """\
+    if (OIIO_USE_COMPILED_FMT)
+        target_link_libraries (${targetname}
+                               PUBLIC fmt::fmt)
+    elseif (OIIO_INTERNALIZE_FMT OR fmt_LOCAL_BUILD)
+        add_dependencies(${targetname} fmt_internal_target)
+    else ()
+        target_link_libraries (${targetname}
+                               PUBLIC fmt::fmt-header-only)
+    endif ()
+"""
+    replace_once(libutil, old, new, "libutil fmt linkage")
+
+
 def patch_source(builder, src_dir: Path) -> None:
+    if not builder.dry_run:
+        _patch_compiled_fmt_option(src_dir)
+
     cfg = builder.config.global_cfg
     if not getattr(cfg, "build_dng_sdk", False):
         return
