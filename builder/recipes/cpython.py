@@ -3,7 +3,7 @@ from __future__ import annotations
 from .policy import cpython_requested
 
 
-STAMP_REVISION = "3"
+STAMP_REVISION = "4"
 
 
 def enabled(builder, _repo) -> bool:

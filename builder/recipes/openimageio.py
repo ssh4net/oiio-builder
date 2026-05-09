@@ -5,7 +5,7 @@ from pathlib import Path
 from .policy import imageio_enabled
 
 
-STAMP_REVISION = "4"
+STAMP_REVISION = "5"
 
 
 def enabled(builder, _repo) -> bool:
@@ -122,9 +122,39 @@ endif ()
     replace_once(libutil, old, new, "libutil fmt linkage")
 
 
+def _patch_msvc_python_module_link(src_dir: Path) -> None:
+    pythonutils = src_dir / "src" / "cmake" / "pythonutils.cmake"
+    if not pythonutils.exists():
+        raise RuntimeError(f"OpenImageIO python module patch target is missing: {pythonutils}")
+
+    text = pythonutils.read_text(encoding="utf-8", errors="replace")
+    new = """\
+    set_target_properties(${target_name} PROPERTIES
+                          DEBUG_POSTFIX "")
+    if (MSVC)
+        set_target_properties(${target_name} PROPERTIES
+                              PDB_NAME ${target_name}
+                              COMPILE_PDB_NAME ${target_name})
+        target_link_options (${target_name} PRIVATE /INCREMENTAL:NO)
+    endif ()
+"""
+    if new in text:
+        return
+
+    old = """\
+    set_target_properties(PyOpenImageIO PROPERTIES
+                          DEBUG_POSTFIX "")
+"""
+    if old not in text:
+        raise RuntimeError(f"OpenImageIO python module patch no longer matches upstream source: {pythonutils}")
+
+    pythonutils.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+
 def patch_source(builder, src_dir: Path) -> None:
     if not builder.dry_run:
         _patch_compiled_fmt_option(src_dir)
+        _patch_msvc_python_module_link(src_dir)
 
     cfg = builder.config.global_cfg
     if not getattr(cfg, "build_dng_sdk", False):

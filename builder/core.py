@@ -58,6 +58,25 @@ def _append_unique_candidate(candidates: list[str], seen: set[str], value: str |
     candidates.append(normalized)
 
 
+def _windows_debug_postfix_artifact(path: Path, debug_postfix: str) -> bool:
+    stem = path.stem.lower()
+    postfix = debug_postfix.lower()
+    if stem.endswith(f"_{postfix}"):
+        return True
+    if stem.startswith("vcruntime") and stem.endswith(postfix):
+        return True
+    # Older builder fallbacks used python313d.lib/python3d.lib. Treat only
+    # Python import-library names as debug when there is no underscore.
+    return path.suffix.lower() == ".lib" and stem.startswith("python") and stem.endswith(postfix)
+
+
+def _windows_python_debug_import_name(path: Path, debug_postfix: str) -> str:
+    stem = path.stem
+    if re.fullmatch(r"python\d{2,}", stem.lower()):
+        return f"{stem}_{debug_postfix}{path.suffix}"
+    return f"{stem}{debug_postfix}{path.suffix}"
+
+
 def _windows_nasm_probe_candidates(env: Mapping[str, str] | None = None) -> list[str]:
     merged_env = dict(os.environ)
     if env:
@@ -6714,7 +6733,9 @@ endif()
         ]
         for directory, pattern in stale_specs:
             for stale in directory.glob(pattern):
-                stale.unlink()
+                is_debug_artifact = _windows_debug_postfix_artifact(stale, debug_postfix)
+                if (ctx.build_type == "Debug") == is_debug_artifact:
+                    stale.unlink()
 
         include_src = src_dir / "Include"
         if include_src.is_dir():
@@ -6771,8 +6792,10 @@ endif()
         if ctx.build_type == "Debug" and not debug_libs:
             release_libs = [p for p in sorted(lib_dst.glob("python*.lib")) if not p.name.lower().endswith(f"{debug_postfix}.lib")]
             if release_libs:
-                source = release_libs[0]
-                fallback_name = f"{source.stem}{debug_postfix}.lib"
+                version_stem = self._prefix_python_lib_stem(install_prefix)
+                versioned_release_libs = [p for p in release_libs if version_stem and p.stem.lower() == version_stem]
+                source = versioned_release_libs[0] if versioned_release_libs else release_libs[0]
+                fallback_name = _windows_python_debug_import_name(source, debug_postfix)
                 shutil.copy2(source, lib_dst / fallback_name)
                 shutil.copy2(source, libs_compat_dst / fallback_name)
 
