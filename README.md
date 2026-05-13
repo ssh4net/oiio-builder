@@ -11,7 +11,7 @@ Tools the builder expects to find (or be explicitly pointed at via config/env):
 - `pkg-config` (we recommend `pkgconf`)
 - `ccache` (optional, recommended on macOS/Linux)
 - `doxygen`
-- OpenMP runtime (`libomp`) when enabling OpenMP (for example: `libraw_enable_openmp="ON"`). On Windows this commonly comes from an LLVM install.
+- OpenMP runtime when enabling OpenMP (for example: `libraw_enable_openmp="ON"`). MSVC uses the Visual Studio `vcomp` runtime; clang/clang-cl uses LLVM `libomp`.
 - `nasm`/`yasm` on x86_64
 - Python 3.11+ (uses `tomllib`)
 
@@ -50,6 +50,7 @@ Linux GTK3 headers (needed for `nativefiledialog-extended` when `NFD_PORTAL=OFF`
    PKG_CONFIG_EXECUTABLE = "E:/vcpkg/installed/x64-windows/tools/pkgconf/pkgconf.exe"
    DOXYGEN_EXECUTABLE = "C:/Program Files/doxygen/bin/doxygen.exe"
    NASM_EXECUTABLE = "C:/Program Files/NASM/nasm.exe"
+   # Needed for clang-cl OpenMP; MSVC cl uses Visual Studio's vcomp runtime.
    OpenMP_ROOT = "C:/LLVM" # provides <OpenMP_ROOT>/lib/libomp.lib
    ```
    Example for ccache on Linux/macOS:

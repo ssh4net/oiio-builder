@@ -5,7 +5,7 @@ from pathlib import Path
 from .policy import imageio_enabled
 
 
-STAMP_REVISION = "5"
+STAMP_REVISION = "6"
 
 
 def enabled(builder, _repo) -> bool:
@@ -15,16 +15,35 @@ def enabled(builder, _repo) -> bool:
 
 def cmake_args(builder, ctx) -> list[str]:
     cfg = builder.config.global_cfg
-    if not getattr(cfg, "build_dng_sdk", False):
-        return []
     args: list[str] = [
-        "-DENABLE_DNGSDK=ON",
-        f"-DDNGSDK_ROOT={ctx.install_prefix}",
+        f"-DLIBRAW_PATH={cfg.src_root / 'LibRaw'}",
+        f"-DENABLE_EXAMPLES={cfg.libraw_enable_examples}",
+        "-DENABLE_RAWSPEED=OFF",
+        f"-DENABLE_OPENMP={cfg.libraw_enable_openmp}",
+        "-DENABLE_LCMS=ON",
+        "-DENABLE_JASPER=ON",
+        f"-DENABLE_DCRAW_DEBUG={'ON' if ctx.build_type == 'Debug' else 'OFF'}",
+        "-DENABLE_X3FTOOLS=ON",
+        "-DENABLE_6BY9RPI=ON",
     ]
 
-    if builder.platform.os != "windows":
-        return args
+    if getattr(cfg, "build_dng_sdk", False):
+        args += [
+            "-DENABLE_DNGSDK=ON",
+            f"-DDNGSDK_ROOT={ctx.install_prefix}",
+        ]
 
+        if builder.platform.os == "windows":
+            args.extend(_windows_dng_dependency_args(builder, ctx))
+
+    if builder.platform.os == "windows":
+        args.extend(_windows_lcms_args(builder, ctx))
+
+    return args
+
+
+def _windows_dng_dependency_args(builder, ctx) -> list[str]:
+    cfg = builder.config.global_cfg
     lib_dir = (ctx.install_prefix / "lib").resolve()
     debug_postfix = str(cfg.windows.get("debug_postfix", "d"))
     is_debug = ctx.build_type == "Debug"
@@ -61,6 +80,7 @@ def cmake_args(builder, ctx) -> list[str]:
             matches.extend(sorted(lib_dir.glob(f"lib{stem}*.lib")))
         return matches[0] if matches else None
 
+    args: list[str] = []
     mapping = {
         "JXL_LIBRARY": ["jxl"],
         "JXL_THREADS_LIBRARY": ["jxl_threads"],
@@ -76,6 +96,70 @@ def cmake_args(builder, ctx) -> list[str]:
             args.append(f"-D{var}={path}")
 
     return args
+
+
+def _windows_lcms_args(builder, ctx) -> list[str]:
+    cfg = builder.config.global_cfg
+    debug_postfix = str(cfg.windows.get("debug_postfix", "d"))
+    lib_dir = (ctx.install_prefix / "lib").resolve()
+    include_dir = (ctx.install_prefix / "include").resolve()
+    if ctx.build_type == "Debug":
+        lcms_names = [
+            f"lcms2_static{debug_postfix}.lib",
+            f"lcms2{debug_postfix}.lib",
+            f"liblcms2{debug_postfix}.lib",
+            f"lcms-2{debug_postfix}.lib",
+            f"liblcms-2{debug_postfix}.lib",
+            "lcms2_static.lib",
+            "lcms2.lib",
+            "liblcms2.lib",
+            "lcms-2.lib",
+            "liblcms-2.lib",
+        ]
+    else:
+        lcms_names = [
+            "lcms2_static.lib",
+            "lcms2.lib",
+            "liblcms2.lib",
+            "lcms-2.lib",
+            "liblcms-2.lib",
+            f"lcms2_static{debug_postfix}.lib",
+            f"lcms2{debug_postfix}.lib",
+            f"liblcms2{debug_postfix}.lib",
+            f"lcms-2{debug_postfix}.lib",
+            f"liblcms-2{debug_postfix}.lib",
+        ]
+    lcms_lib = next((lib_dir / name for name in lcms_names if (lib_dir / name).exists()), None)
+    if lcms_lib is None:
+        if ctx.build_type == "Debug":
+            patterns = [
+                f"lcms2*{debug_postfix}.lib",
+                f"liblcms2*{debug_postfix}.lib",
+                "lcms2*.lib",
+                "liblcms2*.lib",
+            ]
+        else:
+            patterns = [
+                "lcms2*.lib",
+                "liblcms2*.lib",
+                f"lcms2*{debug_postfix}.lib",
+                f"liblcms2*{debug_postfix}.lib",
+            ]
+        for pattern in patterns:
+            matches = sorted(lib_dir.glob(pattern))
+            if matches:
+                lcms_lib = matches[0]
+                break
+    if lcms_lib is None or not (include_dir / "lcms2.h").exists():
+        return []
+
+    # LibRaw ships its own FindLCMS2.cmake which doesn't look for
+    # `lcms2_static`, so force the static library explicitly.
+    return [
+        f"-DLCMS2_INCLUDE_DIR={include_dir}",
+        f"-DLCMS2_LIBRARIES={lcms_lib}",
+        f"-DLCMS2_LIBRARY={lcms_lib}",
+    ]
 
 
 def patch_source(_builder, src_dir: Path) -> None:
