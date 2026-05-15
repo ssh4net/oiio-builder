@@ -1,7 +1,9 @@
 [cmake.cache]
-# DNG-CMake: build libraries only by default (avoid extra build time).
-BUILD_DNG_VALIDATE = false
+# DNG-CMake: build the library and validator by default.
+BUILD_DNG_VALIDATE = true
 BUILD_DOCUMENTATION = false
+# Library validation defaults to Debug-only; dng_validate always validates if built.
+DNG_VALIDATE = "AUTO"
 
 # Prefer system deps from the prefix / CMAKE_PREFIX_PATH.
 DNG_BUNDLED_JPEG = false

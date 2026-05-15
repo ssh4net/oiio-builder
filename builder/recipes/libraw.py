@@ -5,7 +5,7 @@ from pathlib import Path
 from .policy import imageio_enabled
 
 
-STAMP_REVISION = "6"
+STAMP_REVISION = "7"
 
 
 def enabled(builder, _repo) -> bool:
@@ -38,8 +38,30 @@ def cmake_args(builder, ctx) -> list[str]:
 
     if builder.platform.os == "windows":
         args.extend(_windows_lcms_args(builder, ctx))
+        if getattr(cfg, "build_dng_sdk", False):
+            args.append(f"-DCMAKE_PROJECT_TOP_LEVEL_INCLUDES={_windows_dng_sdk_include(builder, ctx)}")
 
     return args
+
+
+def pre_build(builder, _repo, ctx, _env) -> None:
+    builder._ensure_dng_sdk_lcms2_compat(ctx.install_prefix, ctx.build_type)
+
+
+def _windows_dng_sdk_include(_builder, ctx) -> str:
+    include_path = ctx.build_dir / "oiio_builder_libraw_dngsdk.cmake"
+    include_path.write_text(
+        "\n".join(
+            [
+                "if(WIN32)",
+                "  add_compile_definitions(NOMINMAX)",
+                "endif()",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return include_path.as_posix()
 
 
 def _windows_dng_dependency_args(builder, ctx) -> list[str]:

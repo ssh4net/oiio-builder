@@ -11,6 +11,7 @@ from . import (
     cpython,
     dng_sdk,
     eigen,
+    expat,
     ffmpeg,
     fmt,
     freetype,
@@ -21,14 +22,16 @@ from . import (
     glew,
     googletest,
     harfbuzz,
+    highway,
     imath,
     jasper,
     kvazaar,
     lcms2,
     lbfgspp,
-    libiconv,
     libdeflate,
+    libiconv,
     libjpeg_turbo,
+    libxml2,
     libraw_legacy,
     libraw,
     libde265,
@@ -41,6 +44,7 @@ from . import (
     minizip_ng,
     miniply,
     nanobind,
+    nativefiledialog_extended,
     opencolorio,
     openssl,
     openmeta,
@@ -54,10 +58,17 @@ from . import (
     pybind11,
     pystring,
     qt6,
+    rapidfuzz_cpp,
+    rapidobj,
     robinmap,
     sqlite,
     spdlog,
+    spirv_headers,
+    spirv_tools,
     x265,
+    xz,
+    yaml_cpp,
+    zlib_ng,
     zstd,
 )
 
@@ -68,6 +79,7 @@ _RECIPES: dict[str, ModuleType] = {
     "cpython": cpython,
     "dng-sdk": dng_sdk,
     "eigen": eigen,
+    "expat": expat,
     "ffmpeg": ffmpeg,
     "fmt": fmt,
     "freetype": freetype,
@@ -78,6 +90,7 @@ _RECIPES: dict[str, ModuleType] = {
     "glew": glew,
     "googletest": googletest,
     "harfbuzz": harfbuzz,
+    "highway": highway,
     "imath": imath,
     "jasper": jasper,
     "kvazaar": kvazaar,
@@ -86,6 +99,7 @@ _RECIPES: dict[str, ModuleType] = {
     "libdeflate": libdeflate,
     "libiconv": libiconv,
     "libjpeg-turbo": libjpeg_turbo,
+    "libxml2": libxml2,
     "LibRaw": libraw_legacy,
     "libraw": libraw,
     "libde265": libde265,
@@ -98,6 +112,7 @@ _RECIPES: dict[str, ModuleType] = {
     "minizip-ng": minizip_ng,
     "miniply": miniply,
     "nanobind": nanobind,
+    "nativefiledialog-extended": nativefiledialog_extended,
     "OpenColorIO": opencolorio,
     "openssl": openssl,
     "OpenMeta": openmeta,
@@ -111,10 +126,17 @@ _RECIPES: dict[str, ModuleType] = {
     "pybind11": pybind11,
     "pystring": pystring,
     "Qt6": qt6,
+    "rapidfuzz-cpp": rapidfuzz_cpp,
+    "rapidobj": rapidobj,
     "robinmap": robinmap,
     "sqlite": sqlite,
     "spdlog": spdlog,
+    "SPIRV-Headers": spirv_headers,
+    "SPIRV-Tools": spirv_tools,
     "x265": x265,
+    "xz": xz,
+    "yaml-cpp": yaml_cpp,
+    "zlib-ng": zlib_ng,
     "zstd": zstd,
 }
 
@@ -129,6 +151,25 @@ def cmake_args(repo_name: str, builder: Any, ctx: Any) -> list[str] | None:
     return list(func(builder, ctx))
 
 
+def build_env(repo_name: str, builder: Any, repo: Any, build_type: str, prefix: Path, env: dict[str, str]) -> None:
+    recipe = _RECIPES.get(repo_name)
+    if recipe is None:
+        return
+    func = getattr(recipe, "build_env", None)
+    if callable(func):
+        func(builder, repo, build_type, prefix, env)
+
+
+def autotools_args(repo_name: str, builder: Any, repo: Any) -> list[str] | None:
+    recipe = _RECIPES.get(repo_name)
+    if recipe is None:
+        return None
+    func = getattr(recipe, "autotools_args", None)
+    if not callable(func):
+        return None
+    return list(func(builder, repo))
+
+
 def patch_source(repo_name: str, builder: Any, src_dir: Path) -> None:
     recipe = _RECIPES.get(repo_name)
     if recipe is None:
@@ -136,6 +177,15 @@ def patch_source(repo_name: str, builder: Any, src_dir: Path) -> None:
     func = getattr(recipe, "patch_source", None)
     if callable(func):
         func(builder, src_dir)
+
+
+def pre_build(repo_name: str, builder: Any, repo: Any, ctx: Any, env: dict[str, str]) -> None:
+    recipe = _RECIPES.get(repo_name)
+    if recipe is None:
+        return
+    func = getattr(recipe, "pre_build", None)
+    if callable(func):
+        func(builder, repo, ctx, env)
 
 
 def enabled(repo_name: str, builder: Any, repo: Any) -> bool | None:
@@ -148,6 +198,38 @@ def enabled(repo_name: str, builder: Any, repo: Any) -> bool | None:
     return bool(func(builder, repo))
 
 
+def resolve_build_system(repo_name: str, builder: Any, repo: Any, src_dir: Path) -> str | None:
+    recipe = _RECIPES.get(repo_name)
+    if recipe is None:
+        return None
+    func = getattr(recipe, "resolve_build_system", None)
+    if not callable(func):
+        return None
+    result = func(builder, repo, src_dir)
+    return None if result is None else str(result)
+
+
+def missing_source_skip(repo_name: str, builder: Any, repo: Any, path: Path) -> bool | None:
+    recipe = _RECIPES.get(repo_name)
+    if recipe is None:
+        return None
+    func = getattr(recipe, "missing_source_skip", None)
+    if not callable(func):
+        return None
+    result = func(builder, repo, path)
+    return None if result is None else bool(result)
+
+
+def skip_update(repo_name: str, builder: Any, repo: Any) -> bool:
+    recipe = _RECIPES.get(repo_name)
+    if recipe is None:
+        return False
+    func = getattr(recipe, "skip_update", None)
+    if not callable(func):
+        return False
+    return bool(func(builder, repo))
+
+
 def post_install(repo_name: str, builder: Any, install_prefix: Path, build_type: str) -> None:
     recipe = _RECIPES.get(repo_name)
     if recipe is None:
@@ -155,6 +237,15 @@ def post_install(repo_name: str, builder: Any, install_prefix: Path, build_type:
     func = getattr(recipe, "post_install", None)
     if callable(func):
         func(builder, install_prefix, build_type)
+
+
+def stamp_payload(repo_name: str, builder: Any, repo: Any, ctx: Any, payload: dict[str, Any]) -> None:
+    recipe = _RECIPES.get(repo_name)
+    if recipe is None:
+        return
+    func = getattr(recipe, "stamp_payload", None)
+    if callable(func):
+        func(builder, repo, ctx, payload)
 
 
 def stamp_revision(repo_name: str) -> str | None:

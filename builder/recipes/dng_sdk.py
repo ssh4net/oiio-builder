@@ -6,7 +6,7 @@ import os
 import shutil
 
 
-STAMP_REVISION = "7"
+STAMP_REVISION = "10"
 
 
 def enabled(builder, _repo) -> bool:
@@ -202,6 +202,35 @@ def patch_source(builder, src_dir: Path) -> None:
                 # Fall back to a toolkit-like root.
                 shutil.copytree(xmp_dir, dst_toolkit, dirs_exist_ok=True)
 
+    top_cmake = src_dir / "CMakeLists.txt"
+    if top_cmake.exists():
+        top_text = top_cmake.read_text(encoding="utf-8", errors="replace")
+        top_changed = False
+
+        if 'option(BUILD_DNG_VALIDATE "Build the dng_validate tool" ON)' in top_text:
+            top_text = top_text.replace(
+                'option(BUILD_DNG_VALIDATE "Build the dng_validate tool" ON)',
+                'option(BUILD_DNG_VALIDATE "Build the dng_validate tool (independent from library validation)" ON)',
+                1,
+            )
+            top_changed = True
+
+        auto_validate_block = """set(DNG_VALIDATE "AUTO" CACHE STRING "Enable validation checks in the dng_sdk library: AUTO=Debug only, ON=all configs, OFF=disabled")
+set_property(CACHE DNG_VALIDATE PROPERTY STRINGS AUTO ON OFF)"""
+        if auto_validate_block not in top_text:
+            validate_options = [
+                'option(DNG_VALIDATE "Enable validation checks (qDNGValidate)" OFF)',
+                'option(DNG_VALIDATE "Enable validation checks in the dng_sdk library (qDNGValidate)" OFF)',
+            ]
+            for validate_option in validate_options:
+                if validate_option in top_text:
+                    top_text = top_text.replace(validate_option, auto_validate_block, 1)
+                    top_changed = True
+                    break
+
+        if top_changed:
+            top_cmake.write_text(top_text, encoding="utf-8")
+
     # DNG-CMake currently lists dng_jxl.cpp unconditionally as a source file.
     # That breaks configurations that explicitly disable JXL (DNG_WITH_JXL=OFF).
     dng_sdk_cmake = src_dir / "cmake" / "dng_sdk.cmake"
@@ -245,40 +274,80 @@ def patch_source(builder, src_dir: Path) -> None:
                 lines = cleaned_lines
                 changed = True
 
-        # Patch 2: do not force qDNGValidate into the dng_sdk library.
+        # Patch 2: keep library validation independent from the dng_validate tool.
         #
-        # dng_validate needs gVerbose/gDumpLineLimit, which are only present when
-        # qDNGValidate||qDNGDebug. Historically, DNG-CMake forced qDNGValidate for
-        # dng_globals.cpp so the tool links in Release, but that enables validation
-        # code paths in the library build. Keep Release libs "clean" for consumers
-        # like LibRaw/OpenImageIO and provide the globals from the dng_validate
-        # target instead (see dng_validate.cmake patch below).
-        validate_marker = "OIIO_BUILDER_DNGSDK_VALIDATE_GLOBALS_BEGIN"
-        if validate_marker not in "\n".join(lines):
+        # DNG_VALIDATE controls qDNGValidate for the dng_sdk library. BUILD_DNG_VALIDATE
+        # controls the executable, which compiles its own dng_globals.cpp object with
+        # qDNGValidateTarget=1 (see dng_validate.cmake patch below).
+        validate_comment = "DNG_VALIDATE controls validation code in the dng_sdk library only."
+        if validate_comment not in "\n".join(lines):
             start: int | None = None
             end: int | None = None
             for i, line in enumerate(lines):
-                if "set_source_files_properties" in line:
+                if "OIIO_BUILDER_DNGSDK_VALIDATE_GLOBALS_BEGIN" in line:
                     start = i
-                    continue
-                if start is not None and i > start and line.strip() == ")":
-                    end = i
-                    block = "\n".join(lines[start : end + 1])
-                    if "dng_globals.cpp" in block and "qDNGValidate=1" in block:
-                        break
-                    start = None
-                    end = None
+                    for j in range(i + 1, len(lines)):
+                        if "OIIO_BUILDER_DNGSDK_VALIDATE_GLOBALS_END" in lines[j]:
+                            end = j
+                            break
+                    break
+
+            if start is None:
+                for i, line in enumerate(lines):
+                    if "set_source_files_properties" in line:
+                        start = i
+                        continue
+                    if start is not None and i > start and line.strip() == ")":
+                        end = i
+                        block = "\n".join(lines[start : end + 1])
+                        if "dng_globals.cpp" in block and "qDNGValidate=1" in block:
+                            break
+                        start = None
+                        end = None
 
             if start is not None and end is not None:
+                if start > 0 and not lines[start - 1].strip():
+                    start -= 1
+                if end + 1 < len(lines) and not lines[end + 1].strip():
+                    end += 1
                 replacement = [
                     "",
-                    "# OIIO_BUILDER_DNGSDK_VALIDATE_GLOBALS_BEGIN",
-                    "# Do not force qDNGValidate for dng_sdk library builds. Release consumers",
-                    "# (LibRaw/OpenImageIO) should not compile with qDNGValidate enabled.",
-                    "# dng_validate is linked with a small shim that defines gVerbose/gDumpLineLimit",
-                    "# when needed (see cmake/dng_validate_globals.cpp).",
-                    "# OIIO_BUILDER_DNGSDK_VALIDATE_GLOBALS_END",
+                    f"# {validate_comment}",
+                    "# BUILD_DNG_VALIDATE builds the validator executable through",
+                    "# cmake/dng_validate.cmake without forcing validation into this library.",
                     "",
+                ]
+                lines[start : end + 1] = replacement
+                changed = True
+
+        validate_mode_marker = "Invalid DNG_VALIDATE='${DNG_VALIDATE}'"
+        if validate_mode_marker not in "\n".join(lines):
+            start = next(
+                (
+                    i
+                    for i, line in enumerate(lines)
+                    if line.strip() == "target_compile_definitions(dng_sdk PRIVATE qDNGValidateTarget=0)"
+                ),
+                None,
+            )
+            if start is not None:
+                end = start
+                if start + 1 < len(lines) and lines[start + 1].strip() == "if(DNG_VALIDATE)":
+                    for j in range(start + 2, len(lines)):
+                        if lines[j].strip() == "endif()":
+                            end = j
+                            break
+                replacement = [
+                    "target_compile_definitions(dng_sdk PRIVATE qDNGValidateTarget=0)",
+                    'string(TOUPPER "${DNG_VALIDATE}" DNG_VALIDATE_MODE)',
+                    'if(NOT DNG_VALIDATE_MODE MATCHES "^(AUTO|ON|OFF|TRUE|FALSE|YES|NO|1|0)$")',
+                    '    message(FATAL_ERROR "Invalid DNG_VALIDATE=\'${DNG_VALIDATE}\'. Expected AUTO, ON, or OFF.")',
+                    "endif()",
+                    'if(DNG_VALIDATE_MODE STREQUAL "AUTO")',
+                    "    target_compile_definitions(dng_sdk PRIVATE $<$<CONFIG:Debug>:qDNGValidate=1>)",
+                    "elseif(DNG_VALIDATE)",
+                    "    target_compile_definitions(dng_sdk PRIVATE qDNGValidate=1)",
+                    "endif()",
                 ]
                 lines[start : end + 1] = replacement
                 changed = True
@@ -292,28 +361,20 @@ def patch_source(builder, src_dir: Path) -> None:
         validate_lines = validate_text.splitlines()
         validate_changed = False
 
-        shim_name = "dng_validate_globals.cpp"
-        shim_path = src_dir / "cmake" / shim_name
-        shim_contents = """\
-#include "dng_globals.h"
+        shim_path = src_dir / "cmake" / "dng_validate_globals.cpp"
+        if shim_path.exists():
+            try:
+                shim_path.unlink()
+            except OSError:
+                pass
 
-#if qDNGValidateTarget
-bool gVerbose = false;
-uint32 gDumpLineLimit = 100;
-#endif
-"""
-        if not shim_path.exists() or shim_path.read_text(encoding="utf-8", errors="replace") != shim_contents:
-            shim_path.write_text(shim_contents, encoding="utf-8")
-
-        marker = "OIIO_BUILDER_DNGSDK_VALIDATE_SHIM_BEGIN"
+        marker = "dng_validate owns its validation globals independently from dng_sdk."
         desired_block = """\
-# OIIO_BUILDER_DNGSDK_VALIDATE_SHIM_BEGIN
-# dng_sdk Release builds keep qDNGValidate disabled; provide validate-only globals
-# for the dng_validate executable so it links without forcing qDNGValidate into the library.
+# dng_validate owns its validation globals independently from dng_sdk.
+# This keeps BUILD_DNG_VALIDATE separate from the DNG_VALIDATE library option.
 target_sources(dng_validate PRIVATE
-    $<$<NOT:$<CONFIG:Debug>>:${CMAKE_SOURCE_DIR}/cmake/dng_validate_globals.cpp>
+    ${CMAKE_SOURCE_DIR}/dng_sdk/source/dng_globals.cpp
 )
-# OIIO_BUILDER_DNGSDK_VALIDATE_SHIM_END
 """.rstrip("\n").splitlines()
 
         if marker in validate_text:
@@ -321,13 +382,28 @@ target_sources(dng_validate PRIVATE
             if begin is not None:
                 end = None
                 for j in range(begin + 1, len(validate_lines)):
-                    if "OIIO_BUILDER_DNGSDK_VALIDATE_SHIM_END" in validate_lines[j]:
+                    if validate_lines[j].strip() == ")":
                         end = j
                         break
                 if end is not None and validate_lines[begin : end + 1] != desired_block:
                     validate_lines[begin : end + 1] = desired_block
                     validate_changed = True
         else:
+            old_begin = next(
+                (i for i, line in enumerate(validate_lines) if "OIIO_BUILDER_DNGSDK_VALIDATE_SHIM_BEGIN" in line),
+                None,
+            )
+            if old_begin is not None:
+                old_end = None
+                for j in range(old_begin + 1, len(validate_lines)):
+                    if "OIIO_BUILDER_DNGSDK_VALIDATE_SHIM_END" in validate_lines[j]:
+                        old_end = j
+                        break
+                if old_end is not None:
+                    validate_lines[old_begin : old_end + 1] = desired_block
+                    validate_changed = True
+
+        if marker not in "\n".join(validate_lines):
             # Insert right after the add_executable(dng_validate ...) block.
             insert_at = None
             depth = 0
@@ -466,6 +542,124 @@ endif()
     dng_config_in = src_dir / "cmake" / "dng_sdk-config.cmake.in"
     if dng_config_in.exists():
         dng_config_text = dng_config_in.read_text(encoding="utf-8", errors="replace")
+        dng_config_changed = False
+
+        configured_location_marker = "function(set_imported_location_configured target release_location debug_location)"
+        if configured_location_marker not in dng_config_text:
+            all_configs_helper = """function(set_imported_location_all_configs target location)
+    if(location)
+        set_target_properties(${target} PROPERTIES
+            IMPORTED_LOCATION "${location}"
+            IMPORTED_LOCATION_RELEASE "${location}"
+            IMPORTED_LOCATION_MINSIZEREL "${location}"
+            IMPORTED_LOCATION_RELWITHDEBINFO "${location}"
+            IMPORTED_LOCATION_DEBUG "${location}"
+        )
+    endif()
+endfunction()
+"""
+            configured_helper = all_configs_helper + """
+# Helper function to set imported library locations for single- and multi-config consumers.
+function(set_imported_location_configured target release_location debug_location)
+    set(_release "${release_location}")
+    set(_debug "${debug_location}")
+    if(NOT _release AND _debug)
+        set(_release "${_debug}")
+    endif()
+    if(NOT _debug AND _release)
+        set(_debug "${_release}")
+    endif()
+    set(_any "${_release}")
+    if(NOT _any)
+        set(_any "${_debug}")
+    endif()
+    if(_any)
+        set_target_properties(${target} PROPERTIES
+            IMPORTED_LOCATION "${_any}"
+            IMPORTED_LOCATION_RELEASE "${_release}"
+            IMPORTED_LOCATION_MINSIZEREL "${_release}"
+            IMPORTED_LOCATION_RELWITHDEBINFO "${_release}"
+            IMPORTED_LOCATION_DEBUG "${_debug}"
+        )
+    endif()
+endfunction()
+"""
+            if all_configs_helper in dng_config_text:
+                dng_config_text = dng_config_text.replace(all_configs_helper, configured_helper, 1)
+                dng_config_changed = True
+
+        jxl_marker = "OIIO_BUILDER_JXL_DEBUG_LIBRARY_NAMES_BEGIN"
+        if jxl_marker not in dng_config_text:
+            old_find_block = """        find_library(JXL_LIBRARY NAMES jxl REQUIRED)
+        find_library(JXL_THREADS_LIBRARY NAMES jxl_threads REQUIRED)
+        find_library(JXL_CMS_LIBRARY NAMES jxl_cms)
+        find_library(HWY_LIBRARY NAMES hwy REQUIRED)
+        find_library(BROTLI_COMMON_LIBRARY NAMES brotlicommon REQUIRED)
+        find_library(BROTLI_DEC_LIBRARY NAMES brotlidec REQUIRED)
+        find_library(BROTLI_ENC_LIBRARY NAMES brotlienc REQUIRED)
+"""
+            new_find_block = """        # OIIO_BUILDER_JXL_DEBUG_LIBRARY_NAMES_BEGIN
+        # Windows Debug installs commonly use a "d" postfix (jxld.lib, hwyd.lib,
+        # brotlicommond.lib). Find both config-specific names and expose them on
+        # imported targets; non-Windows installs keep using the normal names.
+        macro(_dng_find_dependency_library _var _release_name _debug_name)
+            set(_required FALSE)
+            foreach(_arg ${ARGN})
+                if(_arg STREQUAL "REQUIRED")
+                    set(_required TRUE)
+                endif()
+            endforeach()
+            find_library(${_var}_RELEASE NAMES ${_release_name})
+            find_library(${_var}_DEBUG NAMES ${_debug_name} ${_release_name})
+            if(NOT ${_var}_RELEASE AND ${_var}_DEBUG)
+                set(${_var}_RELEASE "${${_var}_DEBUG}")
+            endif()
+            if(NOT ${_var}_DEBUG AND ${_var}_RELEASE)
+                set(${_var}_DEBUG "${${_var}_RELEASE}")
+            endif()
+            set(${_var} "${${_var}_DEBUG}")
+            if(NOT ${_var})
+                set(${_var} "${${_var}_RELEASE}")
+            endif()
+            if(_required AND NOT ${_var}_RELEASE AND NOT ${_var}_DEBUG)
+                message(FATAL_ERROR "Could not find ${_var} using names: ${_release_name}, ${_debug_name}")
+            endif()
+        endmacro()
+
+        _dng_find_dependency_library(JXL_LIBRARY jxl jxld REQUIRED)
+        _dng_find_dependency_library(JXL_THREADS_LIBRARY jxl_threads jxl_threadsd REQUIRED)
+        _dng_find_dependency_library(JXL_CMS_LIBRARY jxl_cms jxl_cmsd)
+        _dng_find_dependency_library(HWY_LIBRARY hwy hwyd REQUIRED)
+        _dng_find_dependency_library(BROTLI_COMMON_LIBRARY brotlicommon brotlicommond REQUIRED)
+        _dng_find_dependency_library(BROTLI_DEC_LIBRARY brotlidec brotlidecd REQUIRED)
+        _dng_find_dependency_library(BROTLI_ENC_LIBRARY brotlienc brotliencd REQUIRED)
+        # OIIO_BUILDER_JXL_DEBUG_LIBRARY_NAMES_END
+"""
+            if old_find_block in dng_config_text:
+                dng_config_text = dng_config_text.replace(old_find_block, new_find_block, 1)
+                dng_config_changed = True
+
+            replacements = {
+                'set_imported_location_all_configs(jxl::jxl "${JXL_LIBRARY}")':
+                    'set_imported_location_configured(jxl::jxl "${JXL_LIBRARY_RELEASE}" "${JXL_LIBRARY_DEBUG}")',
+                'set_imported_location_all_configs(jxl::jxl_threads "${JXL_THREADS_LIBRARY}")':
+                    'set_imported_location_configured(jxl::jxl_threads "${JXL_THREADS_LIBRARY_RELEASE}" "${JXL_THREADS_LIBRARY_DEBUG}")',
+                'set_imported_location_all_configs(jxl::jxl_cms "${JXL_CMS_LIBRARY}")':
+                    'set_imported_location_configured(jxl::jxl_cms "${JXL_CMS_LIBRARY_RELEASE}" "${JXL_CMS_LIBRARY_DEBUG}")',
+                'set_imported_location_all_configs(hwy::hwy "${HWY_LIBRARY}")':
+                    'set_imported_location_configured(hwy::hwy "${HWY_LIBRARY_RELEASE}" "${HWY_LIBRARY_DEBUG}")',
+                'set_imported_location_all_configs(brotli::brotlicommon "${BROTLI_COMMON_LIBRARY}")':
+                    'set_imported_location_configured(brotli::brotlicommon "${BROTLI_COMMON_LIBRARY_RELEASE}" "${BROTLI_COMMON_LIBRARY_DEBUG}")',
+                'set_imported_location_all_configs(brotli::brotlidec "${BROTLI_DEC_LIBRARY}")':
+                    'set_imported_location_configured(brotli::brotlidec "${BROTLI_DEC_LIBRARY_RELEASE}" "${BROTLI_DEC_LIBRARY_DEBUG}")',
+                'set_imported_location_all_configs(brotli::brotlienc "${BROTLI_ENC_LIBRARY}")':
+                    'set_imported_location_configured(brotli::brotlienc "${BROTLI_ENC_LIBRARY_RELEASE}" "${BROTLI_ENC_LIBRARY_DEBUG}")',
+            }
+            for old, new in replacements.items():
+                if old in dng_config_text:
+                    dng_config_text = dng_config_text.replace(old, new, 1)
+                    dng_config_changed = True
+
         marker = "OIIO_BUILDER_LCMS2_LOCATION_FALLBACK_BEGIN"
         if marker not in dng_config_text:
             dng_lines = dng_config_text.splitlines()
@@ -493,7 +687,11 @@ endif()
                     "",
                 ]
                 dng_lines[insert_at:insert_at] = fallback_block
-                dng_config_in.write_text("\n".join(dng_lines) + "\n", encoding="utf-8")
+                dng_config_text = "\n".join(dng_lines) + "\n"
+                dng_config_changed = True
+
+        if dng_config_changed:
+            dng_config_in.write_text(dng_config_text, encoding="utf-8")
 
     # DNG-CMake carries a patch file (cmake/xmp_stream_io_cstring.patch) that
     # adds <cstring>, but it can fail to apply as upstream XMP sources evolve.

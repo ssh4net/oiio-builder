@@ -13,8 +13,23 @@ def enabled(builder, _repo) -> bool:
 
 
 def cmake_args(builder, ctx) -> list[str]:
+    args = [
+        "-DENABLE_PLUGIN_LOADING=OFF",
+        "-DWITH_LIBDE265=ON",
+        "-DWITH_LIBDE265_PLUGIN=OFF",
+        "-DWITH_X265=ON",
+        "-DWITH_X265_PLUGIN=OFF",
+        "-DWITH_KVAZAAR=ON",
+        "-DWITH_KVAZAAR_PLUGIN=OFF",
+        "-DWITH_AOM_DECODER=ON",
+        "-DWITH_AOM_DECODER_PLUGIN=OFF",
+        "-DWITH_AOM_ENCODER=ON",
+        "-DWITH_AOM_ENCODER_PLUGIN=OFF",
+        "-DWITH_DAV1D=OFF",
+        "-DWITH_RAV1E=OFF",
+    ]
     if builder.platform.os != "windows":
-        return []
+        return args
 
     cfg = builder.config.global_cfg
     debug_postfix = str(cfg.windows.get("debug_postfix", "d"))
@@ -32,7 +47,6 @@ def cmake_args(builder, ctx) -> list[str]:
         matches = sorted(lib_dir.glob(f"{base}*.lib"))
         return matches[0] if matches else None
 
-    args: list[str] = []
     x265_lib = _pick_lib("x265-static")
     if x265_lib is not None and (include_dir / "x265.h").exists():
         args += [
@@ -53,6 +67,19 @@ def cmake_args(builder, ctx) -> list[str]:
             f"-DKVAZAAR_INCLUDE_DIR={include_dir}",
             f"-DKVAZAAR_LIBRARY={kvazaar_lib}",
         ]
+
+    aom_include_dir = ctx.install_prefix / "include"
+    release_aom_lib = ctx.install_prefix / "lib" / "aom.lib"
+    debug_aom_lib = ctx.install_prefix / "lib" / f"aom{debug_postfix}.lib"
+    aom_lib = debug_aom_lib if ctx.build_type == "Debug" else release_aom_lib
+    if not aom_lib.exists():
+        candidates = sorted((ctx.install_prefix / "lib").glob("aom*.lib"))
+        if candidates:
+            aom_lib = candidates[0]
+    args += [
+        f"-DAOM_INCLUDE_DIR={aom_include_dir}",
+        f"-DAOM_LIBRARY={aom_lib}",
+    ]
 
     return args
 

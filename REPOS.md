@@ -19,12 +19,13 @@ Repositories referenced by `build_MOS_stack_until_OIIO.sh` plus builder-only add
 | libtiff | libtiff | https://gitlab.com/libtiff/libtiff.git |  |
 | openjpeg | openjpeg | https://github.com/uclouvain/openjpeg.git |  |
 | jasper | jasper | https://github.com/jasper-software/jasper.git |  |
-| giflib | — | — | missing local clone |
+| giflib | gif | https://github.com/ssh4net/gif.git | Uses the fork's CMake build |
 | Imath | Imath | https://github.com/AcademySoftwareFoundation/Imath.git |  |
 | OpenEXR | openexr | https://github.com/AcademySoftwareFoundation/openexr.git |  |
 | rapidobj | rapidobj | https://github.com/guybrush77/rapidobj.git | Header-only CMake package; builder disables tests/tools/examples |
+| rapidfuzz-cpp | rapidfuzz-cpp | https://github.com/rapidfuzz/rapidfuzz-cpp.git | Header-only CMake package; OpenMeta uses `rapidfuzz::rapidfuzz` for semantic metadata query matching |
 | miniply | miniply | https://github.com/ssh4net/miniply.git | Small C++ library; builder disables CLI tools |
-| OpenMeta | OpenMeta | https://github.com/ssh4net/OpenMeta.git | Builds library + Python wheel; can use optional `dng_sdk` package |
+| OpenMeta | OpenMeta | https://github.com/ssh4net/OpenMeta.git | Builds library + Python wheel; can use optional `dng_sdk` package and `rapidfuzz-cpp` |
 | openjph | openjph | https://github.com/ssh4net/OpenJPH.git |  |
 | googletest | googletest | https://github.com/google/googletest.git |  |
 | libjxl | libjxl | https://github.com/libjxl/libjxl.git |  |

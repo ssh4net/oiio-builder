@@ -123,6 +123,7 @@ Key options:
 - `build_dng_sdk`: build Adobe DNG SDK + XMP (via `DNG-CMake`) into the prefix (optional; disabled by default).
 - `windows.generator`: choose one of `msvc`, `ninja-msvc`, `msvc-clang-cl`, `ninja-clang-cl`.
 - `windows.vs_generator`: optional CMake generator name override for `windows.generator=msvc`/`msvc-clang-cl` (e.g. `Visual Studio 18 2026` with CMake 4.2+).
+- `windows.generator = "ninja-clang-cl"` prefers Visual Studio's bundled `clang-cl.exe`; use absolute `[global].cc` / `[global].cxx` paths to force a standalone LLVM install.
 - `windows.build_ffmpeg`: defaults to `false`; when `true`, Windows builds use prebuilt FFmpeg by default, or native FFmpeg source build when run from MSYS2 (see below).
 - `windows.use_ffmpeg_from_prefix`: defaults to `true`; on standard Windows builds, OpenImageIO auto-uses FFmpeg already installed in the active prefix even when `windows.build_ffmpeg = false`.
 - `windows.msvc_runtime`: `static` (default, `/MT`/`/MTd`) or `dynamic` (`/MD`/`/MDd`).
@@ -140,8 +141,10 @@ Prefix precedence (all platforms):
 
 ### Repo Defaults and Local Overrides
 
-Repo graphs and global policy live in `build.toml`, but per-repo default CMake cache settings live in
-tracked files under `builder/recipes/defaults/<repo>.toml`.
+Repo graphs and global policy live in `build.toml`, but per-repo behavior lives under `builder/recipes/`.
+Default CMake cache settings are tracked in `builder/recipes/defaults/<repo>.toml`; Python recipe modules
+hold repo-specific hooks such as enable policy, dynamic CMake args, source patches, build-system selection,
+environment adjustment, pre-build shims, post-install fixes, and stamp payload additions.
 
 Local overrides are read from `build.user.toml` (gitignored) and merged on top of `build.toml`
 (CLI flags still win). You can override `[global]`, `[windows]`, and per-repo CMake cache settings.
@@ -334,7 +337,7 @@ When `windows.build_ffmpeg = true`, the builder picks one of two modes:
 Notes:
 - With `windows.build_ffmpeg = false`, only the prefix probe is used; the FFmpeg repo is not built.
 - For `windows.generator = "ninja-msvc"`, the builder explicitly configures `cl` / `cl`.
-- For `windows.generator = "ninja-clang-cl"` / `msvc-clang-cl`, FFmpeg is configured with `clang-cl`.
+- For `windows.generator = "ninja-clang-cl"` / `msvc-clang-cl`, FFmpeg is configured with `clang-cl`; Ninja clang-cl prefers the Visual Studio bundled LLVM toolset before PATH.
 - Source-build mode requires `bash` and `make` in `PATH` (from MSYS2).
 
 ### Windows: libiconv (for libxml2)

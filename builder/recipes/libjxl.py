@@ -81,6 +81,12 @@ def cmake_args(builder, ctx) -> list[str]:
     return args
 
 
+def pre_build(builder, _repo, ctx, _env) -> None:
+    builder._make_openexr_pc_override(ctx.install_prefix, ctx.build_type)
+    if ctx.build_type == "Debug":
+        builder._ensure_openjph_alias(ctx.install_prefix)
+
+
 def patch_source(_builder, src_dir) -> None:
     cmake_file = src_dir / "lib" / "jxl_extras.cmake"
     if cmake_file.exists():

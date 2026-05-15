@@ -5,3 +5,4 @@ AGENTS.md
 build.user.toml
 /developer
 .DS_Store
+/.tmp_ffmpeg_pic_x86asm_off

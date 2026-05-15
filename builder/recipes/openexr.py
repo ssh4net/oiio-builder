@@ -11,6 +11,37 @@ def enabled(builder, _repo) -> bool:
     return exr_enabled(builder)
 
 
+def cmake_args(builder, _ctx) -> list[str]:
+    openexr_build_python = "ON"
+    if builder.platform.os == "windows":
+        wrappers_enabled, reason = builder._windows_python_wrappers_enabled()
+        openexr_build_python = "ON" if wrappers_enabled else "OFF"
+        if openexr_build_python == "OFF" and not builder._openexr_python_note_printed:
+            if reason == "forced-off":
+                print("[note] OpenEXR: OPENEXR_BUILD_PYTHON=OFF (windows.python_wrappers=off)", flush=True)
+            else:
+                print(
+                    "[note] OpenEXR: OPENEXR_BUILD_PYTHON=OFF (windows.python_wrappers=auto with static CRT). "
+                    "Set windows.python_wrappers=on (or windows.msvc_runtime=dynamic) to enable wrappers.",
+                    flush=True,
+                )
+            builder._openexr_python_note_printed = True
+    return [
+        "-DOPENEXR_BUILD_TOOLS=ON",
+        "-DOPENEXR_INSTALL_TOOLS=ON",
+        "-DOPENEXR_BUILD_EXAMPLES=ON",
+        "-DOPENEXR_BUILD_TESTS=OFF",
+        f"-DOPENEXR_BUILD_PYTHON={openexr_build_python}",
+        "-DOPENEXR_TEST_PYTHON=OFF",
+        "-DBUILD_TESTING=OFF",
+        "-DOPENEXR_FORCE_INTERNAL_IMATH=OFF",
+        "-DOPENEXR_FORCE_INTERNAL_DEFLATE=OFF",
+        "-DOPENEXR_FORCE_INTERNAL_OPENJPH=OFF",
+        "-DCMAKE_SKIP_RPATH=ON",
+        "-DCMAKE_SKIP_INSTALL_RPATH=ON",
+    ]
+
+
 def patch_source(builder, src_dir) -> None:
     if builder.platform.os != "windows":
         return

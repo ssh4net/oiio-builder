@@ -26,7 +26,7 @@ class RepoConfig:
     dir_candidates: list[str] = field(default_factory=list)
     url: str | None = None
     enabled: bool = True
-    build_system: str | None = None  # cmake, autotools, giflib, ffmpeg, libiconv, openssl, sqlite, cpython
+    build_system: str | None = None  # cmake, autotools, ffmpeg, libiconv, openssl, sqlite, cpython
     ref: str | None = None
     ref_type: str = "branch"  # branch, tag, commit
     deps: list[str] = field(default_factory=list)

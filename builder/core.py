@@ -1113,6 +1113,18 @@ class Builder:
         if self.platform.os == "windows":
             generator = str(cfg.windows.get("generator", ""))
             parts.append(f"gen:{generator}")
+            for key in ("cc", "cxx", "ld", "ar", "ranlib"):
+                value = self.toolchain.get(key)
+                if not value:
+                    continue
+                normalized = str(value).replace("\\", "/").lower()
+                parts.append(f"{key}:{normalized}")
+                path = Path(value)
+                if path.exists():
+                    try:
+                        parts.append(f"{key}_mtime:{int(path.stat().st_mtime)}")
+                    except OSError:
+                        pass
         return ";".join(parts)
 
     def _windows_generator(self) -> str:
@@ -1147,18 +1159,15 @@ class Builder:
         if direct.is_absolute() and direct.exists():
             return str(direct)
 
-        found = shutil.which(raw, path=resolved_env.get("PATH"))
-        if found:
-            return found
-
         exe_name = raw if raw.lower().endswith(".exe") else f"{raw}.exe"
         arch_dir = "arm64" if self.platform.arch == "arm64" else "x64"
         host_arch = "Hostarm64" if self.platform.arch == "arm64" else "Hostx64"
         candidates: list[Path] = []
+        fallback_candidates: list[Path] = []
 
-        def _append_if_exists(path: Path) -> None:
+        def _append_if_exists(path: Path, *, fallback: bool = False) -> None:
             if path.exists():
-                candidates.append(path)
+                (fallback_candidates if fallback else candidates).append(path)
 
         def _append_msvc_bins(root: Path) -> None:
             if not root.exists():
@@ -1193,6 +1202,9 @@ class Builder:
                         _append_msvc_bins(year_dir / edition / "VC" / "Tools" / "MSVC")
 
         if exe_name.lower() == "clang-cl.exe":
+            # Prefer Visual Studio's bundled LLVM toolset for clang-cl generators.
+            # Standalone LLVM remains available through an absolute cc/cxx override
+            # or as a fallback when no VS clang-cl installation can be found.
             for env_key in ("VCToolsInstallDir", "VCINSTALLDIR", "VSINSTALLDIR"):
                 base = resolved_env.get(env_key)
                 if not base:
@@ -1210,13 +1222,47 @@ class Builder:
                     _append_if_exists(root / "VC" / "Tools" / "Llvm" / arch_dir / "bin" / exe_name)
                     _append_if_exists(root / "VC" / "Tools" / "Llvm" / "bin" / exe_name)
 
+            for env_key in ("ProgramFiles(x86)", "ProgramFiles"):
+                root = resolved_env.get(env_key)
+                if not root:
+                    continue
+                vs_root = Path(root) / "Microsoft Visual Studio"
+                if not vs_root.exists():
+                    continue
+                years = sorted((p for p in vs_root.iterdir() if p.is_dir()), key=lambda p: p.name, reverse=True)
+                for year_dir in years:
+                    for edition in ("BuildTools", "Community", "Professional", "Enterprise", "Preview"):
+                        llvm_root = year_dir / edition / "VC" / "Tools" / "Llvm"
+                        _append_if_exists(llvm_root / arch_dir / "bin" / exe_name)
+                        _append_if_exists(llvm_root / "bin" / exe_name)
+
+            for vs_root in (
+                Path("C:/Program Files/Microsoft Visual Studio"),
+                Path("C:/Program Files (x86)/Microsoft Visual Studio"),
+            ):
+                if not vs_root.exists():
+                    continue
+                years = sorted((p for p in vs_root.iterdir() if p.is_dir()), key=lambda p: p.name, reverse=True)
+                for year_dir in years:
+                    for edition in ("BuildTools", "Community", "Professional", "Enterprise", "Preview"):
+                        llvm_root = year_dir / edition / "VC" / "Tools" / "Llvm"
+                        _append_if_exists(llvm_root / arch_dir / "bin" / exe_name)
+                        _append_if_exists(llvm_root / "bin" / exe_name)
+
             for base in (
                 Path("C:/Program Files/LLVM/bin"),
                 Path("C:/LLVM/bin"),
             ):
-                _append_if_exists(base / exe_name)
+                _append_if_exists(base / exe_name, fallback=True)
 
-        return str(candidates[0]) if candidates else raw
+        if candidates:
+            return str(candidates[0])
+
+        found = shutil.which(raw, path=resolved_env.get("PATH"))
+        if found:
+            return found
+
+        return str(fallback_candidates[0]) if fallback_candidates else raw
 
     def _resolve_windows_sdk_tool(self, tool_name: str, env: dict[str, str] | None = None) -> str | None:
         if self.platform.os != "windows":
@@ -1268,6 +1314,10 @@ class Builder:
                 continue
             for kits_name in ("10", "11"):
                 bin_roots.append(Path(root) / "Windows Kits" / kits_name / "bin")
+
+        for root in (Path("C:/Program Files (x86)"), Path("C:/Program Files")):
+            for kits_name in ("10", "11"):
+                bin_roots.append(root / "Windows Kits" / kits_name / "bin")
 
         for root in bin_roots:
             if not root.exists():
@@ -1948,39 +1998,7 @@ class Builder:
 
     def _env_for_repo_build(self, repo: RepoConfig, build_type: str, prefix: Path) -> dict[str, str]:
         env = self._env_for_build(build_type, prefix)
-
-        # nativefiledialog-extended (GTK/dbus) should use the system pkg-config
-        # graph. Mixing it with the builder prefix can break resolution when
-        # the system GTK stack pins exact harfbuzz submodule versions.
-        if self.platform.os == "linux" and repo.name == "nativefiledialog-extended":
-            override_dir = self.pkg_override_root / build_type
-            remove_norm = {
-                os.path.normcase(os.path.normpath(str(override_dir))),
-                os.path.normcase(os.path.normpath(str(prefix / "lib" / "pkgconfig"))),
-                os.path.normcase(os.path.normpath(str(prefix / "share" / "pkgconfig"))),
-            }
-            current = env.get("PKG_CONFIG_PATH", "")
-            if current:
-                items = current.split(os.pathsep)
-            else:
-                items = []
-            kept: list[str] = []
-            seen: set[str] = set()
-            for item in items:
-                if not item:
-                    continue
-                normalized = os.path.normcase(os.path.normpath(item))
-                if normalized in remove_norm:
-                    continue
-                if normalized in seen:
-                    continue
-                seen.add(normalized)
-                kept.append(item)
-            if kept:
-                env["PKG_CONFIG_PATH"] = os.pathsep.join(kept)
-            else:
-                env.pop("PKG_CONFIG_PATH", None)
-
+        recipe_registry.build_env(repo.name, self, repo, build_type, prefix, env)
         return env
 
     def _prepend_windows_env_paths(self, env: dict[str, str], key: str, paths: list[Path | str]) -> None:
@@ -2203,362 +2221,16 @@ class Builder:
         return expanded
 
     def _repo_specific_args(self, repo: RepoConfig, ctx: BuildContext) -> list[str]:
-        cfg = self.config.global_cfg
-        name = repo.name
         args: list[str] = []
-        args.extend(self._repo_cmake_defaults_args(name))
+        args.extend(self._repo_cmake_defaults_args(repo.name))
 
-        recipe_args = recipe_registry.cmake_args(name, self, ctx)
-        recipe_applied = recipe_args is not None
-        if recipe_applied:
+        recipe_args = recipe_registry.cmake_args(repo.name, self, ctx)
+        if recipe_args is not None:
             args.extend(recipe_args)
-
-        if name == "nativefiledialog-extended" and self.platform.os == "linux":
-            # Keep system GTK/dbus pkg-config resolution isolated from the builder prefix.
-            args.append("-DPKG_CONFIG_USE_CMAKE_PREFIX_PATH=FALSE")
-
-        if name == "libxml2":
-            if self.platform.os == "windows":
-                if not any(a.startswith("-DLIBXML2_WITH_ICONV=") for a in repo.cmake_args):
-                    debug_postfix = str(cfg.windows.get("debug_postfix", "d"))
-                    iconv_header = ctx.install_prefix / "include" / "iconv.h"
-                    iconv_cfg = ctx.install_prefix / "lib" / "cmake" / "Iconv" / "IconvConfig.cmake"
-                    if ctx.build_type == "Debug":
-                        iconv_lib = ctx.install_prefix / "lib" / f"iconv{debug_postfix}.lib"
-                    else:
-                        iconv_lib = ctx.install_prefix / "lib" / "iconv.lib"
-
-                    if iconv_cfg.exists() or (iconv_header.exists() and iconv_lib.exists()):
-                        args.append("-DLIBXML2_WITH_ICONV=ON")
-                    else:
-                        args.append("-DLIBXML2_WITH_ICONV=OFF")
-        elif name == "freetype":
-            bz_include = (ctx.install_prefix / "include").resolve()
-            lib_dir = (ctx.install_prefix / "lib").resolve()
-            bzip2_release: Path | None = None
-            bzip2_debug: Path | None = None
-            if self.platform.os == "windows":
-                debug_postfix = str(cfg.windows.get("debug_postfix", "d"))
-                self._ensure_bzip2_alias(ctx.install_prefix, ctx.build_type)
-                bzip2_release_candidates = [
-                    lib_dir / "bz2_static.lib",
-                    lib_dir / "bz2.lib",
-                    lib_dir / "libbz2_static.lib",
-                    lib_dir / "libbz2.lib",
-                ]
-                bzip2_debug_candidates = [
-                    lib_dir / f"bz2_static{debug_postfix}.lib",
-                    lib_dir / f"bz2{debug_postfix}.lib",
-                    lib_dir / f"libbz2_static{debug_postfix}.lib",
-                    lib_dir / f"libbz2{debug_postfix}.lib",
-                    lib_dir / "bz2_static.lib",
-                    lib_dir / "bz2.lib",
-                ]
-                bzip2_release = next((candidate for candidate in bzip2_release_candidates if candidate.exists()), None)
-                bzip2_debug = next((candidate for candidate in bzip2_debug_candidates if candidate.exists()), None)
-                if bzip2_release is None:
-                    matches = sorted(lib_dir.glob("*bz2*.lib"))
-                    if matches:
-                        bzip2_release = matches[0]
-                if bzip2_debug is None:
-                    matches = sorted(lib_dir.glob(f"*bz2*{debug_postfix}*.lib"))
-                    if matches:
-                        bzip2_debug = matches[0]
-                    elif bzip2_release is not None:
-                        bzip2_debug = bzip2_release
-            else:
-                bzip2_release_candidates = [
-                    lib_dir / "libbz2_static.a",
-                    lib_dir / "libbz2.a",
-                    lib_dir / "libbz2.so",
-                    lib_dir / "libbz2.dylib",
-                ]
-                bzip2_debug_candidates = [
-                    lib_dir / "libbz2_staticd.a",
-                    lib_dir / "libbz2d.a",
-                    lib_dir / "libbz2_static.a",
-                    lib_dir / "libbz2.a",
-                ]
-                bzip2_release = next((candidate for candidate in bzip2_release_candidates if candidate.exists()), None)
-                bzip2_debug = next((candidate for candidate in bzip2_debug_candidates if candidate.exists()), None)
-                if bzip2_debug is None and bzip2_release is not None:
-                    bzip2_debug = bzip2_release
-
-            if (bz_include / "bzlib.h").exists():
-                args.append(f"-DBZIP2_INCLUDE_DIR={bz_include.as_posix()}")
-            if bzip2_release is not None:
-                args.append(f"-DBZIP2_LIBRARY_RELEASE={bzip2_release.as_posix()}")
-            if bzip2_debug is not None:
-                args.append(f"-DBZIP2_LIBRARY_DEBUG={bzip2_debug.as_posix()}")
-            bzip2_default = bzip2_debug if ctx.build_type == "Debug" else bzip2_release
-            if bzip2_default is not None:
-                args.append(f"-DBZIP2_LIBRARY={bzip2_default.as_posix()}")
-                args.append(f"-DBZIP2_LIBRARIES={bzip2_default.as_posix()}")
-            if self.platform.os == "windows":
-                debug_postfix = str(cfg.windows.get("debug_postfix", "d"))
-                hb_include_candidates = [
-                    (ctx.install_prefix / "include" / "harfbuzz").resolve(),
-                    (ctx.install_prefix / "include").resolve(),
-                ]
-                hb_include_dir = next((candidate for candidate in hb_include_candidates if (candidate / "hb.h").exists()), None)
-
-                lib_dir = (ctx.install_prefix / "lib").resolve()
-                if ctx.build_type == "Debug":
-                    hb_lib_candidates = [
-                        lib_dir / f"harfbuzz{debug_postfix}.lib",
-                        lib_dir / f"libharfbuzz{debug_postfix}.lib",
-                        lib_dir / "harfbuzz.lib",
-                        lib_dir / "libharfbuzz.lib",
-                    ]
-                else:
-                    hb_lib_candidates = [
-                        lib_dir / "harfbuzz.lib",
-                        lib_dir / "libharfbuzz.lib",
-                        lib_dir / f"harfbuzz{debug_postfix}.lib",
-                        lib_dir / f"libharfbuzz{debug_postfix}.lib",
-                    ]
-                hb_library = next((candidate for candidate in hb_lib_candidates if candidate.exists()), None)
-                if hb_library is None:
-                    matches = sorted(lib_dir.glob("*harfbuzz*.lib"))
-                    if matches:
-                        hb_library = matches[0]
-
-                if hb_include_dir is not None:
-                    args.append(f"-DHarfBuzz_INCLUDE_DIR={hb_include_dir.as_posix()}")
-                if hb_library is not None:
-                    args.append(f"-DHarfBuzz_LIBRARY={hb_library.as_posix()}")
-        elif name == "libtiff" and not recipe_applied:
-            args += [
-                "-Dtiff-tests=OFF",
-                "-Dtiff-tools=ON",
-                "-Dtiff-docs=OFF",
-                "-Dtiff-contrib=OFF",
-                "-Dwebp=OFF",
-                "-DJPEG_SUPPORT=ON",
-                "-DJPEG_DUAL_MODE_8_12=ON",
-            ]
-            if self.platform.os == "windows":
-                # libtiff's Findliblzma module doesn't propagate this define for static linking.
-                args.append("-Dtiff-opengl=ON")
-                include_path = ctx.build_dir / "oiio_builder_libtiff_defines.cmake"
-                try:
-                    include_path.write_text(
-                        "\n".join(
-                            [
-                                "if(WIN32)",
-                                "  if(NOT BUILD_SHARED_LIBS)",
-                                "    add_compile_definitions(LZMA_API_STATIC FREEGLUT_STATIC)",
-                                "  endif()",
-                                "endif()",
-                                "",
-                            ]
-                        ),
-                        encoding="utf-8",
-                    )
-                except OSError:
-                    pass
-                args.append(f"-DCMAKE_PROJECT_TOP_LEVEL_INCLUDES={include_path.as_posix()}")
-            else:
-                args.append("-Dtiff-opengl=OFF")
-        elif name == "openjpeg" and not recipe_applied:
-            args += [f"-DBUILD_CODEC={self._resolve_openjpeg_build_codec()}"]
-            if self.platform.os == "windows":
-                debug_postfix = str(cfg.windows.get("debug_postfix", "d"))
-                lib_dir = (ctx.install_prefix / "lib").resolve()
-                include_dir = (ctx.install_prefix / "include").resolve()
-
-                zlib_release = lib_dir / "zlibstatic.lib"
-                zlib_debug = lib_dir / f"zlibstatic{debug_postfix}.lib"
-                zlib_lib = zlib_debug if ctx.build_type == "Debug" else zlib_release
-                if zlib_lib.exists():
-                    args += [
-                        f"-DZLIB_LIBRARY={zlib_lib}",
-                        f"-DZLIB_INCLUDE_DIR={include_dir}",
-                        "-DZLIB_USE_STATIC_LIBS=ON",
-                    ]
-
-                lcms_release = lib_dir / "lcms2_static.lib"
-                lcms_debug = lib_dir / f"lcms2_static{debug_postfix}.lib"
-                lcms_lib = lcms_debug if ctx.build_type == "Debug" else lcms_release
-                if not lcms_lib.exists():
-                    candidates = sorted(lib_dir.glob("lcms2*.lib"))
-                    if candidates:
-                        lcms_lib = candidates[0]
-                if lcms_lib.exists():
-                    args += [
-                        f"-DLCMS2_LIBRARY={lcms_lib}",
-                        f"-DLCMS2_INCLUDE_DIR={include_dir}",
-                    ]
-            if self.platform.os == "macos" and self._resolve_openjpeg_build_codec() == "ON":
-                args += [
-                    f"-DCMAKE_EXE_LINKER_FLAGS_INIT=-L{ctx.install_prefix / 'lib'}",
-                    f"-DCMAKE_SHARED_LINKER_FLAGS_INIT=-L{ctx.install_prefix / 'lib'}",
-                    f"-DCMAKE_MODULE_LINKER_FLAGS_INIT=-L{ctx.install_prefix / 'lib'}",
-                ]
-        elif name == "libheif":
-            args += [
-                "-DENABLE_PLUGIN_LOADING=OFF",
-                "-DWITH_LIBDE265=ON",
-                "-DWITH_LIBDE265_PLUGIN=OFF",
-                "-DWITH_X265=ON",
-                "-DWITH_X265_PLUGIN=OFF",
-                "-DWITH_KVAZAAR=ON",
-                "-DWITH_KVAZAAR_PLUGIN=OFF",
-                "-DWITH_AOM_DECODER=ON",
-                "-DWITH_AOM_DECODER_PLUGIN=OFF",
-                "-DWITH_AOM_ENCODER=ON",
-                "-DWITH_AOM_ENCODER_PLUGIN=OFF",
-                "-DWITH_DAV1D=OFF",
-                "-DWITH_RAV1E=OFF",
-            ]
-            if self.platform.os == "windows":
-                debug_postfix = str(cfg.windows.get("debug_postfix", "d"))
-                aom_include_dir = ctx.install_prefix / "include"
-                release_aom_lib = ctx.install_prefix / "lib" / "aom.lib"
-                debug_aom_lib = ctx.install_prefix / "lib" / f"aom{debug_postfix}.lib"
-                aom_lib = debug_aom_lib if ctx.build_type == "Debug" else release_aom_lib
-                if not aom_lib.exists():
-                    candidates = sorted((ctx.install_prefix / "lib").glob("aom*.lib"))
-                    if candidates:
-                        aom_lib = candidates[0]
-                args += [
-                    f"-DAOM_INCLUDE_DIR={aom_include_dir}",
-                    f"-DAOM_LIBRARY={aom_lib}",
-                ]
-        elif name == "lcms2" and not recipe_applied:
-            args += [
-                "-DBUILD_TESTING=OFF",
-                "-DBUILD_TESTS=OFF",
-                "-DLCMS2_WITH_TIFF=OFF",
-                "-DLCMS2_BUILD_TIFICC=OFF",
-            ]
-        elif name == "openexr":
-            openexr_build_python = "ON"
-            if self.platform.os == "windows":
-                wrappers_enabled, reason = self._windows_python_wrappers_enabled()
-                openexr_build_python = "ON" if wrappers_enabled else "OFF"
-                if openexr_build_python == "OFF" and not self._openexr_python_note_printed:
-                    if reason == "forced-off":
-                        print("[note] OpenEXR: OPENEXR_BUILD_PYTHON=OFF (windows.python_wrappers=off)", flush=True)
-                    else:
-                        print(
-                            "[note] OpenEXR: OPENEXR_BUILD_PYTHON=OFF (windows.python_wrappers=auto with static CRT). "
-                            "Set windows.python_wrappers=on (or windows.msvc_runtime=dynamic) to enable wrappers.",
-                            flush=True,
-                        )
-                    self._openexr_python_note_printed = True
-            args += [
-                "-DOPENEXR_BUILD_TOOLS=ON",
-                "-DOPENEXR_INSTALL_TOOLS=ON",
-                "-DOPENEXR_BUILD_EXAMPLES=ON",
-                "-DOPENEXR_BUILD_TESTS=OFF",
-                f"-DOPENEXR_BUILD_PYTHON={openexr_build_python}",
-                "-DOPENEXR_TEST_PYTHON=OFF",
-                "-DBUILD_TESTING=OFF",
-                "-DOPENEXR_FORCE_INTERNAL_IMATH=OFF",
-                "-DOPENEXR_FORCE_INTERNAL_DEFLATE=OFF",
-                "-DOPENEXR_FORCE_INTERNAL_OPENJPH=OFF",
-                "-DCMAKE_SKIP_RPATH=ON",
-                "-DCMAKE_SKIP_INSTALL_RPATH=ON",
-            ]
-        elif name == "libjxl" and not recipe_applied:
-            enable_openexr = "ON" if cfg.build_exr_stack else "OFF"
-            args += [
-                "-DBUILD_TESTING=OFF",
-                f"-DJPEGXL_ENABLE_TOOLS={cfg.libjxl_enable_tools}",
-                f"-DJPEGXL_ENABLE_OPENEXR={enable_openexr}",
-                "-DJPEGXL_ENABLE_BENCHMARK=OFF",
-                "-DJPEGXL_ENABLE_DEVTOOLS=OFF",
-                "-DJPEGXL_ENABLE_EXAMPLES=OFF",
-                "-DJPEGXL_ENABLE_DOXYGEN=OFF",
-                "-DJPEGXL_ENABLE_MANPAGES=OFF",
-                "-DJPEGXL_ENABLE_VIEWERS=OFF",
-                "-DJPEGXL_ENABLE_JNI=OFF",
-                "-DJPEGXL_ENABLE_PLUGINS=OFF",
-                "-DJPEGXL_ENABLE_SKCMS=OFF",
-                "-DJPEGXL_ENABLE_SJPEG=OFF",
-                "-DJPEGXL_FORCE_SYSTEM_BROTLI=ON",
-                "-DJPEGXL_FORCE_SYSTEM_LCMS2=ON",
-                "-DJPEGXL_FORCE_SYSTEM_HWY=ON",
-                "-DJPEGXL_FORCE_SYSTEM_GTEST=ON",
-                "-DJPEGXL_BUNDLE_LIBPNG=OFF",
-            ]
-        elif name == "expat":
-            if self.platform.os == "windows":
-                runtime_mode = str(cfg.windows.get("msvc_runtime", "static")).strip().lower()
-                if runtime_mode in {"", "static", "mt", "multithreaded"}:
-                    args.append("-DEXPAT_MSVC_STATIC_CRT=ON")
-                elif runtime_mode in {"dynamic", "md", "multithreadeddll"}:
-                    args.append("-DEXPAT_MSVC_STATIC_CRT=OFF")
-        elif name == "OpenColorIO":
-            self._ensure_ppmd_package(ctx.install_prefix, ctx.build_type)
-            ocio_build_python = "ON"
-            if self.platform.os == "windows":
-                wrappers_enabled, reason = self._windows_python_wrappers_enabled()
-                ocio_build_python = "ON" if wrappers_enabled else "OFF"
-                if ocio_build_python == "OFF" and not self._ocio_python_note_printed:
-                    if reason == "forced-off":
-                        print("[note] OpenColorIO: OCIO_BUILD_PYTHON=OFF (windows.python_wrappers=off)", flush=True)
-                    else:
-                        print(
-                            "[note] OpenColorIO: OCIO_BUILD_PYTHON=OFF (windows.python_wrappers=auto with static CRT). "
-                            "Set windows.python_wrappers=on (or windows.msvc_runtime=dynamic) to enable wrappers.",
-                            flush=True,
-                        )
-                    self._ocio_python_note_printed = True
-            args += [
-                "-DOCIO_INSTALL_EXT_PACKAGES=NONE",
-                f"-DOCIO_BUILD_APPS={cfg.ocio_build_apps}",
-                "-DOCIO_BUILD_OPENFX=OFF",
-                "-DOCIO_BUILD_NUKE=OFF",
-                "-DOCIO_BUILD_TESTS=OFF",
-                "-DOCIO_BUILD_GPU_TESTS=OFF",
-                f"-DOCIO_BUILD_PYTHON={ocio_build_python}",
-                "-DOCIO_BUILD_JAVA=OFF",
-                "-DOCIO_BUILD_DOCS=OFF",
-            ]
-            if self.platform.os == "windows":
-                debug_postfix = str(cfg.windows.get("debug_postfix", "d"))
-                pystring_include_dir = ctx.install_prefix / "include" / "pystring"
-                release_pystring_lib = ctx.install_prefix / "lib" / "pystring.lib"
-                debug_pystring_lib = ctx.install_prefix / "lib" / f"pystring{debug_postfix}.lib"
-                pystring_lib = debug_pystring_lib if ctx.build_type == "Debug" else release_pystring_lib
-                if not pystring_lib.exists():
-                    candidates = sorted((ctx.install_prefix / "lib").glob("pystring*.lib"))
-                    if candidates:
-                        pystring_lib = candidates[0]
-                args += [
-                    f"-Dpystring_ROOT={ctx.install_prefix}",
-                    f"-Dpystring_INCLUDE_DIR={pystring_include_dir}",
-                    f"-Dpystring_LIBRARY={pystring_lib}",
-                ]
-
-                # OpenColorIO's Findminizip-ng.cmake may fall back to a library-name search
-                # that misses Debug-suffixed names on Windows (e.g. minizip-ngd.lib).
-                # Provide explicit hints to keep detection deterministic.
-                minizip_include_dir = ctx.install_prefix / "include" / "minizip-ng"
-                minizip_cmake_dir = ctx.install_prefix / "lib" / "cmake" / "minizip-ng"
-                release_minizip_lib = ctx.install_prefix / "lib" / "minizip-ng.lib"
-                debug_minizip_lib = ctx.install_prefix / "lib" / f"minizip-ng{debug_postfix}.lib"
-                minizip_lib = debug_minizip_lib if ctx.build_type == "Debug" else release_minizip_lib
-                if not minizip_lib.exists():
-                    candidates = sorted((ctx.install_prefix / "lib").glob("minizip-ng*.lib"))
-                    if candidates:
-                        minizip_lib = candidates[0]
-                args += [
-                    f"-Dminizip-ng_ROOT={ctx.install_prefix}",
-                    f"-Dminizip-ng_DIR={minizip_cmake_dir}",
-                    f"-Dminizip-ng_INCLUDE_DIR={minizip_include_dir}",
-                    f"-Dminizip-ng_LIBRARY={minizip_lib}",
-                ]
         return args
 
     def _autotools_args(self, repo: RepoConfig) -> list[str]:
-        if repo.name == "xz":
-            return ["--disable-nls", "--disable-xz", "--disable-xzdec", "--disable-lzmadec", "--disable-lzmainfo"]
-        if repo.name == "lcms2":
-            return ["--without-fastfloat", "--without-threaded"]
-        return []
+        return recipe_registry.autotools_args(repo.name, self, repo) or []
 
     def _prepare_autotools_build_dir(self, ctx: BuildContext) -> None:
         # Autotools probes leave configured makefiles and probe results in the
@@ -3097,30 +2769,9 @@ class Builder:
         return default
 
     def _maybe_skip_missing(self, repo: RepoConfig, path: Path) -> bool:
-        if repo.name == "libiconv" and self.platform.os == "windows":
-            zip_path = self._libiconv_export_zip()
-            if zip_path.exists():
-                return False
-            if repo.optional:
-                print(f"[skip] {repo.name}: missing vcpkg export zip at {zip_path}")
-                return True
-            return False
-        if repo.name == "openssl" and self.platform.os == "windows":
-            zip_path = self._openssl_export_zip()
-            if zip_path.exists():
-                return False
-            if repo.optional:
-                print(f"[skip] {repo.name}: missing vcpkg export zip at {zip_path}")
-                return True
-            return False
-        if repo.name == "sqlite" and self.platform.os == "windows":
-            zip_path = self._sqlite_export_zip()
-            if zip_path.exists():
-                return False
-            if repo.optional:
-                print(f"[skip] {repo.name}: missing vcpkg export zip at {zip_path}")
-                return True
-            return False
+        recipe_decision = recipe_registry.missing_source_skip(repo.name, self, repo, path)
+        if recipe_decision is not None:
+            return recipe_decision
         if path.exists():
             return False
         if repo.optional and not repo.url:
@@ -3215,8 +2866,6 @@ class Builder:
         with lock:
             if repo.name in self._repo_source_prepared:
                 return
-            if repo.name == "glew":
-                self._patch_glew_macos(src_dir)
             recipe_registry.patch_source(repo.name, self, src_dir)
             if self.apply_prefix_contract:
                 self._apply_prefix_contract_to_source_tree(repo, src_dir)
@@ -5141,63 +4790,7 @@ endif()
         recipe_revision = recipe_registry.stamp_revision(repo.name)
         if recipe_revision is not None:
             payload["builder_patch_rev"] = recipe_revision
-        if repo.name == "libiconv" and self.platform.os == "windows":
-            zip_path = self._libiconv_export_zip()
-            payload["vcpkg_export_zip"] = str(zip_path)
-            if zip_path.exists():
-                st = zip_path.stat()
-                payload["vcpkg_export_zip_size"] = int(st.st_size)
-                payload["vcpkg_export_zip_mtime"] = int(st.st_mtime)
-        if repo.name == "openssl" and self.platform.os == "windows":
-            zip_path = self._openssl_export_zip()
-            payload["vcpkg_export_zip"] = str(zip_path)
-            if zip_path.exists():
-                st = zip_path.stat()
-                payload["vcpkg_export_zip_size"] = int(st.st_size)
-                payload["vcpkg_export_zip_mtime"] = int(st.st_mtime)
-        if repo.name == "sqlite" and self.platform.os == "windows":
-            zip_path = self._sqlite_export_zip()
-            payload["vcpkg_export_zip"] = str(zip_path)
-            if zip_path.exists():
-                st = zip_path.stat()
-                payload["vcpkg_export_zip_size"] = int(st.st_size)
-                payload["vcpkg_export_zip_mtime"] = int(st.st_mtime)
-        if repo.build_system == "qt6":
-            qt_submodules = self._qt6_submodules()
-            qt_submodule_set = set(qt_submodules)
-            system_libs = {
-                "pcre": "system",
-                "zlib": "system",
-                "freetype": "system",
-                "harfbuzz": "system",
-                "libpng": "system",
-                "libjpeg": "system",
-            }
-            if "qtimageformats" in qt_submodule_set:
-                system_libs["tiff"] = "system"
-                system_libs["webp"] = "system"
-            disabled_features = ["gstreamer", "pipewire"] if "qtmultimedia" in qt_submodule_set else []
-            if self.platform.os == "linux":
-                disabled_features.extend(["dbus", "glib"])
-            payload["qt6"] = {
-                "submodules": qt_submodules,
-                "mode": "debug" if ctx.build_type == "Debug" else "release",
-                "opengl": "desktop" if self.platform.os in {"linux", "macos"} else "default",
-                "qpa": (
-                    "xcb;wayland"
-                    if self.platform.os == "linux" and "qtwayland" in qt_submodule_set
-                    else ("xcb" if self.platform.os == "linux" else "default")
-                ),
-                "qpa_default": ("xcb" if self.platform.os == "linux" else "default"),
-                "ssl": ("openssl-linked" if self.platform.os in {"linux", "windows"} else "default"),
-                "static_runtime": (self.platform.os == "windows"),
-                "system_libs": system_libs,
-                "disabled_features": sorted(disabled_features),
-                "feature_ffmpeg": (
-                    self.platform.os != "windows" and "qtmultimedia" in qt_submodule_set and self._ffmpeg_enabled()
-                ),
-                "pkg_config_use_static_libs": True,
-            }
+        recipe_registry.stamp_payload(repo.name, self, repo, ctx, payload)
         return payload
 
     def _dep_fingerprint(self, dep: str, build_type: str) -> str | None:
@@ -5399,30 +4992,6 @@ endif()
             log_path=str(self._repo_log_path(ctx.repo.name, ctx.build_type, "install")),
         )
         return True
-
-    def _giflib_install_only(self, repo: RepoConfig, ctx: BuildContext, env: dict[str, str]) -> bool:
-        if self.platform.os == "windows":
-            if not (ctx.build_dir / "cmake_install.cmake").exists():
-                return False
-            cmake_src_dir = ctx.build_dir / "_giflib_cmake"
-            cmake_src_dir.mkdir(parents=True, exist_ok=True)
-            cmake_lists = cmake_src_dir / "CMakeLists.txt"
-            if not cmake_lists.exists():
-                return False
-            cmd = ["cmake", "--install", str(ctx.build_dir), "--config", ctx.build_type, "--prefix", str(ctx.install_prefix)]
-            print_cmd("install command", cmd)
-            banner(f"{repo.name} ({ctx.build_type}) - install")
-            run(
-                cmd,
-                env=env,
-                dry_run=self.dry_run,
-                log_path=str(self._repo_log_path(repo.name, ctx.build_type, "install")),
-            )
-            return True
-
-        # POSIX giflib builds in the source tree (one build at a time), so install-only is unsafe when
-        # multiple build types are enabled. Fall back to full rebuild+install.
-        return False
 
     def _build_cpython_posix(self, ctx: BuildContext, env: dict[str, str]) -> None:
         build_dir = ctx.build_dir
@@ -5715,8 +5284,6 @@ endif()
             return self._autotools_install_only(repo, ctx, env)
         if repo.build_system == "ffmpeg":
             return self._ffmpeg_install_only(ctx, env)
-        if repo.build_system == "giflib":
-            return self._giflib_install_only(repo, ctx, env)
         return False
 
     def _build_repo(self, repo: RepoConfig, build_type: str, deps_heads: dict[str, str | None]) -> tuple[str, str]:
@@ -5800,18 +5367,7 @@ endif()
             self._ensure_libheif_windows_multiconfig_compat(install_prefix)
 
         self._prepare_repo_source(repo, repo_root)
-        if repo.name == "libjxl":
-            self._make_openexr_pc_override(install_prefix, build_type)
-        if repo.name == "libjxl" and build_type == "Debug":
-            self._ensure_openjph_alias(install_prefix)
-        if repo.name in {"OpenColorIO", "OpenImageIO"}:
-            self._ensure_pystring_package(install_prefix, build_type)
-        if repo.name in {"libraw", "OpenImageIO"}:
-            self._ensure_dng_sdk_lcms2_compat(install_prefix, build_type)
-        if repo.name == "libpng":
-            self._ensure_png16_include_alias(install_prefix)
-        if repo.name == "OpenImageIO":
-            self._ensure_png16_include_alias(install_prefix)
+        recipe_registry.pre_build(repo.name, self, repo, ctx, env)
 
         if repo.build_system == "cmake":
             if not self.dry_run:
@@ -6759,192 +6315,6 @@ endif()
                 for item in bin_src.iterdir():
                     if item.is_file() and item.suffix.lower() in {".dll", ".pdb", ".exe"}:
                         shutil.copy2(item, bin_dst / item.name)
-        elif repo.build_system == "giflib":
-            build_dir.mkdir(parents=True, exist_ok=True)
-            if self.platform.os == "windows":
-                cmake_src_dir = build_dir / "_giflib_cmake"
-                cmake_src_dir.mkdir(parents=True, exist_ok=True)
-                cmake_lists = cmake_src_dir / "CMakeLists.txt"
-                cmake_lists.write_text(
-                    "\n".join(
-                        [
-                            "cmake_minimum_required(VERSION 3.20)",
-                            "project(giflib C)",
-                            "",
-                            "if (NOT DEFINED GIFLIB_SRC_DIR)",
-                            "  message(FATAL_ERROR \"GIFLIB_SRC_DIR is not set\")",
-                            "endif()",
-                            "",
-                            "file(GLOB _giflib_sources",
-                            "  \"${GIFLIB_SRC_DIR}/*.c\"",
-                            "  \"${GIFLIB_SRC_DIR}/lib/*.c\"",
-                            ")",
-                            "",
-                            "# Exclude tool sources (we only need the library for consumers like libjxl/OIIO).",
-                            "set(_giflib_tool_sources",
-                            "  \"${GIFLIB_SRC_DIR}/gif2rgb.c\"",
-                            "  \"${GIFLIB_SRC_DIR}/gifbuild.c\"",
-                            "  \"${GIFLIB_SRC_DIR}/giffix.c\"",
-                            "  \"${GIFLIB_SRC_DIR}/giftext.c\"",
-                            "  \"${GIFLIB_SRC_DIR}/giftool.c\"",
-                            "  \"${GIFLIB_SRC_DIR}/gifclrmp.c\"",
-                            ")",
-                            "list(REMOVE_ITEM _giflib_sources ${_giflib_tool_sources})",
-                            "",
-                            "add_library(gif STATIC ${_giflib_sources})",
-                            "target_include_directories(gif PUBLIC \"${GIFLIB_SRC_DIR}\")",
-                            "set_target_properties(gif PROPERTIES OUTPUT_NAME gif DEBUG_POSTFIX \"${CMAKE_DEBUG_POSTFIX}\")",
-                            "",
-                            "install(TARGETS gif ARCHIVE DESTINATION lib)",
-                            "install(FILES \"${GIFLIB_SRC_DIR}/gif_lib.h\" DESTINATION include)",
-                            "if(EXISTS \"${GIFLIB_SRC_DIR}/gif_win32_compat.h\")",
-                            "  install(FILES \"${GIFLIB_SRC_DIR}/gif_win32_compat.h\" DESTINATION include)",
-                            "endif()",
-                            "",
-                        ]
-                    )
-                    + "\n",
-                    encoding="utf-8",
-                )
-
-                cmd = ["cmake", "-S", str(cmake_src_dir), "-B", str(build_dir)]
-                cmd.extend(self._cmake_generator_args())
-                cmd.append(f"-DGIFLIB_SRC_DIR={src_dir.as_posix()}")
-                cmd.extend(self._cmake_common_args(repo, ctx))
-                print_cmd("Full cmake config command", cmd)
-                banner(f"{repo.name} ({build_type}) - configure")
-                run(cmd, env=env, dry_run=self.dry_run, log_path=str(self._repo_log_path(repo.name, build_type, "configure")))
-
-                build_cmd = ["cmake", "--build", str(build_dir), "--config", build_type, "--parallel", str(self._jobs())]
-                print_cmd("build command", build_cmd)
-                banner(f"{repo.name} ({build_type}) - building")
-                run(build_cmd, env=env, dry_run=self.dry_run, log_path=str(self._repo_log_path(repo.name, build_type, "build")))
-
-                install_cmd = ["cmake", "--install", str(build_dir), "--config", build_type]
-                print_cmd("install command", install_cmd)
-                banner(f"{repo.name} ({build_type}) - install")
-                run(install_cmd, env=env, dry_run=self.dry_run, log_path=str(self._repo_log_path(repo.name, build_type, "install")))
-            else:
-                make_env = env.copy()
-                make_env["CC"] = self.toolchain.get("cc", make_env.get("CC", "cc"))
-                cflags, _cxxflags, _ldflags = self._non_cmake_flags(build_type)
-                make_env["CFLAGS"] = f"{cflags} -std=gnu99 -Wall -Wno-format-truncation"
-                getversion = src_dir / "getversion"
-                if getversion.exists() and not os.access(getversion, os.X_OK):
-                    if not self.dry_run:
-                        getversion.chmod(getversion.stat().st_mode | 0o111)
-                try:
-                    clean_cmd = ["make", "clean"]
-                    print_cmd("clean command", clean_cmd)
-                    banner(f"{repo.name} ({build_type}) - clean")
-                    run(
-                        ["make", "clean"],
-                        cwd=str(src_dir),
-                        env=make_env,
-                        dry_run=self.dry_run,
-                        log_path=str(self._repo_log_path(repo.name, build_type, "clean")),
-                    )
-                except subprocess.CalledProcessError:
-                    pass
-                build_cmd = [
-                    "make",
-                    f"-j{self._jobs()}",
-                    "libgif.a",
-                    "libutil.a",
-                    "gif2rgb",
-                    "gifbuild",
-                    "giffix",
-                    "giftext",
-                    "giftool",
-                    "gifclrmp",
-                ]
-                print_cmd("build command", build_cmd)
-                banner(f"{repo.name} ({build_type}) - building")
-                run(
-                    build_cmd,
-                    cwd=str(src_dir),
-                    env={
-                        **make_env,
-                        "PREFIX": str(install_prefix),
-                        "BINDIR": str(install_prefix / "bin"),
-                        "INCDIR": str(install_prefix / "include"),
-                        "LIBDIR": str(install_prefix / "lib"),
-                        "MANDIR": str(install_prefix / "share" / "man"),
-                    },
-                    dry_run=self.dry_run,
-                    log_path=str(self._repo_log_path(repo.name, build_type, "build")),
-                )
-                if not self.dry_run:
-                    (install_prefix / "bin").mkdir(parents=True, exist_ok=True)
-                    (install_prefix / "include").mkdir(parents=True, exist_ok=True)
-                    (install_prefix / "lib").mkdir(parents=True, exist_ok=True)
-                    banner(f"{repo.name} ({build_type}) - install")
-                    print_cmd(
-                        "install command",
-                        [
-                            "install",
-                            "gif2rgb",
-                            "gifbuild",
-                            "giffix",
-                            "giftext",
-                            "giftool",
-                            "gifclrmp",
-                            str(install_prefix / "bin"),
-                        ],
-                    )
-                    run(
-                        ["install", "gif2rgb", "gifbuild", "giffix", "giftext", "giftool", "gifclrmp", str(install_prefix / "bin")],
-                        cwd=str(src_dir),
-                        dry_run=self.dry_run,
-                        log_path=str(self._repo_log_path(repo.name, build_type, "install-bin")),
-                    )
-                    print_cmd(
-                        "install command",
-                        [
-                            "install",
-                            "-m",
-                            "644",
-                            "gif_lib.h",
-                            str(install_prefix / "include" / "gif_lib.h"),
-                        ],
-                    )
-                    run(
-                        ["install", "-m", "644", "gif_lib.h", str(install_prefix / "include" / "gif_lib.h")],
-                        cwd=str(src_dir),
-                        dry_run=self.dry_run,
-                        log_path=str(self._repo_log_path(repo.name, build_type, "install-gif_lib_h")),
-                    )
-                    if (src_dir / "gif_win32_compat.h").exists():
-                        print_cmd(
-                            "install command",
-                            [
-                                "install",
-                                "-m",
-                                "644",
-                                "gif_win32_compat.h",
-                                str(install_prefix / "include" / "gif_win32_compat.h"),
-                            ],
-                        )
-                        run(
-                            ["install", "-m", "644", "gif_win32_compat.h", str(install_prefix / "include" / "gif_win32_compat.h")],
-                            cwd=str(src_dir),
-                            dry_run=self.dry_run,
-                            log_path=str(self._repo_log_path(repo.name, build_type, "install-gif_win32_compat_h")),
-                        )
-                    print_cmd("install command", ["install", "-m", "644", "libgif.a", str(install_prefix / "lib" / "libgif.a")])
-                    run(
-                        ["install", "-m", "644", "libgif.a", str(install_prefix / "lib" / "libgif.a")],
-                        cwd=str(src_dir),
-                        dry_run=self.dry_run,
-                        log_path=str(self._repo_log_path(repo.name, build_type, "install-libgif_a")),
-                    )
-                    print_cmd("install command", ["install", "-m", "644", "libutil.a", str(install_prefix / "lib" / "libutil.a")])
-                    run(
-                        ["install", "-m", "644", "libutil.a", str(install_prefix / "lib" / "libutil.a")],
-                        cwd=str(src_dir),
-                        dry_run=self.dry_run,
-                        log_path=str(self._repo_log_path(repo.name, build_type, "install-libutil_a")),
-                    )
         else:
             raise RuntimeError(f"Unsupported build_system: {repo.build_system}")
 
@@ -6964,24 +6334,15 @@ endif()
         return jobs
 
     def _resolved_repo_config_for_build(self, repo: RepoConfig, src_dir: Path) -> RepoConfig:
-        # Decide build system for xz/lcms2 based on config and source layout.
-        if self.platform.os == "windows":
-            if repo.name == "sqlite":
-                return replace(repo, build_system="sqlite")
-        if repo.name == "xz":
-            cmake_lists = src_dir / "CMakeLists.txt"
-            build_system = "autotools" if (self.config.global_cfg.xz_use_autotools or not cmake_lists.exists()) else "cmake"
-            return replace(repo, build_system=build_system)
-        if repo.name == "lcms2":
-            cmake_lists = src_dir / "CMakeLists.txt"
-            build_system = "autotools" if (self.config.global_cfg.lcms2_use_autotools or not cmake_lists.exists()) else "cmake"
+        build_system = recipe_registry.resolve_build_system(repo.name, self, repo, src_dir)
+        if build_system is not None:
             return replace(repo, build_system=build_system)
         return repo
 
     def _repo_requires_exclusive_build(self, repo: RepoConfig) -> bool:
         if self.platform.os == "windows":
             return False
-        return repo.build_system in {"giflib", "qt6"}
+        return repo.build_system == "qt6"
 
     def _run_build_type(
         self,
@@ -7087,11 +6448,7 @@ endif()
             self.repo_paths[repo.name] = repo_dir
             if self._maybe_skip_missing(repo, repo_dir):
                 continue
-            if repo.name == "libiconv" and self.platform.os == "windows":
-                continue
-            if repo.name == "openssl" and self.platform.os == "windows":
-                continue
-            if repo.name == "sqlite" and self.platform.os == "windows":
+            if recipe_registry.skip_update(repo.name, self, repo):
                 continue
             ensure_repo(repo_dir, repo.url, repo.ref, repo.ref_type, update=not self.no_update, dry_run=self.dry_run)
 

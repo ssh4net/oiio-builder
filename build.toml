@@ -43,6 +43,7 @@ preferred_repo_order = [
   "yaml-cpp",
   "harfbuzz",
   "robinmap",
+  "rapidfuzz-cpp",
   "eigen",
   "LBFGSpp",
   "imath",
@@ -129,6 +130,8 @@ no_update = true
 
 [windows]
 # generator: msvc, ninja-msvc, msvc-clang-cl, ninja-clang-cl
+# ninja-clang-cl prefers Visual Studio's bundled clang-cl; use absolute
+# [global].cc/[global].cxx paths to force a standalone LLVM install.
 # generator = "ninja-clang-cl"
 # Visual Studio generator override (e.g. for VS 2026 with CMake 4.2+):
 # vs_generator = "Visual Studio 18 2026"
@@ -315,7 +318,7 @@ name = "giflib"
 dir = "gif"
 dir_candidates = ["giflib", "giflib-*", "gif*"]
 url = "https://github.com/ssh4net/gif.git"
-build_system = "giflib"
+build_system = "cmake"
 
 [[repos]]
 name = "libwebp"
@@ -480,6 +483,12 @@ url = "https://github.com/guybrush77/rapidobj.git"
 build_system = "cmake"
 
 [[repos]]
+name = "rapidfuzz-cpp"
+dir = "rapidfuzz-cpp"
+url = "https://github.com/rapidfuzz/rapidfuzz-cpp.git"
+build_system = "cmake"
+
+[[repos]]
 name = "miniply"
 dir = "miniply"
 url = "https://github.com/ssh4net/miniply.git"
@@ -490,7 +499,7 @@ name = "OpenMeta"
 dir = "OpenMeta"
 url = "https://github.com/ssh4net/OpenMeta.git"
 build_system = "cmake"
-deps = ["zlib-ng", "brotli", "expat", "nanobind", "cpython", "dng-sdk"]
+deps = ["zlib-ng", "brotli", "expat", "rapidfuzz-cpp", "nanobind", "cpython", "dng-sdk"]
 
 [[repos]]
 name = "expat"

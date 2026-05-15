@@ -4,4 +4,6 @@ FMT_TEST = false
 FMT_FUZZ = false
 FMT_CUDA_TEST = false
 FMT_INSTALL = true
-
+# fmt's C++20 module target requires CMake compiler module dependency scanning.
+# Ninja + clang-cl currently cannot provide that scanner reliably here.
+FMT_MODULE = false

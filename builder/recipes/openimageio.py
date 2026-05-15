@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 from pathlib import Path
 
 from .policy import imageio_enabled
 
 
-STAMP_REVISION = "6"
+STAMP_REVISION = "7"
 
 
 def enabled(builder, _repo) -> bool:
@@ -27,35 +28,40 @@ def _patch_compiled_fmt_option(src_dir: Path) -> None:
         path.write_text(text.replace(old, new, 1), encoding="utf-8")
 
     externalpackages = src_dir / "src" / "cmake" / "externalpackages.cmake"
-    old = """\
-# fmtlib
-set_option (OIIO_INTERNALIZE_FMT "Copy fmt headers into <install>/include/OpenImageIO/detail/fmt" ON)
-checked_find_package (fmt REQUIRED
-                      VERSION_MIN 9.0
-                      BUILD_LOCAL missing
-                     )
-get_target_property(FMT_INCLUDE_DIR fmt::fmt-header-only INTERFACE_INCLUDE_DIRECTORIES)
-"""
-    new = """\
-# fmtlib
-set_option (OIIO_INTERNALIZE_FMT "Copy fmt headers into <install>/include/OpenImageIO/detail/fmt" ON)
-set_option (OIIO_USE_COMPILED_FMT "Link against compiled fmt::fmt instead of header-only fmt" OFF)
-if (OIIO_USE_COMPILED_FMT)
-    set (OIIO_USE_COMPILED_FMT_VALUE 1)
-else ()
-    set (OIIO_USE_COMPILED_FMT_VALUE 0)
-endif ()
-checked_find_package (fmt REQUIRED
-                      VERSION_MIN 9.0
-                      BUILD_LOCAL missing
-                     )
-if (OIIO_USE_COMPILED_FMT)
-    get_target_property(FMT_INCLUDE_DIR fmt::fmt INTERFACE_INCLUDE_DIRECTORIES)
-else ()
-    get_target_property(FMT_INCLUDE_DIR fmt::fmt-header-only INTERFACE_INCLUDE_DIRECTORIES)
-endif ()
-"""
-    replace_once(externalpackages, old, new, "compiled fmt CMake option")
+    text = externalpackages.read_text(encoding="utf-8", errors="replace")
+    if "OIIO_USE_COMPILED_FMT" not in text:
+        fmt_block = re.compile(
+            r"(?P<header># fmtlib\r?\n)"
+            r"(?P<option>(?P<option_cmd>set_option|option) "
+            r"\(OIIO_INTERNALIZE_FMT [^\r\n]*\r?\n)"
+            r"(?P<find>checked_find_package \(fmt REQUIRED\r?\n"
+            r".*?\r?\n"
+            r"[ \t]*\)\r?\n)"
+            r"get_target_property\(FMT_INCLUDE_DIR fmt::fmt-header-only INTERFACE_INCLUDE_DIRECTORIES\)\r?\n",
+            re.DOTALL,
+        )
+        match = fmt_block.search(text)
+        if match is not None:
+            option_cmd = match.group("option_cmd")
+            new = (
+                f"{match.group('header')}"
+                f"{match.group('option')}"
+                f'{option_cmd} (OIIO_USE_COMPILED_FMT "Link against compiled fmt::fmt instead of header-only fmt" OFF)\n'
+                "if (OIIO_USE_COMPILED_FMT)\n"
+                "    set (OIIO_USE_COMPILED_FMT_VALUE 1)\n"
+                "else ()\n"
+                "    set (OIIO_USE_COMPILED_FMT_VALUE 0)\n"
+                "endif ()\n"
+                f"{match.group('find')}"
+                "if (OIIO_USE_COMPILED_FMT)\n"
+                "    get_target_property(FMT_INCLUDE_DIR fmt::fmt INTERFACE_INCLUDE_DIRECTORIES)\n"
+                "else ()\n"
+                "    get_target_property(FMT_INCLUDE_DIR fmt::fmt-header-only INTERFACE_INCLUDE_DIRECTORIES)\n"
+                "endif ()\n"
+            )
+            externalpackages.write_text(text[: match.start()] + new + text[match.end() :], encoding="utf-8")
+        else:
+            raise RuntimeError(f"OpenImageIO compiled fmt CMake option patch no longer matches upstream source: {externalpackages}")
 
     oiioversion = src_dir / "src" / "include" / "OpenImageIO" / "oiioversion.h.in"
     if not oiioversion.exists():
@@ -155,6 +161,12 @@ def _patch_msvc_python_module_link(src_dir: Path) -> None:
 
 def cmake_args(builder, ctx) -> list[str]:
     return _cache_args(builder, ctx)
+
+
+def pre_build(builder, _repo, ctx, _env) -> None:
+    builder._ensure_pystring_package(ctx.install_prefix, ctx.build_type)
+    builder._ensure_dng_sdk_lcms2_compat(ctx.install_prefix, ctx.build_type)
+    builder._ensure_png16_include_alias(ctx.install_prefix)
 
 
 def _ffmpeg_args(
