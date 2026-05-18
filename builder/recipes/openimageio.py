@@ -8,7 +8,7 @@ from pathlib import Path
 from .policy import imageio_enabled
 
 
-STAMP_REVISION = "7"
+STAMP_REVISION = "8"
 
 
 def enabled(builder, _repo) -> bool:
@@ -77,7 +77,7 @@ def _patch_compiled_fmt_option(src_dir: Path) -> None:
         oiioversion.write_text(text, encoding="utf-8")
 
     fmt_header = src_dir / "src" / "include" / "OpenImageIO" / "detail" / "fmt.h"
-    old = """\
+    old_with_exceptions = """\
 // We want the header-only implementation of fmt
 #ifndef FMT_HEADER_ONLY
 #    define FMT_HEADER_ONLY
@@ -86,6 +86,12 @@ def _patch_compiled_fmt_option(src_dir: Path) -> None:
 // Disable fmt exceptions
 #ifndef FMT_EXCEPTIONS
 #    define FMT_EXCEPTIONS 0
+#endif
+"""
+    old_header_only = """\
+// We want the header-only implementation of fmt
+#ifndef FMT_HEADER_ONLY
+#    define FMT_HEADER_ONLY
 #endif
 """
     new = """\
@@ -105,7 +111,13 @@ def _patch_compiled_fmt_option(src_dir: Path) -> None:
 #    endif
 #endif
 """
-    replace_once(fmt_header, old, new, "fmt header mode")
+    if fmt_header.exists():
+        fmt_text = fmt_header.read_text(encoding="utf-8", errors="replace")
+        if new not in fmt_text:
+            old = old_with_exceptions if old_with_exceptions in fmt_text else old_header_only
+            replace_once(fmt_header, old, new, "fmt header mode")
+    else:
+        raise RuntimeError(f"OpenImageIO fmt header mode patch target is missing: {fmt_header}")
 
     libutil = src_dir / "src" / "libutil" / "CMakeLists.txt"
     old = """\

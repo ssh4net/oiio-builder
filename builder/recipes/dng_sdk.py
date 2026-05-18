@@ -6,7 +6,7 @@ import os
 import shutil
 
 
-STAMP_REVISION = "11"
+STAMP_REVISION = "12"
 
 
 def enabled(builder, _repo) -> bool:
@@ -231,6 +231,20 @@ set_property(CACHE DNG_VALIDATE PROPERTY STRINGS AUTO ON OFF)"""
         if top_changed:
             top_cmake.write_text(top_text, encoding="utf-8")
 
+        pc_framework_marker = "OIIO_BUILDER_DNGSDK_PC_MACOS_FRAMEWORKS_BEGIN"
+        if pc_framework_marker not in top_text:
+            pc_framework_anchor = 'set(DNG_SDK_PC_LIBS_PRIVATE "-pthread")'
+            pc_framework_block = """\
+set(DNG_SDK_PC_LIBS_PRIVATE "-pthread")
+# OIIO_BUILDER_DNGSDK_PC_MACOS_FRAMEWORKS_BEGIN
+if(APPLE)
+    string(APPEND DNG_SDK_PC_LIBS_PRIVATE " -framework CoreFoundation -framework CoreServices")
+endif()
+# OIIO_BUILDER_DNGSDK_PC_MACOS_FRAMEWORKS_END"""
+            if pc_framework_anchor in top_text:
+                top_text = top_text.replace(pc_framework_anchor, pc_framework_block, 1)
+                top_cmake.write_text(top_text, encoding="utf-8")
+
     # DNG-CMake currently lists dng_jxl.cpp unconditionally as a source file.
     # That breaks configurations that explicitly disable JXL (DNG_WITH_JXL=OFF).
     dng_sdk_cmake = src_dir / "cmake" / "dng_sdk.cmake"
@@ -352,6 +366,34 @@ set_property(CACHE DNG_VALIDATE PROPERTY STRINGS AUTO ON OFF)"""
                 lines[start : end + 1] = replacement
                 changed = True
 
+        framework_marker = "OIIO_BUILDER_DNGSDK_MACOS_FRAMEWORKS_BEGIN"
+        if framework_marker not in "\n".join(lines):
+            insert_at = next(
+                (
+                    i + 1
+                    for i, line in enumerate(lines)
+                    if line.strip() == "target_link_libraries(dng_sdk PUBLIC Threads::Threads)"
+                ),
+                None,
+            )
+            if insert_at is not None:
+                framework_block = [
+                    "",
+                    "# OIIO_BUILDER_DNGSDK_MACOS_FRAMEWORKS_BEGIN",
+                    "if(APPLE)",
+                    "    find_library(COREFOUNDATION_FRAMEWORK CoreFoundation REQUIRED)",
+                    "    find_library(CORESERVICES_FRAMEWORK CoreServices REQUIRED)",
+                    "    target_link_libraries(dng_sdk PUBLIC",
+                    "        ${COREFOUNDATION_FRAMEWORK}",
+                    "        ${CORESERVICES_FRAMEWORK}",
+                    "    )",
+                    "endif()",
+                    "# OIIO_BUILDER_DNGSDK_MACOS_FRAMEWORKS_END",
+                    "",
+                ]
+                lines[insert_at:insert_at] = framework_block
+                changed = True
+
         if changed:
             dng_sdk_cmake.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -441,6 +483,28 @@ target_sources(dng_validate PRIVATE
     $<$<AND:$<NOT:$<BOOL:${WIN32}>>,$<NOT:$<BOOL:${APPLE}>>>:${REPO_ROOT}/xmp/toolkit/XMPFiles/source/PluginHandler/OS_Utils_Linux.cpp>"""
         if old_plugin_sources in xmp_text:
             xmp_text = xmp_text.replace(old_plugin_sources, new_plugin_sources, 1)
+        framework_marker = "OIIO_BUILDER_XMP_MACOS_FRAMEWORKS_BEGIN"
+        if framework_marker not in xmp_text:
+            insert_after = "target_link_libraries(XMPFilesStatic PUBLIC\n    XMPCoreStatic\n)"
+            framework_block = """\
+
+# OIIO_BUILDER_XMP_MACOS_FRAMEWORKS_BEGIN
+if(APPLE)
+    find_library(COREFOUNDATION_FRAMEWORK CoreFoundation REQUIRED)
+    find_library(CORESERVICES_FRAMEWORK CoreServices REQUIRED)
+    target_link_libraries(XMPCoreStatic PUBLIC
+        ${COREFOUNDATION_FRAMEWORK}
+        ${CORESERVICES_FRAMEWORK}
+    )
+    target_link_libraries(XMPFilesStatic PUBLIC
+        ${COREFOUNDATION_FRAMEWORK}
+        ${CORESERVICES_FRAMEWORK}
+    )
+endif()
+# OIIO_BUILDER_XMP_MACOS_FRAMEWORKS_END
+"""
+            if insert_after in xmp_text:
+                xmp_text = xmp_text.replace(insert_after, insert_after + framework_block, 1)
         if xmp_text != original_xmp_text:
             xmp_cmake.write_text(xmp_text, encoding="utf-8")
 
