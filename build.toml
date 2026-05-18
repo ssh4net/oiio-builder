@@ -58,7 +58,12 @@ preferred_repo_order = [
   "x265",
   "kvazaar",
   "libwebp",
+  "libvpx",
+  "opus",
+  "libyuv",
   "LibRaw",
+  "imgui",
+  "imgui_test_engine",
 ]
 # Global language and toolchain policy
 cxx_standard = 20
@@ -95,6 +100,11 @@ build_cpython = true
 build_ffmpeg = true
 build_oiio = true
 build_qt6 = false
+build_imgui = false
+build_imgui_test_engine = false
+build_libvpx = false
+build_opus = false
+build_libyuv = false
 # Default Qt stack for OIIO iv + Designer:
 # qt6_modules = ["qtbase", "qttools", "qtsvg"]
 # Example expanded stack:
@@ -393,6 +403,30 @@ build_system = "ffmpeg"
 deps = ["zlib-ng"]
 
 [[repos]]
+name = "libvpx"
+dir = "libvpx"
+# Windows-only: imported from a vcpkg export zip placed under `external/`.
+# Default expected path: `external/vcpkg-export-libvpx.zip`
+# Override: set `LIBVPX_VCPKG_EXPORT_ZIP` in `[windows.env]` or the process env.
+url = "https://chromium.googlesource.com/webm/libvpx"
+build_system = "autotools"
+optional = true
+
+[[repos]]
+name = "opus"
+dir = "opus"
+url = "https://github.com/xiph/opus.git"
+build_system = "cmake"
+optional = true
+
+[[repos]]
+name = "libyuv"
+dir = "libyuv"
+url = "https://chromium.googlesource.com/libyuv/libyuv"
+build_system = "cmake"
+optional = true
+
+[[repos]]
 name = "brotli"
 dir = "brotli"
 url = "https://github.com/google/brotli.git"
@@ -622,6 +656,20 @@ ref = "vulkan-sdk-1.4.341"
 ref_type = "branch"
 build_system = "cmake"
 deps = ["SPIRV-Headers", "SPIRV-Tools"]
+
+[[repos]]
+name = "imgui"
+dir = "imgui"
+url = "https://github.com/ocornut/imgui.git"
+ref = "docking"
+ref_type = "branch"
+optional = true
+
+[[repos]]
+name = "imgui_test_engine"
+dir = "imgui_test_engine"
+url = "https://github.com/ocornut/imgui_test_engine.git"
+optional = true
 
 [[repos]]
 name = "OpenImageIO"

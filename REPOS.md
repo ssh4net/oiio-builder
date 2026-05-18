@@ -34,6 +34,9 @@ Repositories referenced by `build_MOS_stack_until_OIIO.sh` plus builder-only add
 | CPython | cpython | https://github.com/python/cpython.git |  |
 | minizip-ng | minizip-ng | https://github.com/zlib-ng/minizip-ng.git |  |
 | libwebp | libwebp | https://chromium.googlesource.com/webm/libwebp |  |
+| libvpx | libvpx | https://chromium.googlesource.com/webm/libvpx | Optional; disabled by default |
+| opus | opus | https://github.com/xiph/opus.git | Optional; disabled by default |
+| libyuv | libyuv | https://chromium.googlesource.com/libyuv/libyuv | Optional; disabled by default |
 | ptex | ptex | https://github.com/wdas/ptex.git |  |
 | LibRaw | LibRaw | https://github.com/LibRaw/LibRaw.git |  |
 | LibRaw-cmake | LibRaw-cmake | https://github.com/ssh4net/LibRaw-cmake.git |  |
@@ -43,4 +46,6 @@ Repositories referenced by `build_MOS_stack_until_OIIO.sh` plus builder-only add
 | x265 | x265_git | https://bitbucket.org/multicoreware/x265_git.git |  |
 | kvazaar | kvazaar | https://github.com/ultravideo/kvazaar.git |  |
 | ffmpeg | ffmpeg | https://github.com/FFmpeg/FFmpeg.git |  |
+| imgui | imgui | https://github.com/ocornut/imgui.git | Optional source-only checkout; uses `docking` branch |
+| imgui_test_engine | imgui_test_engine | https://github.com/ocornut/imgui_test_engine.git | Optional source-only checkout |
 | sqlite | sqlite | https://github.com/sqlite/sqlite.git |  |

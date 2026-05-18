@@ -26,7 +26,7 @@ class RepoConfig:
     dir_candidates: list[str] = field(default_factory=list)
     url: str | None = None
     enabled: bool = True
-    build_system: str | None = None  # cmake, autotools, ffmpeg, libiconv, openssl, sqlite, cpython
+    build_system: str | None = None  # cmake, autotools, ffmpeg, libiconv, libvpx, openssl, sqlite, cpython
     ref: str | None = None
     ref_type: str = "branch"  # branch, tag, commit
     deps: list[str] = field(default_factory=list)
@@ -88,6 +88,11 @@ class GlobalConfig:
     build_ffmpeg: bool = True
     build_oiio: bool = True
     build_qt6: bool = False
+    build_imgui: bool = False
+    build_imgui_test_engine: bool = False
+    build_libvpx: bool = False
+    build_opus: bool = False
+    build_libyuv: bool = False
     qt6_modules: list[str] = field(default_factory=lambda: list(_DEFAULT_QT6_MODULES))
     build_dng_sdk: bool = False
     openimageio_patch_png_include: bool = True
@@ -255,6 +260,11 @@ def load_config(path: Path) -> Config:
             "build_ffmpeg",
             "build_oiio",
             "build_qt6",
+            "build_imgui",
+            "build_imgui_test_engine",
+            "build_libvpx",
+            "build_opus",
+            "build_libyuv",
             "qt6_modules",
             "build_dng_sdk",
             "openimageio_patch_png_include",
@@ -430,6 +440,11 @@ def load_config(path: Path) -> Config:
         build_ffmpeg=bool(global_data.get("build_ffmpeg", True)),
         build_oiio=bool(global_data.get("build_oiio", True)),
         build_qt6=bool(global_data.get("build_qt6", False)),
+        build_imgui=bool(global_data.get("build_imgui", False)),
+        build_imgui_test_engine=bool(global_data.get("build_imgui_test_engine", False)),
+        build_libvpx=bool(global_data.get("build_libvpx", False)),
+        build_opus=bool(global_data.get("build_opus", False)),
+        build_libyuv=bool(global_data.get("build_libyuv", False)),
         qt6_modules=qt6_modules,
         build_dng_sdk=bool(global_data.get("build_dng_sdk", False)),
         openimageio_patch_png_include=bool(global_data.get("openimageio_patch_png_include", True)),

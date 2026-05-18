@@ -1,0 +1,4 @@
+[cmake.cache]
+BUILD_SHARED_LIBS = false
+OPUS_BUILD_PROGRAMS = false
+OPUS_BUILD_TESTING = false

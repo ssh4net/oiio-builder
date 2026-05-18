@@ -2709,6 +2709,47 @@ class Builder:
                 return matches[0]
         return default
 
+    def _libvpx_export_zip(self, env: dict[str, str] | None = None) -> Path:
+        cfg = self.config.global_cfg
+        default = cfg.repo_root / "external" / "vcpkg-export-libvpx.zip"
+        override = None
+        if env:
+            override = (
+                env.get("LIBVPX_VCPKG_EXPORT_ZIP")
+                or env.get("VCPKG_LIBVPX_EXPORT_ZIP")
+                or env.get("VPX_VCPKG_EXPORT_ZIP")
+                or env.get("VCPKG_VPX_EXPORT_ZIP")
+            )
+        if not override and self.platform.os == "windows":
+            override = (
+                cfg.windows_env.get("LIBVPX_VCPKG_EXPORT_ZIP")
+                or cfg.windows_env.get("VCPKG_LIBVPX_EXPORT_ZIP")
+                or cfg.windows_env.get("VPX_VCPKG_EXPORT_ZIP")
+                or cfg.windows_env.get("VCPKG_VPX_EXPORT_ZIP")
+                or cfg.env.get("LIBVPX_VCPKG_EXPORT_ZIP")
+                or cfg.env.get("VCPKG_LIBVPX_EXPORT_ZIP")
+                or cfg.env.get("VPX_VCPKG_EXPORT_ZIP")
+                or cfg.env.get("VCPKG_VPX_EXPORT_ZIP")
+                or os.environ.get("LIBVPX_VCPKG_EXPORT_ZIP")
+                or os.environ.get("VCPKG_LIBVPX_EXPORT_ZIP")
+                or os.environ.get("VPX_VCPKG_EXPORT_ZIP")
+                or os.environ.get("VCPKG_VPX_EXPORT_ZIP")
+            )
+        if override:
+            path = Path(os.path.expandvars(override)).expanduser()
+            if not path.is_absolute():
+                path = (cfg.repo_root / path).resolve()
+            return path
+
+        external_dir = cfg.repo_root / "external"
+        if default.exists():
+            return default
+        if external_dir.is_dir():
+            matches = sorted(external_dir.glob("vcpkg-export-libvpx*.zip"))
+            if matches:
+                return matches[0]
+        return default
+
     def _openssl_export_zip(self, env: dict[str, str] | None = None) -> Path:
         cfg = self.config.global_cfg
         default = cfg.repo_root / "external" / "vcpkg-export-openssl.zip"
@@ -5417,7 +5458,7 @@ endif()
         elif repo.build_system == "autotools":
             self._prepare_autotools_build_dir(ctx)
             configure = src_dir / "configure"
-            if not configure.exists():
+            if not self.dry_run and not configure.exists():
                 raise RuntimeError(f"Missing configure script for {repo.name}: {configure}")
             use_msys2_autotools = self._autotools_windows_msys2_active()
             if self.platform.os == "windows" and not use_msys2_autotools:
@@ -5995,6 +6036,206 @@ endif()
                 + "\n",
                 encoding="utf-8",
             )
+        elif repo.build_system == "libvpx":
+            if self.platform.os != "windows":
+                raise RuntimeError("libvpx vcpkg import build system is only supported on Windows")
+            build_dir.mkdir(parents=True, exist_ok=True)
+
+            zip_path = self._libvpx_export_zip(env)
+            if not zip_path.exists():
+                raise RuntimeError(f"Missing libvpx vcpkg export zip: {zip_path}")
+
+            banner(f"{repo.name} ({build_type}) - stage")
+            print(f"vcpkg export zip: {zip_path}", flush=True)
+
+            import zipfile
+
+            export_dir = build_dir / "_libvpx_vcpkg_export"
+            marker = export_dir / ".zipstamp"
+            st = zip_path.stat()
+            stamp = f"{zip_path}|{int(st.st_size)}|{int(st.st_mtime)}"
+
+            if self.dry_run:
+                print(f"[dry-run] extract -> {export_dir}", flush=True)
+                return ("rebuilt" if had_stamp else "built"), ""
+
+            if marker.exists() and marker.read_text(encoding="utf-8").strip() == stamp:
+                pass
+            else:
+                if export_dir.exists():
+                    shutil.rmtree(export_dir, ignore_errors=True)
+                export_dir.mkdir(parents=True, exist_ok=True)
+                with zipfile.ZipFile(zip_path) as zf:
+                    export_abs = export_dir.resolve()
+                    for info in zf.infolist():
+                        name = info.filename
+                        if not name or name.endswith("/"):
+                            continue
+                        dest = export_dir / name
+                        dest_abs = dest.resolve()
+                        if export_abs not in dest_abs.parents and dest_abs != export_abs:
+                            raise RuntimeError(f"Refusing to extract outside destination: {name}")
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        with zf.open(info) as src_f, open(dest, "wb") as dst_f:
+                            shutil.copyfileobj(src_f, dst_f)
+                marker.write_text(stamp, encoding="utf-8")
+
+            def _find_export_root(base: Path) -> Path:
+                if (base / "installed").is_dir():
+                    return base
+                for child in base.iterdir():
+                    if child.is_dir() and (child / "installed").is_dir():
+                        return child
+                raise RuntimeError(f"Unexpected vcpkg export layout under {base}")
+
+            export_root = _find_export_root(export_dir)
+            installed_dir = export_root / "installed"
+
+            triplet_candidates = [
+                p
+                for p in installed_dir.iterdir()
+                if p.is_dir() and p.name != "vcpkg" and (p / "include" / "vpx" / "vpx_codec.h").exists()
+            ]
+            if not triplet_candidates:
+                raise RuntimeError(
+                    f"vcpkg export zip does not contain installed/<triplet>/include/vpx/vpx_codec.h: {zip_path}"
+                )
+
+            def _triplet_score(path: Path) -> tuple[int, str]:
+                name = path.name.lower()
+                score = 0
+                if "static" in name:
+                    score -= 10
+                bin_dir = path / "bin"
+                if bin_dir.is_dir() and any(bin_dir.glob("*.dll")):
+                    score += 5
+                return score, name
+
+            triplet_candidates.sort(key=_triplet_score)
+            triplet_dir = triplet_candidates[0]
+
+            include_src = triplet_dir / "include"
+            lib_src = triplet_dir / "lib"
+            debug_lib_src = triplet_dir / "debug" / "lib"
+            bin_src = triplet_dir / "bin"
+
+            def _pick_lib(dir_path: Path) -> Path | None:
+                for name in ("vpx.lib", "libvpx.lib"):
+                    candidate = dir_path / name
+                    if candidate.exists():
+                        return candidate
+                matches = sorted(dir_path.glob("*vpx*.lib"))
+                return matches[0] if matches else None
+
+            vpx_release = _pick_lib(lib_src)
+            vpx_debug = _pick_lib(debug_lib_src)
+            required = [include_src / "vpx" / "vpx_codec.h", vpx_release, vpx_debug]
+            missing = [p for p in required if not p or not p.exists()]
+            if missing:
+                wanted = "\n".join(f"  - {p}" for p in missing)
+                raise RuntimeError(f"libvpx vcpkg export is missing expected files:\n{wanted}")
+
+            debug_postfix = str(self.config.global_cfg.windows.get("debug_postfix", "d"))
+
+            def _add_debug_postfix(filename: str) -> str:
+                p = Path(filename)
+                suffixes = p.suffixes
+                if not suffixes:
+                    return filename + debug_postfix
+                base = filename
+                for suff in suffixes:
+                    if base.endswith(suff):
+                        base = base[: -len(suff)]
+                if base.endswith(debug_postfix):
+                    return filename
+                return base + debug_postfix + "".join(suffixes)
+
+            banner(f"{repo.name} ({build_type}) - install")
+
+            inc_dst = install_prefix / "include"
+            lib_dst = install_prefix / "lib"
+            bin_dst = install_prefix / "bin"
+            inc_dst.mkdir(parents=True, exist_ok=True)
+            lib_dst.mkdir(parents=True, exist_ok=True)
+            if bin_src.is_dir():
+                bin_dst.mkdir(parents=True, exist_ok=True)
+
+            for item in include_src.iterdir():
+                dest = inc_dst / item.name
+                if item.is_dir():
+                    shutil.copytree(item, dest, dirs_exist_ok=True)
+                elif item.is_file():
+                    shutil.copy2(item, dest)
+
+            if vpx_release is not None:
+                shutil.copy2(vpx_release, lib_dst / vpx_release.name)
+            if vpx_debug is not None:
+                shutil.copy2(vpx_debug, lib_dst / _add_debug_postfix(vpx_release.name if vpx_release is not None else vpx_debug.name))
+
+            pkgconfig_src = lib_src / "pkgconfig"
+            if pkgconfig_src.is_dir():
+                pkgconfig_dst = lib_dst / "pkgconfig"
+                pkgconfig_dst.mkdir(parents=True, exist_ok=True)
+                for item in pkgconfig_src.iterdir():
+                    if item.is_file() and item.suffix.lower() == ".pc":
+                        shutil.copy2(item, pkgconfig_dst / item.name)
+
+            if bin_src.is_dir():
+                if any(bin_src.glob("*.dll")):
+                    print("[note] libvpx export contains DLLs; prefer exporting a *-static triplet for a fully static prefix", flush=True)
+                for item in bin_src.iterdir():
+                    if item.is_file() and item.suffix.lower() in {".dll", ".pdb", ".exe"}:
+                        shutil.copy2(item, bin_dst / item.name)
+
+            release_name = vpx_release.name if vpx_release is not None else "vpx.lib"
+            debug_name = _add_debug_postfix(release_name)
+            libvpx_config = "\n".join(
+                [
+                    "# Generated by oiio-builder (imported from vcpkg export)",
+                    "set(libvpx_FOUND TRUE)",
+                    "set(VPX_FOUND TRUE)",
+                    "",
+                    "get_filename_component(_libvpx_prefix \"${CMAKE_CURRENT_LIST_DIR}/../../..\" ABSOLUTE)",
+                    "set(_libvpx_incdir \"${_libvpx_prefix}/include\")",
+                    "set(_libvpx_libdir \"${_libvpx_prefix}/lib\")",
+                    "",
+                    "if(NOT TARGET libvpx::vpx)",
+                    "  add_library(libvpx::vpx UNKNOWN IMPORTED)",
+                    "  set_property(TARGET libvpx::vpx PROPERTY IMPORTED_CONFIGURATIONS \"RELEASE;DEBUG\")",
+                    "  set_target_properties(libvpx::vpx PROPERTIES",
+                    "    INTERFACE_INCLUDE_DIRECTORIES \"${_libvpx_incdir}\"",
+                    f"    IMPORTED_LOCATION_RELEASE \"${{_libvpx_libdir}}/{release_name}\"",
+                    f"    IMPORTED_LOCATION_DEBUG \"${{_libvpx_libdir}}/{debug_name}\"",
+                    "    MAP_IMPORTED_CONFIG_MINSIZEREL Release",
+                    "    MAP_IMPORTED_CONFIG_RELWITHDEBINFO Release",
+                    "    MAP_IMPORTED_CONFIG_ASAN Release",
+                    "  )",
+                    "endif()",
+                    "",
+                    "if(TARGET libvpx::vpx AND NOT TARGET VPX::vpx)",
+                    "  add_library(VPX::vpx INTERFACE IMPORTED)",
+                    "  target_link_libraries(VPX::vpx INTERFACE libvpx::vpx)",
+                    "endif()",
+                    "",
+                    "if(TARGET libvpx::vpx AND NOT TARGET VPX::VPX)",
+                    "  add_library(VPX::VPX INTERFACE IMPORTED)",
+                    "  target_link_libraries(VPX::VPX INTERFACE libvpx::vpx)",
+                    "endif()",
+                    "",
+                    "set(VPX_INCLUDE_DIR \"${_libvpx_incdir}\")",
+                    "set(VPX_INCLUDE_DIRS \"${_libvpx_incdir}\")",
+                    f"set(VPX_LIBRARY \"${{_libvpx_libdir}}/{release_name}\")",
+                    f"set(VPX_LIBRARIES \"${{_libvpx_libdir}}/{release_name}\")",
+                    "",
+                ]
+            ) + "\n"
+
+            for package_dir, config_name in (
+                (lib_dst / "cmake" / "libvpx", "libvpxConfig.cmake"),
+                (lib_dst / "cmake" / "VPX", "VPXConfig.cmake"),
+            ):
+                package_dir.mkdir(parents=True, exist_ok=True)
+                (package_dir / config_name).write_text(libvpx_config, encoding="utf-8")
         elif repo.build_system == "openssl":
             if self.platform.os != "windows":
                 raise RuntimeError("openssl build system is only supported on Windows")

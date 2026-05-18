@@ -121,6 +121,8 @@ Key options:
 - `cpython_ref_type`: `branch` (default), `tag`, or `commit` for `cpython_ref`.
 - `build_qt6`: build a minimal **static Qt6** stack into the prefix (for consumers like OpenImageIO `iv` and GPUpad).
 - `build_dng_sdk`: build Adobe DNG SDK + XMP (via `DNG-CMake`) into the prefix (optional; disabled by default).
+- `build_imgui`, `build_imgui_test_engine`: fetch optional Dear ImGui docking/test-engine sources (source-only repos; disabled by default).
+- `build_libvpx`, `build_opus`, `build_libyuv`: build optional media dependencies for downstream RustDesk/RustAdmin/FFmpeg experiments (disabled by default).
 - `windows.generator`: choose one of `msvc`, `ninja-msvc`, `msvc-clang-cl`, `ninja-clang-cl`.
 - `windows.vs_generator`: optional CMake generator name override for `windows.generator=msvc`/`msvc-clang-cl` (e.g. `Visual Studio 18 2026` with CMake 4.2+).
 - `windows.generator = "ninja-clang-cl"` prefers Visual Studio's bundled `clang-cl.exe`; use absolute `[global].cc` / `[global].cxx` paths to force a standalone LLVM install.
@@ -131,6 +133,7 @@ Key options:
   `auto` enables wrappers only when `windows.msvc_runtime=dynamic`.
 - `windows.cpython_fetch_externals`: `true` (default) uses `-e` (CPython fetch/builds externals); `false` passes `-E`.
 - On Windows, `sqlite` is imported from a vcpkg export zip (`external/vcpkg-export-sqlite.zip`) instead of source/autotools build.
+- On Windows, optional `libvpx` is imported from a vcpkg export zip (`external/vcpkg-export-libvpx.zip`) instead of source/autotools build.
 - `windows.clangcl_extra_flags`: clang-cl x86_64 baseline extra flags (default if unset: `-msse4.1`).
 - `windows.clangcl_extra_flags_append`: extra clang-cl x86_64 flags appended to the baseline (default: empty).
 - `windows.env`: tool overrides for Windows (e.g. `PKG_CONFIG_EXECUTABLE`, `DOXYGEN_EXECUTABLE`).
