@@ -3,3 +3,8 @@ FREEGLUT_BUILD_STATIC_LIBS = true
 FREEGLUT_BUILD_SHARED_LIBS = false
 FREEGLUT_BUILD_DEMOS = true
 
+[platform.macos.cmake.cache]
+# Upstream freeglut still defaults macOS to X11/GLX. The builder should use
+# the native backend unless a local user override explicitly asks for XQuartz.
+FREEGLUT_COCOA = true
+FREEGLUT_BUILD_DEMOS = false

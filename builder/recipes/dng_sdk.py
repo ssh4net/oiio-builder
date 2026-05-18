@@ -6,7 +6,7 @@ import os
 import shutil
 
 
-STAMP_REVISION = "10"
+STAMP_REVISION = "11"
 
 
 def enabled(builder, _repo) -> bool:
@@ -427,6 +427,22 @@ target_sources(dng_validate PRIVATE
 
         if validate_changed:
             dng_validate_cmake.write_text("\n".join(validate_lines) + "\n", encoding="utf-8")
+
+    xmp_cmake = src_dir / "cmake" / "xmp.cmake"
+    if xmp_cmake.exists():
+        xmp_text = xmp_cmake.read_text(encoding="utf-8", errors="replace")
+        original_xmp_text = xmp_text
+        old_plugin_sources = """\
+    $<$<BOOL:${WIN32}>:${REPO_ROOT}/xmp/toolkit/XMPFiles/source/PluginHandler/OS_Utils_WIN.cpp>
+    $<$<NOT:$<BOOL:${WIN32}>>:${REPO_ROOT}/xmp/toolkit/XMPFiles/source/PluginHandler/OS_Utils_Linux.cpp>"""
+        new_plugin_sources = """\
+    $<$<BOOL:${WIN32}>:${REPO_ROOT}/xmp/toolkit/XMPFiles/source/PluginHandler/OS_Utils_WIN.cpp>
+    $<$<BOOL:${APPLE}>:${REPO_ROOT}/xmp/toolkit/XMPFiles/source/PluginHandler/OS_Utils_Mac.cpp>
+    $<$<AND:$<NOT:$<BOOL:${WIN32}>>,$<NOT:$<BOOL:${APPLE}>>>:${REPO_ROOT}/xmp/toolkit/XMPFiles/source/PluginHandler/OS_Utils_Linux.cpp>"""
+        if old_plugin_sources in xmp_text:
+            xmp_text = xmp_text.replace(old_plugin_sources, new_plugin_sources, 1)
+        if xmp_text != original_xmp_text:
+            xmp_cmake.write_text(xmp_text, encoding="utf-8")
 
     xmp_config_in = src_dir / "cmake" / "XMPToolkit-config.cmake.in"
     if xmp_config_in.exists():

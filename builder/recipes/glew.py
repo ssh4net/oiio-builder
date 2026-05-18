@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from .policy import gl_enabled
 
+STAMP_REVISION = "1"
+
 
 def enabled(builder, _repo) -> bool:
     return gl_enabled(builder)

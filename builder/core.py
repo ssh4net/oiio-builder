@@ -255,6 +255,17 @@ class Builder:
         self._repo_source_prepare_locks: dict[str, threading.Lock] = {repo.name: threading.Lock() for repo in self.repos}
         self._repo_exclusive_build_locks: dict[str, threading.Lock] = {repo.name: threading.Lock() for repo in self.repos}
 
+    def _apply_platform_dependency_policy(self, repos: list[RepoConfig]) -> None:
+        """Adjust dependency edges that are platform-specific in recipes."""
+        for repo in repos:
+            if repo.name != "libtiff":
+                continue
+            if self.platform.os == "windows":
+                if "freeglut" not in repo.deps:
+                    repo.deps.append("freeglut")
+            else:
+                repo.deps = [dep for dep in repo.deps if dep != "freeglut"]
+
     def _host_build_root(self, base_root: Path) -> Path:
         host_dir = self.platform.os
         if base_root.name.strip().lower() == host_dir:
@@ -767,6 +778,7 @@ class Builder:
 
     def _filter_repos(self) -> list[RepoConfig]:
         configured_repos = [r for r in self.config.repos if r.enabled]
+        self._apply_platform_dependency_policy(configured_repos)
         by_name_configured = {repo.name: repo for repo in configured_repos}
         by_lower_configured: dict[str, list[str]] = {}
         for repo in configured_repos:
@@ -2954,9 +2966,14 @@ class Builder:
         text = cmake_lists.read_text(encoding="utf-8")
         if "AGL_LIBRARY AGL REQUIRED" not in text:
             return
-        pattern = r"find_library\\(AGL_LIBRARY AGL REQUIRED\\)\\s*\\n\\s*list\\(APPEND LIBRARIES \\$\\{AGL_LIBRARY\\}\\)"
+        pattern = (
+            r"if\(APPLE AND CMAKE_SYSTEM_VERSION VERSION_LESS \"25\.0\.0\"\)\s*\n"
+            r"\s*find_library\(AGL_LIBRARY AGL REQUIRED\)\s*\n"
+            r"\s*list\(APPEND LIBRARIES \$\{AGL_LIBRARY\}\)"
+        )
         replacement = (
-            "find_library(AGL_LIBRARY AGL)\\n"
+            "if(APPLE)\\n"
+            "  find_library(AGL_LIBRARY AGL)\\n"
             "  if(AGL_LIBRARY)\\n"
             "    list(APPEND LIBRARIES ${AGL_LIBRARY})\\n"
             "  endif()"
