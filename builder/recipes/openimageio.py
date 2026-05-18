@@ -8,7 +8,7 @@ from pathlib import Path
 from .policy import imageio_enabled
 
 
-STAMP_REVISION = "8"
+STAMP_REVISION = "9"
 
 
 def enabled(builder, _repo) -> bool:
@@ -140,6 +140,19 @@ def _patch_compiled_fmt_option(src_dir: Path) -> None:
     endif ()
 """
     replace_once(libutil, old, new, "libutil fmt linkage")
+
+    ustring = src_dir / "src" / "libutil" / "ustring.cpp"
+    old = """\
+            for (auto c : s)
+                print(stderr, c > 0 ? "{:c}" : "\\\\{:03o}",
+                      static_cast<unsigned char>(c));
+"""
+    new = """\
+            for (auto c : s)
+                print(stderr, fmt::runtime(c > 0 ? "{:c}" : "\\\\{:03o}"),
+                      static_cast<unsigned char>(c));
+"""
+    replace_once(ustring, old, new, "fmt runtime format compatibility")
 
 
 def _patch_msvc_python_module_link(src_dir: Path) -> None:
@@ -523,6 +536,7 @@ def _cache_args(builder, ctx) -> list[str]:
     # Keep dependency discovery deterministic by hinting the shared prefix.
     root_vars = (
         "ZLIB",
+        "GIF",
         "PNG",
         "JPEG",
         "TIFF",
@@ -578,22 +592,29 @@ def _cache_args(builder, ctx) -> list[str]:
                 matches.extend(sorted(lib_dir.glob(f"lib{stem}*.lib")))
             return matches[0] if matches else None
 
+        debug_postfix = str(cfg.windows.get("debug_postfix", "d"))
         ordered = []
         for stem in stems:
-            ordered.extend(
-                [
-                    lib_dir / f"lib{stem}.a",
-                    lib_dir / f"lib{stem}.so",
-                    lib_dir / f"lib{stem}.dylib",
-                    lib_dir / f"{stem}.a",
-                ]
-            )
+            release_names = [
+                lib_dir / f"lib{stem}.a",
+                lib_dir / f"lib{stem}.so",
+                lib_dir / f"lib{stem}.dylib",
+                lib_dir / f"{stem}.a",
+            ]
+            debug_names = [
+                lib_dir / f"lib{stem}{debug_postfix}.a",
+                lib_dir / f"lib{stem}{debug_postfix}.so",
+                lib_dir / f"lib{stem}{debug_postfix}.dylib",
+                lib_dir / f"{stem}{debug_postfix}.a",
+            ]
+            ordered.extend(debug_names + release_names if ctx.build_type == "Debug" else release_names + debug_names)
         found = next((candidate for candidate in ordered if candidate.exists()), None)
         if found is not None:
             return found
         matches = []
         for stem in stems:
-            matches.extend(sorted(lib_dir.glob(f"lib{stem}.*")))
+            matches.extend(sorted(lib_dir.glob(f"lib{stem}*.*")))
+            matches.extend(sorted(lib_dir.glob(f"{stem}*.a")))
         return matches[0] if matches else None
 
     for var in root_vars:
@@ -1168,6 +1189,10 @@ def _extra_static_libs(builder, prefix: Path, build_type: str) -> list[str]:
 
     # macOS Security framework (minizip-ng uses SecRandomCopyBytes)
     if builder.platform.os == "macos":
+        # Static HarfBuzz uses CoreText, and newer SDK FreeType builds may
+        # reference the system HVF font renderer.
+        add_entry("-Wl,-framework,CoreText")
+        add_entry("hvf")
         add_entry("-Wl,-framework,Security")
         if builder._ffmpeg_enabled():
             for framework_flag in (
