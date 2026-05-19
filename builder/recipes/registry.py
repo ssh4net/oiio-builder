@@ -198,6 +198,27 @@ def pre_build(repo_name: str, builder: Any, repo: Any, ctx: Any, env: dict[str, 
         func(builder, repo, ctx, env)
 
 
+def build_backend(repo_name: str, builder: Any, ctx: Any, env: dict[str, str]) -> bool:
+    recipe = _RECIPES.get(repo_name)
+    if recipe is None:
+        return False
+    func = getattr(recipe, "build", None)
+    if not callable(func):
+        return False
+    func(builder, ctx, env)
+    return True
+
+
+def install_only(repo_name: str, builder: Any, ctx: Any, env: dict[str, str]) -> bool | None:
+    recipe = _RECIPES.get(repo_name)
+    if recipe is None:
+        return None
+    func = getattr(recipe, "install_only", None)
+    if not callable(func):
+        return None
+    return bool(func(builder, ctx, env))
+
+
 def enabled(repo_name: str, builder: Any, repo: Any) -> bool | None:
     recipe = _RECIPES.get(repo_name)
     if recipe is None:

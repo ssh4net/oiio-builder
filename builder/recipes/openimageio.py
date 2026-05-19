@@ -5,7 +5,7 @@ import re
 import shutil
 from pathlib import Path
 
-from .policy import imageio_enabled
+from .policy import ffmpeg_enabled, imageio_enabled, windows_use_ffmpeg_from_prefix
 
 
 STAMP_REVISION = "9"
@@ -441,11 +441,11 @@ def _ffmpeg_args(
 
 def _cache_args(builder, ctx) -> list[str]:
     cfg = builder.config.global_cfg
-    ffmpeg_requested = builder._ffmpeg_enabled()
+    ffmpeg_requested = ffmpeg_enabled(builder)
     ffmpeg_auto_from_prefix = (
-        builder.platform.os == "windows" and not ffmpeg_requested and builder._windows_use_ffmpeg_from_prefix()
+        builder.platform.os == "windows" and not ffmpeg_requested and windows_use_ffmpeg_from_prefix(builder)
     )
-    ffmpeg_enabled = ffmpeg_requested
+    use_ffmpeg = ffmpeg_requested
     args: list[str] = []
     builder._ensure_bzip2_alias(ctx.install_prefix, ctx.build_type)
     builder._ensure_ppmd_package(ctx.install_prefix, ctx.build_type)
@@ -791,11 +791,11 @@ def _cache_args(builder, ctx) -> list[str]:
             emit_missing_note=ffmpeg_requested,
         )
         if ffmpeg_requested or ffmpeg_complete:
-            ffmpeg_enabled = True
+            use_ffmpeg = True
             values.setdefault("USE_FFMPEG", "ON")
             args.extend(ffmpeg_args)
-    values["USE_FFMPEG"] = "ON" if ffmpeg_enabled else "OFF"
-    if ffmpeg_enabled:
+    values["USE_FFMPEG"] = "ON" if use_ffmpeg else "OFF"
+    if use_ffmpeg:
         required.insert(0, "FFmpeg")
     args.append(f"-DOpenImageIO_REQUIRED_DEPS={';'.join(required)}")
 
@@ -1034,7 +1034,7 @@ def _extra_static_libs(builder, prefix: Path, build_type: str) -> list[str]:
         add_lib("libswresample.a")
         add_lib("libswscale.a")
         add_lib("libavutil.a")
-        if builder.platform.os == "linux" and builder._ffmpeg_enabled():
+        if builder.platform.os == "linux" and ffmpeg_enabled(builder):
             # FFmpeg static libs may reference system hwaccel/display libs
             # (e.g. vdpau/x11/drm) via transitive symbols.
             for syslib in ("vdpau", "X11", "drm", "xcb", "Xau", "Xdmcp", "pthread", "atomic"):
@@ -1194,7 +1194,7 @@ def _extra_static_libs(builder, prefix: Path, build_type: str) -> list[str]:
         add_entry("-Wl,-framework,CoreText")
         add_entry("hvf")
         add_entry("-Wl,-framework,Security")
-        if builder._ffmpeg_enabled():
+        if ffmpeg_enabled(builder):
             for framework_flag in (
                 "-Wl,-framework,AudioToolbox",
                 "-Wl,-framework,VideoToolbox",

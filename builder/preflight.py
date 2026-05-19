@@ -8,9 +8,13 @@ import os
 import sys
 import tempfile
 
+from . import backends as build_backends
 from .config import Config, _expand_path
-from .core import Builder, resolve_nasm_executable
+from .core import Builder
 from .platform import PlatformInfo
+from .recipes.policy import ffmpeg_enabled, windows_ffmpeg_native_build_enabled
+from .tooling import normalize_override as _normalize_override, resolve_nasm_executable
+from .vcpkg_import import resolve_export_zip
 
 _PREFLIGHT_REPO_URLS: dict[str, str] = {
     "libxml2": "https://gitlab.gnome.org/GNOME/libxml2.git",
@@ -44,15 +48,6 @@ def _find_any(candidates: list[str]) -> tuple[str | None, str]:
         if path:
             return path, name
     return None, ""
-
-
-def _normalize_override(value: str | None) -> str | None:
-    if not value:
-        return None
-    trimmed = value.strip()
-    if len(trimmed) >= 2 and trimmed[0] == trimmed[-1] and trimmed[0] in {"\"", "'"}:
-        trimmed = trimmed[1:-1]
-    return trimmed or None
 
 
 def _resolve_dngsdk_archive_path(env: dict[str, str], repo_root: Path) -> Path | None:
@@ -213,7 +208,7 @@ endif ()
         (tmp_path / "CMakeLists.txt").write_text(cmake_lists, encoding="utf-8")
         cmd = [cmake_path, "-S", str(tmp_path), "-B", str(tmp_path / "build")]
         try:
-            cmd.extend(builder._cmake_generator_args())
+            cmd.extend(build_backends.cmake_generator_args(builder))
         except RuntimeError as exc:
             return None, {}, str(exc)
         proc = subprocess.run(
@@ -457,9 +452,9 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
             extra = f" [{check.note}]" if check.note else ""
             lines.append(f"  {check.name}: not found{extra}")
 
-    if platform.os == "windows" and builder._ffmpeg_enabled():
+    if platform.os == "windows" and ffmpeg_enabled(builder):
         lines.append("FFmpeg (Windows mode):")
-        if builder._windows_ffmpeg_native_build_enabled():
+        if windows_ffmpeg_native_build_enabled(builder):
             lines.append("  source build: enabled (MSYS2 environment detected)")
             shell_path, shell_name = _find_any(["bash", "bash.exe", "sh", "sh.exe"])
             make_path, make_name = _find_any(["make", "mingw32-make"])
@@ -766,29 +761,41 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
             kind = "dir" if dng_path.is_dir() else "archive"
             lines.append(f"  archive: ok ({kind}: {dng_path})")
 
+    vcpkg_exports = {
+        "libiconv": (
+            "vcpkg-export-libiconv.zip",
+            ("LIBICONV_VCPKG_EXPORT_ZIP", "VCPKG_LIBICONV_EXPORT_ZIP"),
+            "vcpkg-export-libiconv*.zip",
+        ),
+        "openssl": (
+            "vcpkg-export-openssl.zip",
+            ("OPENSSL_VCPKG_EXPORT_ZIP", "VCPKG_OPENSSL_EXPORT_ZIP"),
+            "vcpkg-export-openssl*.zip",
+        ),
+        "sqlite": (
+            "vcpkg-export-sqlite.zip",
+            ("SQLITE_VCPKG_EXPORT_ZIP", "VCPKG_SQLITE_EXPORT_ZIP", "SQLITE3_VCPKG_EXPORT_ZIP", "VCPKG_SQLITE3_EXPORT_ZIP"),
+            "vcpkg-export-sqlite*.zip",
+        ),
+        "libvpx": (
+            "vcpkg-export-libvpx.zip",
+            ("LIBVPX_VCPKG_EXPORT_ZIP", "VCPKG_LIBVPX_EXPORT_ZIP", "VPX_VCPKG_EXPORT_ZIP", "VCPKG_VPX_EXPORT_ZIP"),
+            "vcpkg-export-libvpx*.zip",
+        ),
+    }
+
     lines.append("Repos:")
     for repo in builder.repos:
         url = repo.url or _PREFLIGHT_REPO_URLS.get(repo.name, "")
-        if repo.name == "libiconv" and platform.os == "windows":
-            zip_path = builder._libiconv_export_zip()
-            if zip_path.exists():
-                lines.append(f"  {repo.name}: ok (vcpkg export zip: {zip_path})")
-            else:
-                lines.append(f"  {repo.name}: missing (vcpkg export zip expected at {zip_path})")
-                if not repo.optional:
-                    missing_repos += 1
-            continue
-        if repo.name == "openssl" and platform.os == "windows":
-            zip_path = builder._openssl_export_zip()
-            if zip_path.exists():
-                lines.append(f"  {repo.name}: ok (vcpkg export zip: {zip_path})")
-            else:
-                lines.append(f"  {repo.name}: missing (vcpkg export zip expected at {zip_path})")
-                if not repo.optional:
-                    missing_repos += 1
-            continue
-        if repo.name == "sqlite" and platform.os == "windows":
-            zip_path = builder._sqlite_export_zip()
+        if repo.name in vcpkg_exports and platform.os == "windows":
+            default_filename, env_names, glob_pattern = vcpkg_exports[repo.name]
+            zip_path = resolve_export_zip(
+                builder,
+                None,
+                default_filename=default_filename,
+                env_names=env_names,
+                glob_pattern=glob_pattern,
+            )
             if zip_path.exists():
                 lines.append(f"  {repo.name}: ok (vcpkg export zip: {zip_path})")
             else:
