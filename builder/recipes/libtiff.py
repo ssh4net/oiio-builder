@@ -4,7 +4,7 @@ from pathlib import Path
 
 from .policy import imageio_enabled
 
-STAMP_REVISION = "4"
+STAMP_REVISION = "6"
 
 
 def enabled(builder, _repo) -> bool:
@@ -24,6 +24,7 @@ def cmake_args(builder, ctx) -> list[str]:
     ]
     if builder.platform.os == "windows":
         args.append("-Dtiff-opengl=ON")
+        args.extend(_windows_static_freeglut_args(builder, ctx))
         # Keep ASAN/Debug flags intact; inject required static-link defines via a
         # top-level include instead of overwriting CMAKE_*_FLAGS.
         include_path = Path(ctx.build_dir) / "oiio_builder_libtiff_defines.cmake"
@@ -33,7 +34,7 @@ def cmake_args(builder, ctx) -> list[str]:
                     [
                         "if(WIN32)",
                         "  if(NOT BUILD_SHARED_LIBS)",
-                        "    add_compile_definitions(LZMA_API_STATIC FREEGLUT_STATIC)",
+                        "    add_compile_definitions(LZMA_API_STATIC FREEGLUT_STATIC FREEGLUT_LIB_PRAGMAS=0)",
                         "  endif()",
                         "endif()",
                         "",
@@ -49,9 +50,37 @@ def cmake_args(builder, ctx) -> list[str]:
     return args
 
 
+def _windows_static_freeglut_args(builder, ctx) -> list[str]:
+    if not builder.config.global_cfg.static_default:
+        return []
+
+    lib_dir = Path(ctx.install_prefix) / "lib"
+    debug_postfix = str(builder.config.global_cfg.windows.get("debug_postfix", "d"))
+    if ctx.build_type == "Debug":
+        candidates = [
+            lib_dir / f"freeglut_static{debug_postfix}.lib",
+            lib_dir / "freeglut_staticd.lib",
+            lib_dir / f"glut{debug_postfix}.lib",
+            lib_dir / "glutd.lib",
+        ]
+        cache_name = "GLUT_glut_LIBRARY_DEBUG"
+    else:
+        candidates = [
+            lib_dir / "freeglut_static.lib",
+            lib_dir / "glut.lib",
+        ]
+        cache_name = "GLUT_glut_LIBRARY_RELEASE"
+
+    selected = next((candidate for candidate in candidates if candidate.exists()), None)
+    if selected is None:
+        return []
+    return [f"-D{cache_name}={builder._cmake_path_arg(selected)}"]
+
+
 def patch_source(_builder, src_dir) -> None:
     cmake_config_in = src_dir / "cmake" / "tiff-config.cmake.in"
     libtiff_cmake_lists = src_dir / "libtiff" / "CMakeLists.txt"
+    tools_cmake_lists = src_dir / "tools" / "CMakeLists.txt"
 
     if cmake_config_in.exists():
         original_text = cmake_config_in.read_text(encoding="utf-8")
@@ -186,3 +215,22 @@ def patch_source(_builder, src_dir) -> None:
                 text = text.replace(anchor, f"{block}\n{anchor}", 1)
         if text != original_text:
             libtiff_cmake_lists.write_text(text, encoding="utf-8")
+
+    if tools_cmake_lists.exists():
+        original_text = tools_cmake_lists.read_text(encoding="utf-8")
+        text = original_text
+        marker = "# OIIO_BUILDER_TIFFGT_STATIC_FREEGLUT_BEGIN"
+        block = (
+            "  # OIIO_BUILDER_TIFFGT_STATIC_FREEGLUT_BEGIN\n"
+            "  if(WIN32 AND NOT BUILD_SHARED_LIBS)\n"
+            "    target_compile_definitions(tiffgt PRIVATE FREEGLUT_STATIC FREEGLUT_LIB_PRAGMAS=0)\n"
+            "    target_link_libraries(tiffgt PRIVATE winmm gdi32)\n"
+            "  endif()\n"
+            "  # OIIO_BUILDER_TIFFGT_STATIC_FREEGLUT_END"
+        )
+        if marker not in text:
+            anchor = "  target_link_libraries(tiffgt PRIVATE OpenGL::GL GLUT::GLUT)"
+            if anchor in text:
+                text = text.replace(anchor, f"{anchor}\n{block}", 1)
+        if text != original_text:
+            tools_cmake_lists.write_text(text, encoding="utf-8")

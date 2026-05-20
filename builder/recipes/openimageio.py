@@ -8,7 +8,7 @@ from pathlib import Path
 from .policy import ffmpeg_enabled, imageio_enabled, windows_use_ffmpeg_from_prefix
 
 
-STAMP_REVISION = "9"
+STAMP_REVISION = "10"
 
 
 def enabled(builder, _repo) -> bool:
@@ -141,7 +141,15 @@ def _patch_compiled_fmt_option(src_dir: Path) -> None:
 """
     replace_once(libutil, old, new, "libutil fmt linkage")
 
+    _patch_ustring_fmt_runtime(src_dir)
+
+
+def _patch_ustring_fmt_runtime(src_dir: Path) -> None:
     ustring = src_dir / "src" / "libutil" / "ustring.cpp"
+    if not ustring.exists():
+        raise RuntimeError(f"OpenImageIO fmt runtime format compatibility patch target is missing: {ustring}")
+
+    text = ustring.read_text(encoding="utf-8", errors="replace")
     old = """\
             for (auto c : s)
                 print(stderr, c > 0 ? "{:c}" : "\\\\{:03o}",
@@ -152,7 +160,20 @@ def _patch_compiled_fmt_option(src_dir: Path) -> None:
                 print(stderr, fmt::runtime(c > 0 ? "{:c}" : "\\\\{:03o}"),
                       static_cast<unsigned char>(c));
 """
-    replace_once(ustring, old, new, "fmt runtime format compatibility")
+    if new in text:
+        return
+    if old in text:
+        ustring.write_text(text.replace(old, new, 1), encoding="utf-8")
+        return
+
+    # Newer OIIO rewrote this diagnostic path to stream output and uses fmt only
+    # with a literal format string, so no fmt::runtime compatibility patch is
+    # needed.
+    compatible_new_format = 'Strutil::fmt::format("    {} \\"{}\\"\\n", c.hash(), c)'
+    if compatible_new_format in text and "std::ostringstream out;" in text:
+        return
+
+    raise RuntimeError(f"OpenImageIO fmt runtime format compatibility patch no longer matches upstream source: {ustring}")
 
 
 def _patch_msvc_python_module_link(src_dir: Path) -> None:
