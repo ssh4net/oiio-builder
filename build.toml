@@ -44,6 +44,7 @@ preferred_repo_order = [
   "harfbuzz",
   "robinmap",
   "rapidfuzz-cpp",
+  "toml11",
   "eigen",
   "LBFGSpp",
   "imath",
@@ -105,6 +106,7 @@ build_imgui_test_engine = false
 build_libvpx = false
 build_opus = false
 build_libyuv = false
+build_toml11 = false
 # Default Qt stack for OIIO iv + Designer:
 # qt6_modules = ["qtbase", "qttools", "qtsvg"]
 # Example expanded stack:
@@ -521,6 +523,15 @@ name = "rapidfuzz-cpp"
 dir = "rapidfuzz-cpp"
 url = "https://github.com/rapidfuzz/rapidfuzz-cpp.git"
 build_system = "cmake"
+
+[[repos]]
+name = "toml11"
+dir = "toml11"
+url = "https://github.com/ToruNiina/toml11.git"
+ref = "main"
+ref_type = "branch"
+build_system = "cmake"
+optional = true
 
 [[repos]]
 name = "miniply"

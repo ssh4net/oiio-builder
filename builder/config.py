@@ -93,6 +93,7 @@ class GlobalConfig:
     build_libvpx: bool = False
     build_opus: bool = False
     build_libyuv: bool = False
+    build_toml11: bool = False
     qt6_modules: list[str] = field(default_factory=lambda: list(_DEFAULT_QT6_MODULES))
     build_dng_sdk: bool = False
     openimageio_patch_png_include: bool = True
@@ -265,6 +266,7 @@ def load_config(path: Path) -> Config:
             "build_libvpx",
             "build_opus",
             "build_libyuv",
+            "build_toml11",
             "qt6_modules",
             "build_dng_sdk",
             "openimageio_patch_png_include",
@@ -445,6 +447,7 @@ def load_config(path: Path) -> Config:
         build_libvpx=bool(global_data.get("build_libvpx", False)),
         build_opus=bool(global_data.get("build_opus", False)),
         build_libyuv=bool(global_data.get("build_libyuv", False)),
+        build_toml11=bool(global_data.get("build_toml11", False)),
         qt6_modules=qt6_modules,
         build_dng_sdk=bool(global_data.get("build_dng_sdk", False)),
         openimageio_patch_png_include=bool(global_data.get("openimageio_patch_png_include", True)),

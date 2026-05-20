@@ -8,7 +8,7 @@ from pathlib import Path
 from .policy import ffmpeg_enabled, imageio_enabled, windows_use_ffmpeg_from_prefix
 
 
-STAMP_REVISION = "10"
+STAMP_REVISION = "11"
 
 
 def enabled(builder, _repo) -> bool:
@@ -486,6 +486,7 @@ def _cache_args(builder, ctx) -> list[str]:
         "USE_LIBUHDR",
         "USE_FFMPEG",
         "USE_QT",
+        "USE_TBB",
         "USE_LIBCPLUSPLUS",
         "USE_EXTERNAL_PUGIXML",
         "LINKSTATIC",
@@ -525,6 +526,10 @@ def _cache_args(builder, ctx) -> list[str]:
     values["OIIO_USE_COMPILED_FMT"] = "ON"
 
     values["USE_QT"] = "ON" if cfg.build_qt6 else "OFF"
+    # OIIO treats TBB/oneTBB as an optional dependency that is enabled by
+    # default and autodetected from the system. Keep the managed prefix
+    # deterministic unless the user explicitly overrides this later.
+    values["USE_TBB"] = "OFF"
 
     if builder.platform.os == "linux" and cfg.build_qt6 and not values.get("OIIO_IV_EXTRA_IV_LIBRARIES"):
         # Qt6 static DBus linkage on Linux may require systemd symbols

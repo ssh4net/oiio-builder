@@ -1,0 +1,5 @@
+[cmake.cache]
+TOML11_BUILD_TESTS = false
+TOML11_BUILD_TOML_TESTS = false
+TOML11_BUILD_EXAMPLES = false
+TOML11_PRECOMPILE = false
