@@ -339,6 +339,28 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
     missing_tools = 0
     missing_repos = 0
     missing_assets = 0
+    missing_tool_items: list[str] = []
+    missing_repo_items: list[str] = []
+    missing_asset_items: list[str] = []
+    missing_prereq_items: list[str] = []
+
+    def record_missing_tool(item: str) -> None:
+        nonlocal missing_tools
+        missing_tools += 1
+        missing_tool_items.append(item)
+
+    def record_missing_repo(item: str) -> None:
+        nonlocal missing_repos
+        missing_repos += 1
+        missing_repo_items.append(item)
+
+    def record_missing_asset(item: str) -> None:
+        nonlocal missing_assets
+        missing_assets += 1
+        missing_asset_items.append(item)
+
+    def record_missing_prereq(item: str) -> None:
+        missing_prereq_items.append(item)
 
     lines = ["", "=== Preflight Report ==="]
     lines.append(f"Platform: {platform.os} {platform.arch}")
@@ -370,11 +392,15 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
             elif check.state == "missing-empty":
                 lines.append(f"  {install_prefix} [{build_types_label}]: not created yet")
             elif check.state == "missing-populated":
-                missing_assets += 1
+                record_missing_asset(
+                    f"prefix contract: {install_prefix} [{build_types_label}] expected {check.files['json']}"
+                )
                 lines.append(f"  {install_prefix} [{build_types_label}]: missing contract for populated prefix")
                 lines.append(f"    expected: {check.files['json']}")
             else:
-                missing_assets += 1
+                details = "; ".join([*check.hard_mismatches, *check.soft_mismatches])
+                suffix = f" ({details})" if details else ""
+                record_missing_asset(f"prefix contract: {install_prefix} [{build_types_label}] mismatch{suffix}")
                 lines.append(f"  {install_prefix} [{build_types_label}]: mismatch")
                 for item in check.hard_mismatches:
                     lines.append(f"    hard: {item}")
@@ -399,14 +425,14 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
             if cc_path:
                 lines.append(f"  cc: ok ({cc_path}) [{generator}]")
             else:
-                missing_tools += 1
+                record_missing_tool(f"cc: {expected_cc} [{generator}]")
                 lines.append(f"  cc: missing ({expected_cc}) [{generator}]")
         if expected_cxx and expected_cxx != expected_cc:
             cxx_path = shutil.which(expected_cxx)
             if cxx_path:
                 lines.append(f"  cxx: ok ({cxx_path}) [{generator}]")
             else:
-                missing_tools += 1
+                record_missing_tool(f"cxx: {expected_cxx} [{generator}]")
                 lines.append(f"  cxx: missing ({expected_cxx}) [{generator}]")
         if expected_cc == "cl":
             lines.append("  hint: run from a Visual Studio Developer Prompt/PowerShell so cl.exe is on PATH.")
@@ -416,12 +442,12 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
         if rc_path:
             lines.append(f"  rc: ok ({rc_path})")
         else:
-            missing_tools += 1
+            record_missing_tool("rc.exe: Windows SDK resource compiler")
             lines.append("  rc: missing (Windows SDK resource compiler)")
         if mt_path:
             lines.append(f"  mt: ok ({mt_path})")
         else:
-            missing_tools += 1
+            record_missing_tool("mt.exe: Windows SDK manifest tool")
             lines.append("  mt: missing (Windows SDK manifest tool)")
         if not rc_path or not mt_path:
             lines.append("  hint: install the Visual Studio C++ workload with the Windows 10/11 SDK.")
@@ -430,7 +456,7 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
             try:
                 native_ninja = builder._resolve_windows_native_ninja(env)
             except RuntimeError as exc:
-                missing_tools += 1
+                record_missing_tool(f"ninja.exe: {exc}")
                 lines.append(f"  ninja: unusable ({exc})")
             else:
                 lines.append(f"  ninja: ok ({native_ninja})")
@@ -445,8 +471,9 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
             lines.append(f"  {check.name}: ok ({path}){note}")
             continue
         if check.required:
-            missing_tools += 1
             extra = f" [{check.note}]" if check.note else ""
+            candidates = ", ".join(check.candidates)
+            record_missing_tool(f"{check.name}: candidates {candidates}{extra}")
             lines.append(f"  {check.name}: missing{extra}")
         else:
             extra = f" [{check.note}]" if check.note else ""
@@ -461,12 +488,12 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
             if shell_path:
                 lines.append(f"  shell: ok ({shell_path}) ({shell_name})")
             else:
-                missing_tools += 1
+                record_missing_tool("FFmpeg source build shell: MSYS2 bash/sh")
                 lines.append("  shell: missing [required for FFmpeg source build; need MSYS2 bash/sh]")
             if make_path:
                 lines.append(f"  make: ok ({make_path}) ({make_name})")
             else:
-                missing_tools += 1
+                record_missing_tool("FFmpeg source build make: MSYS2 make/mingw32-make")
                 lines.append("  make: missing [required for FFmpeg source build]")
         else:
             lines.append("  source build: disabled (MSYS2 environment not detected)")
@@ -542,22 +569,26 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
             if not xcb_missing:
                 lines.append("  xcb: ok")
             else:
+                record_missing_prereq(f"Qt6 pkg-config modules (xcb): {', '.join(xcb_missing)}")
                 lines.append(f"  xcb: missing ({', '.join(xcb_missing)})")
 
             if not wayland_missing:
                 lines.append("  wayland: ok")
             else:
+                record_missing_prereq(f"Qt6 pkg-config modules (wayland): {', '.join(wayland_missing)}")
                 lines.append(f"  wayland: missing ({', '.join(wayland_missing)})")
 
             if config.global_cfg.build_ffmpeg:
                 if not pulse_missing:
                     lines.append("  pulseaudio (QtMultimedia ffmpeg): ok")
                 else:
+                    record_missing_prereq("Qt6 pkg-config module: libpulse")
                     lines.append("  pulseaudio (QtMultimedia ffmpeg): missing (libpulse)")
 
             if not desktop_missing:
                 lines.append("  glib/fontconfig: ok")
             else:
+                record_missing_prereq(f"Qt6 pkg-config modules (desktop): {', '.join(desktop_missing)}")
                 lines.append(f"  glib/fontconfig: missing ({', '.join(desktop_missing)})")
 
             if missing:
@@ -615,6 +646,7 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
         build_env = _build_env_for_pkg_config(builder, "Release")
 
         if not pkg_path:
+            record_missing_prereq("FFmpeg/OpenImageIO pkg-config executable for vdpau")
             lines.append("  pkg-config: missing (required to resolve vdpau)")
         else:
             vdpau_ok, vdpau_version = _pkg_config_check(pkg_path, "vdpau", build_env)
@@ -622,6 +654,7 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
                 version_note = f" ({vdpau_version})" if vdpau_version else ""
                 lines.append(f"  vdpau: ok{version_note}")
             else:
+                record_missing_prereq("pkg-config module: vdpau")
                 lines.append("  vdpau: missing (ld.lld would fail with `-lvdpau`)")
                 os_release = _read_os_release()
                 if _is_debian_like(os_release):
@@ -641,6 +674,7 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
         build_env = _build_env_for_pkg_config(builder, "Release")
 
         if not pkg_path:
+            record_missing_prereq("OpenImageIO/Qt6 pkg-config executable for libsystemd")
             lines.append("  pkg-config: missing (required to resolve libsystemd)")
         else:
             systemd_ok, systemd_version = _pkg_config_check(pkg_path, "libsystemd", build_env)
@@ -648,6 +682,7 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
                 version_note = f" ({systemd_version})" if systemd_version else ""
                 lines.append(f"  libsystemd: ok{version_note}")
             else:
+                record_missing_prereq("pkg-config module: libsystemd")
                 lines.append("  libsystemd: missing (ld.lld would fail with `-lsystemd`)")
                 os_release = _read_os_release()
                 if _is_debian_like(os_release):
@@ -668,6 +703,7 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
             pkg_path, _ = _find_any(pkg_candidates)
             build_env = _build_env_for_pkg_config(builder, "Release")
             if not pkg_path:
+                record_missing_prereq("nativefiledialog-extended pkg-config executable for gtk+-3.0")
                 lines.append("  pkg-config: missing (required to resolve gtk+-3.0)")
             else:
                 gtk_ok, gtk_version = _pkg_config_check(pkg_path, "gtk+-3.0", build_env)
@@ -675,6 +711,7 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
                     version_note = f" ({gtk_version})" if gtk_version else ""
                     lines.append(f"  gtk+-3.0: ok{version_note}")
                 else:
+                    record_missing_prereq("pkg-config module: gtk+-3.0")
                     lines.append("  gtk+-3.0: missing")
                     os_release = _read_os_release()
                     if _is_debian_like(os_release):
@@ -698,7 +735,7 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
                 ]
             )
         else:
-            missing_tools += 1
+            record_missing_tool(f"VULKAN_SDK path: {sdk_root}")
             lines.append(f"  VULKAN_SDK: missing ({sdk_root})")
 
         glslang_validator_path, _ = _find_any_with_dirs(
@@ -708,6 +745,7 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
         if glslang_validator_path:
             lines.append(f"  glslangValidator: ok ({glslang_validator_path})")
         else:
+            record_missing_prereq("Vulkan SDK executable: glslangValidator")
             lines.append("  glslangValidator: missing")
 
         vulkaninfo_path, _ = _find_any_with_dirs(
@@ -717,6 +755,7 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
         if vulkaninfo_path:
             lines.append(f"  vulkaninfo: ok ({vulkaninfo_path})")
         else:
+            record_missing_prereq("Vulkan SDK executable: vulkaninfo")
             lines.append("  vulkaninfo: missing")
 
         probe_ok, probe_values, probe_output = _cmake_vulkan_probe(builder, env)
@@ -732,7 +771,7 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
             if glslc:
                 lines.append(f"  glslc: {glslc}")
         elif probe_ok is False:
-            missing_tools += 1
+            record_missing_tool("CMake find_package(Vulkan)")
             lines.append("  find_package(Vulkan): missing")
             if platform.os == "windows":
                 lines.append("  install hint: install the LunarG Vulkan SDK and reopen the shell so VULKAN_SDK is exported.")
@@ -751,11 +790,11 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
         lines.append("DNG SDK (optional prerequisites):")
         dng_path = _resolve_dngsdk_archive_path(env, config.global_cfg.repo_root)
         if not dng_path:
-            missing_assets += 1
+            record_missing_asset("DNG SDK archive: external/dng_sdk_1_7_1_0.zip or DNGSDK_ARCHIVE")
             lines.append("  archive: missing (required when build_dng_sdk=true)")
             lines.append("  hint: place it under `external/` (e.g. `external/dng_sdk_1_7_1_0.zip`) or set `DNGSDK_ARCHIVE`.")
         elif not dng_path.exists():
-            missing_assets += 1
+            record_missing_asset(f"DNG SDK archive: configured at {dng_path}")
             lines.append(f"  archive: missing (configured at {dng_path})")
         else:
             kind = "dir" if dng_path.is_dir() else "archive"
@@ -799,9 +838,8 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
             if zip_path.exists():
                 lines.append(f"  {repo.name}: ok (vcpkg export zip: {zip_path})")
             else:
-                lines.append(f"  {repo.name}: missing (vcpkg export zip expected at {zip_path})")
-                if not repo.optional:
-                    missing_repos += 1
+                lines.append(f"  {repo.name}: missing (local asset: vcpkg export zip expected at {zip_path})")
+                record_missing_asset(f"{repo.name} vcpkg export zip: {zip_path}")
             continue
         path = builder._resolve_repo_dir(repo)
         if path.exists():
@@ -816,13 +854,37 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
             else:
                 lines.append(f"  {repo.name}: missing (optional)")
         else:
-            missing_repos += 1
+            record_missing_repo(f"{repo.name}: expected {path}, url={url or 'no-url'}")
             lines.append(f"  {repo.name}: missing (expected at {path}, url={url or 'no-url'})")
+
+    def append_missing_group(title: str, items: list[str]) -> None:
+        if not items:
+            return
+        unique_items: list[str] = []
+        seen: set[str] = set()
+        for item in items:
+            if item in seen:
+                continue
+            seen.add(item)
+            unique_items.append(item)
+        lines.append(f"  {title} ({len(unique_items)}):")
+        for item in unique_items:
+            lines.append(f"    - {item}")
+
+    lines.append("Missing:")
+    if not (missing_tool_items or missing_repo_items or missing_asset_items or missing_prereq_items):
+        lines.append("  none")
+    else:
+        append_missing_group("tools", missing_tool_items)
+        append_missing_group("repos", missing_repo_items)
+        append_missing_group("local assets", missing_asset_items)
+        append_missing_group("prerequisites", missing_prereq_items)
 
     lines.append("Summary:")
     lines.append(f"  missing tools: {missing_tools}")
     lines.append(f"  missing repos: {missing_repos}")
     lines.append(f"  missing assets: {missing_assets}")
+    lines.append(f"  missing prerequisites: {len(set(missing_prereq_items))}")
     lines.append("Example build:")
     lines.append("  uv run build.py --build-types Debug,Release")
     print("\n".join(lines))
