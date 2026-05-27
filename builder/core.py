@@ -1724,6 +1724,10 @@ class Builder:
                     env["CCACHE_TEMPDIR"] = str(fallback_tmp_dir)
                 else:
                     env["CCACHE_DISABLE"] = "1"
+            elif _ensure_writable(fallback_tmp_dir):
+                env["CCACHE_TEMPDIR"] = str(fallback_tmp_dir)
+            else:
+                env["CCACHE_DISABLE"] = "1"
 
             ccache_dir_raw = env.get("CCACHE_DIR") or os.environ.get("CCACHE_DIR")
             if ccache_dir_raw:
@@ -1734,6 +1738,10 @@ class Builder:
                     env["CCACHE_DIR"] = str(fallback_cache_dir)
                 else:
                     env["CCACHE_DISABLE"] = "1"
+            elif _ensure_writable(fallback_cache_dir):
+                env["CCACHE_DIR"] = str(fallback_cache_dir)
+            else:
+                env["CCACHE_DISABLE"] = "1"
 
         if self.platform.os == "windows":
             for var in ("CC", "CXX", "CMAKE_C_COMPILER", "CMAKE_CXX_COMPILER"):

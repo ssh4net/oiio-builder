@@ -77,6 +77,13 @@ def _select_remote(path: Path, url: str | None, ref: str | None, ref_type: str) 
     return remotes[0]
 
 
+def _remote_url_matches(path: Path, remote: str | None, url: str | None) -> bool:
+    if not remote or not url:
+        return True
+    remote_url = _git_output(path, ["remote", "get-url", remote])
+    return bool(remote_url and remote_url.rstrip("/") == url.rstrip("/"))
+
+
 def _run_git_update(cmd: list[str], *, dry_run: bool) -> None:
     try:
         run(cmd, dry_run=dry_run)
@@ -203,6 +210,8 @@ def ensure_repo(path: Path, url: str | None, ref: str | None, ref_type: str, upd
         if not update:
             return
         remote = _select_remote(path, url, ref, ref_type)
+        if remote and url and not _remote_url_matches(path, remote, url):
+            run(["git", "-C", str(path), "remote", "set-url", remote, url], dry_run=dry_run)
         fetch_cmd = _build_fetch_cmd(path, remote, ref, ref_type)
         _run_git_update(fetch_cmd, dry_run=dry_run)
         if _has_tracked_changes(path):
