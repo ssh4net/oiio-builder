@@ -76,49 +76,6 @@ def _patch_compiled_fmt_option(src_dir: Path) -> None:
         text = text.replace(anchor, replacement, 1)
         oiioversion.write_text(text, encoding="utf-8")
 
-    fmt_header = src_dir / "src" / "include" / "OpenImageIO" / "detail" / "fmt.h"
-    old_with_exceptions = """\
-// We want the header-only implementation of fmt
-#ifndef FMT_HEADER_ONLY
-#    define FMT_HEADER_ONLY
-#endif
-
-// Disable fmt exceptions
-#ifndef FMT_EXCEPTIONS
-#    define FMT_EXCEPTIONS 0
-#endif
-"""
-    old_header_only = """\
-// We want the header-only implementation of fmt
-#ifndef FMT_HEADER_ONLY
-#    define FMT_HEADER_ONLY
-#endif
-"""
-    new = """\
-// By default OIIO uses the header-only implementation of fmt. Builds that opt
-// into compiled external fmt must use the same mode in OIIO and consumers.
-#ifndef OIIO_USE_COMPILED_FMT
-#    define OIIO_USE_COMPILED_FMT 0
-#endif
-#if !OIIO_USE_COMPILED_FMT
-#    ifndef FMT_HEADER_ONLY
-#        define FMT_HEADER_ONLY
-#    endif
-
-// Disable fmt exceptions for the header-only implementation.
-#    ifndef FMT_EXCEPTIONS
-#        define FMT_EXCEPTIONS 0
-#    endif
-#endif
-"""
-    if fmt_header.exists():
-        fmt_text = fmt_header.read_text(encoding="utf-8", errors="replace")
-        if new not in fmt_text:
-            old = old_with_exceptions if old_with_exceptions in fmt_text else old_header_only
-            replace_once(fmt_header, old, new, "fmt header mode")
-    else:
-        raise RuntimeError(f"OpenImageIO fmt header mode patch target is missing: {fmt_header}")
-
     libutil = src_dir / "src" / "libutil" / "CMakeLists.txt"
     old = """\
     if (OIIO_INTERNALIZE_FMT OR fmt_LOCAL_BUILD)
@@ -139,7 +96,19 @@ def _patch_compiled_fmt_option(src_dir: Path) -> None:
                                PUBLIC fmt::fmt-header-only)
     endif ()
 """
-    replace_once(libutil, old, new, "libutil fmt linkage")
+    libutil_text = libutil.read_text(encoding="utf-8", errors="replace")
+    if new in libutil_text:
+        pass
+    elif old in libutil_text:
+        libutil.write_text(libutil_text.replace(old, new, 1), encoding="utf-8")
+    elif (
+        "if (OIIO_USE_COMPILED_FMT)" in libutil_text
+        and "PUBLIC fmt::fmt)" in libutil_text
+        and "PUBLIC fmt::fmt-header-only)" in libutil_text
+    ):
+        pass
+    else:
+        raise RuntimeError(f"OpenImageIO libutil fmt linkage patch no longer matches upstream source: {libutil}")
 
     _patch_ustring_fmt_runtime(src_dir)
 
