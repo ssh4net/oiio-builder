@@ -3,9 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from .policy import imageio_enabled
+from ..tooling import resolve_openmp_root
 
 
-STAMP_REVISION = "7"
+STAMP_REVISION = "8"
 
 
 def enabled(builder, _repo) -> bool:
@@ -26,6 +27,13 @@ def cmake_args(builder, ctx) -> list[str]:
         "-DENABLE_X3FTOOLS=ON",
         "-DENABLE_6BY9RPI=ON",
     ]
+
+    omp_env = dict(cfg.env)
+    if builder.platform.os == "windows":
+        omp_env.update(cfg.windows_env)
+    omp_root = resolve_openmp_root(omp_env, platform_os=builder.platform.os)
+    if omp_root:
+        args.append(f"-DOpenMP_ROOT={omp_root}")
 
     if getattr(cfg, "build_dng_sdk", False):
         args += [

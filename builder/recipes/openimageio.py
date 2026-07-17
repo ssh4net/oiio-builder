@@ -6,9 +6,10 @@ import shutil
 from pathlib import Path
 
 from .policy import ffmpeg_enabled, imageio_enabled, windows_use_ffmpeg_from_prefix
+from ..tooling import resolve_openmp_root
 
 
-STAMP_REVISION = "11"
+STAMP_REVISION = "12"
 
 
 def enabled(builder, _repo) -> bool:
@@ -1043,11 +1044,10 @@ def _extra_static_libs(builder, prefix: Path, build_type: str) -> list[str]:
         add_lib("libharfbuzz.a")
 
     # OpenMP runtime for LibRaw when OIIO is linked statically.
-    omp_root = builder.config.global_cfg.env.get("OpenMP_ROOT")
+    omp_env = dict(builder.config.global_cfg.env)
     if builder.platform.os == "windows":
-        omp_root = builder.config.global_cfg.windows_env.get("OpenMP_ROOT") or os.environ.get("OpenMP_ROOT") or omp_root
-    else:
-        omp_root = os.environ.get("OpenMP_ROOT") or omp_root
+        omp_env.update(builder.config.global_cfg.windows_env)
+    omp_root = resolve_openmp_root(omp_env, platform_os=builder.platform.os)
     omp_added = False
     if libraw_openmp_enabled:
         windows_clang_openmp = builder.platform.os == "windows" and builder._windows_generator() in {

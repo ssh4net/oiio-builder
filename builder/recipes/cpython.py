@@ -9,7 +9,7 @@ from .policy import cpython_requested
 from ..runner import banner, print_cmd, run
 
 
-STAMP_REVISION = "4"
+STAMP_REVISION = "5"
 
 
 def enabled(builder, _repo) -> bool:
@@ -153,6 +153,8 @@ def _build_posix(builder, ctx, env: dict[str, str]) -> None:
         dry_run=builder.dry_run,
         log_path=str(builder._repo_log_path(ctx.repo.name, ctx.build_type, "configure")),
     )
+    if builder.platform.os == "macos":
+        _force_macos_build_python_suffix(builder, build_dir)
 
     build_cmd = ["make", f"-j{builder._jobs()}"]
     print_cmd("build command", build_cmd)
@@ -175,6 +177,22 @@ def _build_posix(builder, ctx, env: dict[str, str]) -> None:
         dry_run=builder.dry_run,
         log_path=str(builder._repo_log_path(ctx.repo.name, ctx.build_type, "install")),
     )
+
+
+def _force_macos_build_python_suffix(builder, build_dir: Path) -> None:
+    makefile = build_dir / "Makefile"
+    if not makefile.exists():
+        return
+
+    text = makefile.read_text(encoding="utf-8", errors="replace")
+    new_text = re.sub(r"(?m)^BUILDEXE=\s*$", "BUILDEXE=\t.exe", text, count=1)
+    if new_text == text:
+        return
+
+    if builder.dry_run:
+        print("[dry-run] cpython: set macOS build interpreter suffix to .exe", flush=True)
+        return
+    makefile.write_text(new_text, encoding="utf-8")
 
 
 def _build_windows(builder, ctx, env: dict[str, str]) -> None:

@@ -71,6 +71,35 @@ def macos_nasm_probe_candidates() -> list[str]:
     return candidates
 
 
+def macos_openmp_root_candidates() -> list[str]:
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    for prefix in ("/opt/homebrew", "/usr/local"):
+        append_unique_candidate(candidates, seen, str(Path(prefix) / "opt" / "libomp"))
+    return candidates
+
+
+def resolve_openmp_root(env: Mapping[str, str] | None = None, *, platform_os: str | None = None) -> str | None:
+    merged_env = dict(os.environ)
+    if env:
+        merged_env.update(env)
+
+    root = normalize_override(merged_env.get("OpenMP_ROOT"))
+    if root:
+        return root
+
+    if platform_os == "macos":
+        for candidate in macos_openmp_root_candidates():
+            path = Path(candidate)
+            if (path / "include" / "omp.h").exists() and any(
+                (path / "lib" / name).exists() for name in ("libomp.dylib", "libomp.a")
+            ):
+                return candidate
+
+    return None
+
+
 def resolve_nasm_executable(env: Mapping[str, str] | None = None, *, platform_os: str | None = None) -> str | None:
     search_path = None
     if env is not None:
