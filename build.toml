@@ -8,6 +8,10 @@ build_root = "./developer/_build"
 prefix_layout = "by-build-type"
 install_prefix = "./developer/install"
 asan_prefix = "./developer/asan"
+# Optional license/linkage profile. The first implemented profile is
+# "nongpl-static"; it always uses an isolated prefix below profile_prefix_base.
+# profile = "nongpl-static"
+# profile_prefix_base = "./developer/prefixes"
 # Write a managed contract bundle under each active prefix:
 #   <prefix>/.oiio-builder/prefix-contract.json
 #   <prefix>/.oiio-builder/prefix-init-cache.cmake

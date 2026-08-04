@@ -6,6 +6,8 @@ from typing import Any
 import os
 import tomllib
 
+from .license_policy import apply_profile_defaults, normalize_profile
+
 _DEFAULT_QT6_MODULES = ["qtbase", "qttools"]
 _KNOWN_QT6_MODULES = {
     "qtbase",
@@ -48,6 +50,8 @@ class GlobalConfig:
     install_prefix: str | None
     asan_prefix: str | None
     prefix_layout: str  # "suffix" (legacy) or "by-build-type"
+    profile: str | None
+    profile_prefix_base: str | None
     build_types: list[str]
     preferred_repo_order: list[str]
     cxx_standard: int
@@ -225,6 +229,8 @@ def load_config(path: Path) -> Config:
             "install_prefix",
             "asan_prefix",
             "prefix_layout",
+            "profile",
+            "profile_prefix_base",
             "build_types",
             "preferred_repo_order",
             "cxx_standard",
@@ -339,6 +345,13 @@ def load_config(path: Path) -> Config:
         asan_prefix = os.path.expanduser(asan_prefix)
         asan_prefix = asan_prefix.strip() or None
 
+    profile = normalize_profile(global_data.get("profile"))
+    profile_prefix_base = global_data.get("profile_prefix_base")
+    if isinstance(profile_prefix_base, str):
+        profile_prefix_base = os.path.expandvars(profile_prefix_base)
+        profile_prefix_base = os.path.expanduser(profile_prefix_base)
+        profile_prefix_base = profile_prefix_base.strip() or None
+
     prefix_layout_raw = global_data.get("prefix_layout", "suffix")
     prefix_layout = str(prefix_layout_raw).strip().lower().replace("_", "-")
     if prefix_layout in {"suffix", "legacy", "legacy-suffix"}:
@@ -405,6 +418,8 @@ def load_config(path: Path) -> Config:
         install_prefix=install_prefix if isinstance(install_prefix, str) else None,
         asan_prefix=asan_prefix if isinstance(asan_prefix, str) else None,
         prefix_layout=prefix_layout,
+        profile=profile,
+        profile_prefix_base=profile_prefix_base if isinstance(profile_prefix_base, str) else None,
         build_types=build_types,
         preferred_repo_order=preferred_repo_order,
         cxx_standard=int(global_data.get("cxx_standard", 20)),
@@ -466,6 +481,7 @@ def load_config(path: Path) -> Config:
         ar=global_data.get("ar"),
         ranlib=global_data.get("ranlib"),
     )
+    apply_profile_defaults(global_cfg)
 
     repos: list[RepoConfig] = []
     for entry in data.get("repos", []):

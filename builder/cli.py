@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 
 from .config import load_config
+from .license_policy import apply_profile_defaults, normalize_profile
 from .core import Builder
 from .platform import detect_platform
 from .preflight import run_preflight
@@ -27,6 +28,7 @@ def main() -> int:
             "  uv run build.py --build-types Debug,Release --jobs 8\n"
             "  uv run build.py --build-types Debug --only OpenImageIO\n"
             "  uv run build.py --build-types Debug --only OpenImageIO --no-ffmpeg\n"
+            "  uv run build.py --profile nongpl-static --build-types Release\n"
             "  uv run build.py --build-types Debug --force\n"
             "  uv run build.py --build-types Debug --force-all\n"
             "  uv run build.py --skip libheif,libwebp\n"
@@ -94,6 +96,10 @@ def main() -> int:
     parser.add_argument("--preflight", action="store_true", help="Run tool/repo checks and exit")
     parser.add_argument("--list-repos", action="store_true", help="List configured repos")
     parser.add_argument("--print-prefixes", action="store_true", help="Print install prefixes and exit")
+    parser.add_argument(
+        "--profile",
+        help="License/linkage profile. Currently supported: nongpl-static",
+    )
 
     args = parser.parse_args()
     config_path = Path(args.config).expanduser().resolve()
@@ -101,6 +107,10 @@ def main() -> int:
 
     if args.build_types:
         config.build_types = _parse_build_types(args.build_types)
+
+    if args.profile is not None:
+        config.global_cfg.profile = normalize_profile(args.profile)
+        apply_profile_defaults(config.global_cfg)
 
     if args.jobs is not None:
         if args.jobs < 0:
@@ -181,6 +191,7 @@ def main() -> int:
             args.prepare_only,
             args.no_update,
             args.dry_run,
+            args.profile,
         ]
     )
     if not build_requested:

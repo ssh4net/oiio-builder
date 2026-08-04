@@ -270,6 +270,11 @@ def cmake_common_args(builder: Any, repo: Any, ctx: Any) -> list[str]:
 
     cflags = builder._base_flags(ctx.build_type)
     cxxflags = builder._base_flags(ctx.build_type)
+    if builder.license_profile is not None:
+        profile_definitions = builder.license_profile.consumer_compile_definitions
+        if profile_definitions:
+            define_flag = "/D" if builder.platform.os == "windows" else "-D"
+            cxxflags += " " + " ".join(f"{define_flag}{item}" for item in profile_definitions)
     if builder.platform.os == "windows":
         cxxflags += " /bigobj"
     if builder.platform.os in {"macos", "linux"} and cfg.use_libcxx:
@@ -323,6 +328,9 @@ def _build_cmake(builder: Any, ctx: Any, env: dict[str, str]) -> None:
     cmake_args.extend(_repo_specific_args(builder, repo, ctx))
     cmake_args.extend(_expand_args(builder, repo.cmake_args, ctx.build_type, ctx.install_prefix))
     cmake_args.extend(builder._repo_cmake_user_override_args(repo.name))
+    # License profile guards are intentionally last so a local CMake override
+    # cannot re-enable an excluded artifact path by accident.
+    cmake_args.extend(builder._license_profile_cmake_args(repo.name))
     cmd.extend(cmake_args)
 
     print_cmd("Full cmake config command", cmd)

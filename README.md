@@ -108,6 +108,8 @@ Key options:
   - `suffix`: legacy Unix layout using `debug_suffix`/`asan_suffix`.
 - `install_prefix`: canonical install prefix root (cross-platform).
 - `asan_prefix`: optional explicit ASAN prefix (cross-platform).
+- `profile`: optional license/linkage profile. `nongpl-static` is currently implemented; it rejects managed GPL/LGPL artifacts and uses its own prefix root.
+- `profile_prefix_base`: root for isolated profile prefixes (default: `./developer/prefixes`).
 - `prefix_base`: legacy fallback prefix root used when `install_prefix` is not set.
 - `write_prefix_contract`: write and maintain a managed prefix contract bundle under `<prefix>/.oiio-builder/` (default: `true`).
 - `build_types`: list of configs to build (`Debug`, `Release`, `ASAN`).
@@ -177,6 +179,7 @@ PNG_TESTS = true
 - Windows:
   - Debug and Release share one prefix (debug builds first).
   - ASAN can use a separate prefix via `asan_prefix` (e.g., `./developer/asan`).
+- License-aware profiles always use a separate root. For example, `--profile nongpl-static` writes `developer/prefixes/nongpl-static/Release` and `Debug` on macOS/Linux; Windows uses `developer/prefixes/nongpl-static` for Debug and Release.
 
 ## Install Markers (Prefix Retargeting)
 
@@ -199,6 +202,7 @@ Files:
 - `prefix-init-cache.cmake`: safe shared cache defaults for `cmake -C`.
 - `prefix-contract.cmake`: helper variables/functions for projects that want to opt into the contract from CMake.
 - `prefix-presets.json`: hidden configure preset fragments that can be included from a source tree.
+- `license-policy.json`: resolved repository license choices, exclusions, and warnings when a license-aware profile is active.
 
 The contract is intended to protect a prefix from accidental reuse with incompatible settings such as:
 - `libc++` vs `libstdc++`
@@ -228,6 +232,9 @@ uv run build.py --prepare-only --only OpenImageIO --apply-prefix-contract
 
 # Print computed install prefixes
 uv run build.py --print-prefixes
+
+# Build the separately stamped GPL/LGPL-free static prefix
+uv run build.py --profile nongpl-static --build-types Debug,Release
 
 # Force rebuild
 uv run build.py --force          # with --only: forces only selected repos

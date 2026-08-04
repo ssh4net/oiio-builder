@@ -364,6 +364,10 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
 
     lines = ["", "=== Preflight Report ==="]
     lines.append(f"Platform: {platform.os} {platform.arch}")
+    if builder.license_profile is not None:
+        excluded = ", ".join(sorted(builder._license_profile_exclusions, key=str.lower))
+        lines.append(f"License profile: {builder.license_profile.name} ({builder.license_profile.linkage})")
+        lines.append(f"  excluded managed repositories: {excluded or '(none)'}")
     lines.append("Paths:")
     lines.append(f"  repo_root: {config.global_cfg.repo_root}")
     lines.append(f"  src_root: {config.global_cfg.src_root}")

@@ -14,6 +14,7 @@ This document captures global and per-platform requirements for the cross-platfo
 - Rebuild policy: stamps based on repo HEAD + toolchain + flags + dependency SHAs.
 - Install layout: optional user-defined base prefix on Unix that expands to per-config prefixes; single prefix on Windows with debug postfix.
 - Logging: concise, grep-friendly, with per-repo build logs.
+- License-aware prefixes: keep a profile's license policy, resolved repository set, linkage mode, and consumer constraints in the prefix contract and build stamps. Never reuse a profile prefix for an unrestricted build.
 
 ## Platform Requirements
 
@@ -57,6 +58,13 @@ This document captures global and per-platform requirements for the cross-platfo
 - Sphinx: optional documentation build target.
 - Doxygen: optional API documentation target.
 - Build system should allow toggling these on/off per repo or globally.
+
+## License-Aware Prefix Plan
+
+- Implemented first profile: `nongpl-static`. It is a separate, PIC static prefix that rejects GPL and LGPL managed artifacts; see [license_aware_builds.md](license_aware_builds.md).
+- Planned `lgpl-dynamic`: reject GPL and use normal shared LGPL endpoints with the required LGPL source/notices.
+- Planned `lgpl-mixed`: retain static third-party libraries where appropriate, but contain each LGPL static combination in a dynamically replaceable, open-source OIIO endpoint. The primary design is OIIO image-I/O plugins with `EMBEDPLUGINS=OFF`.
+- Planned `gpl-*`: permit GPL artifacts only for GPL-compatible open-source distribution, while flagging incompatible terms for review.
 
 ## Open Questions / TBD
 - Exact prefix naming convention for ASAN on Unix.
