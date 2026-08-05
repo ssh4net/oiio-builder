@@ -66,6 +66,10 @@ This document captures global and per-platform requirements for the cross-platfo
 - Planned `lgpl-mixed`: retain static third-party libraries where appropriate, but contain each LGPL static combination in a dynamically replaceable, open-source OIIO endpoint. The primary design is OIIO image-I/O plugins with `EMBEDPLUGINS=OFF`.
 - Planned `gpl-*`: permit GPL artifacts only for GPL-compatible open-source distribution, while flagging incompatible terms for review.
 
+## Destructive Source Refresh
+
+Normal `--update` and `--update-only` preserve modified worktrees and local commits. `--force-update` is the deliberate recovery path for builder-owned source roots: it must be invoked alone and requires the interactive phrase `FORCE-UPDATE`. It operates only on existing configured Git checkouts, restores their configured remote/ref, hard-resets tracked changes/local commits, and removes untracked non-ignored files with `git clean -fd`. It never clones missing source directories, removes ignored files, runs source-preparation hooks, or starts builds. If Git cannot remove an untracked path, that checkout is reported incomplete but the remaining source refreshes still run.
+
 ## Open Questions / TBD
 - Exact prefix naming convention for ASAN on Unix.
 - Whether to force Ninja globally or allow MSBuild by default on Windows.

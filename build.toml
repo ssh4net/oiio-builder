@@ -325,8 +325,8 @@ build_system = "cmake"
 name = "nativefiledialog-extended"
 dir = "nativefiledialog-extended"
 url = "https://github.com/btzy/nativefiledialog-extended.git"
-ref = "v1.3.0"
-ref_type = "tag"
+# ref = "v1.3.0"
+# ref_type = "tag"
 build_system = "cmake"
 
 [[repos]]

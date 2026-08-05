@@ -15,7 +15,7 @@ import threading
 from .config import Config, RepoConfig
 from . import license_policy
 from . import backends as build_backends
-from .git_ops import ensure_repo, git_head
+from .git_ops import ensure_repo, git_head, resolve_repo_dir
 from .platform import PlatformInfo
 from .recipes import registry as recipe_registry
 from .repo_options import CMakeOptions, load_repo_defaults, load_user_overrides, render_cmake_options
@@ -2071,18 +2071,7 @@ class Builder:
 
     def _resolve_repo_dir(self, repo: RepoConfig) -> Path:
         cfg = self.config.global_cfg
-        if Path(repo.dir).is_absolute():
-            return Path(repo.dir)
-        candidates = [repo.dir] + repo.dir_candidates
-        for cand in candidates:
-            base = cfg.src_root / cand
-            if "*" in cand or "?" in cand:
-                matches = list(cfg.src_root.glob(cand))
-                if matches:
-                    return matches[0]
-            if base.exists():
-                return base
-        return cfg.src_root / repo.dir
+        return resolve_repo_dir(cfg.src_root, repo.dir, repo.dir_candidates)
 
     def _maybe_skip_missing(self, repo: RepoConfig, path: Path) -> bool:
         recipe_decision = recipe_registry.missing_source_skip(repo.name, self, repo, path)

@@ -1,8 +1,10 @@
 import argparse
+import subprocess
 import sys
 from pathlib import Path
 
-from .config import load_config
+from .config import Config, RepoConfig, load_config
+from .git_ops import force_update_repo, resolve_repo_dir
 from .license_policy import apply_profile_defaults, normalize_profile
 from .core import Builder
 from .platform import detect_platform
@@ -22,6 +24,7 @@ def main() -> int:
             "Examples:\n"
             "  uv run build.py --preflight\n"
             "  uv run build.py --update-only\n"
+            "  uv run build.py --force-update\n"
             "  uv run build.py --prepare-only --only Qt6\n"
             "  uv run build.py --build-types Debug,Release\n"
             "  uv run build.py --build-types Debug,ASAN\n"
@@ -51,6 +54,11 @@ def main() -> int:
     parser.add_argument("--no-update", action="store_true", help="Skip git fetch/pull (overrides config)")
     parser.add_argument("--update", action="store_true", help="Force git fetch/pull (overrides config)")
     parser.add_argument("--update-only", action="store_true", help="Clone/fetch/checkout repos only, then exit")
+    parser.add_argument(
+        "--force-update",
+        action="store_true",
+        help="Interactively discard local source changes and refresh existing Git checkouts; must be used alone",
+    )
     parser.add_argument(
         "--prepare-only",
         action="store_true",
@@ -102,8 +110,16 @@ def main() -> int:
     )
 
     args = parser.parse_args()
+    if args.force_update:
+        extra_args = [arg for arg in sys.argv[1:] if arg != "--force-update"]
+        if extra_args:
+            parser.error("--force-update must be used alone; it cannot be combined with other options")
+
     config_path = Path(args.config).expanduser().resolve()
     config = load_config(config_path)
+
+    if args.force_update:
+        return _run_force_update(config)
 
     if args.build_types:
         config.build_types = _parse_build_types(args.build_types)
@@ -198,3 +214,57 @@ def main() -> int:
         return run_preflight(config, platform_info, no_update=no_update)
 
     return builder.run()
+
+
+def _run_force_update(config: Config) -> int:
+    """Confirm and force-refresh every existing configured source checkout."""
+    targets: list[tuple[RepoConfig, Path]] = []
+    skipped: list[str] = []
+    for repo in config.repos:
+        if not repo.enabled:
+            continue
+        path = resolve_repo_dir(config.global_cfg.src_root, repo.dir, repo.dir_candidates)
+        if not path.exists():
+            skipped.append(f"{repo.name} (missing)")
+            continue
+        if not (path / ".git").exists():
+            skipped.append(f"{repo.name} (not a Git checkout: {path})")
+            continue
+        targets.append((repo, path))
+
+    print("WARNING: --force-update is destructive.")
+    print(f"It will restore {len(targets)} existing checkout(s) under {config.global_cfg.src_root} to their configured upstream revisions.")
+    print("For every listed checkout it discards tracked changes and local commits, then removes untracked non-ignored files.")
+    print("It does not clone missing sources, remove ignored files, or run any build step.")
+    if targets:
+        print("Checkouts:")
+        for repo, path in targets:
+            print(f"  {repo.name}: {path}")
+    if skipped:
+        print(f"Skipped: {', '.join(skipped)}")
+
+    try:
+        confirmation = input("Type FORCE-UPDATE to continue: ").strip()
+    except EOFError:
+        confirmation = ""
+    if confirmation != "FORCE-UPDATE":
+        print("Force update cancelled; no sources were changed.")
+        return 1
+
+    updated = 0
+    incomplete: list[str] = []
+    for repo, path in targets:
+        try:
+            if force_update_repo(path, repo.url, repo.ref, repo.ref_type):
+                updated += 1
+            else:
+                incomplete.append(repo.name)
+        except subprocess.CalledProcessError as exc:
+            incomplete.append(repo.name)
+            print(f"[warning] {repo.name}: source refresh failed ({exc}); continuing with other checkouts", flush=True)
+
+    if incomplete:
+        print(f"Force update incomplete: {updated}/{len(targets)} checkout(s) refreshed; review: {', '.join(incomplete)}.")
+        return 1
+    print(f"Force update completed: {updated}/{len(targets)} checkout(s) refreshed.")
+    return 0

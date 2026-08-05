@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-STAMP_REVISION = "6"
+STAMP_REVISION = "7"
 
 
 def enabled(builder, _repo) -> bool:
@@ -87,7 +87,39 @@ def pre_build(builder, _repo, ctx, _env) -> None:
         builder._ensure_openjph_alias(ctx.install_prefix)
 
 
-def patch_source(_builder, src_dir) -> None:
+def _uses_msvc(builder) -> bool:
+    return (
+        builder.platform.os == "windows"
+        and builder._windows_generator() in {"msvc", "ninja-msvc"}
+    )
+
+
+def patch_source(builder, src_dir) -> None:
+    # MSVC 14.44 rejects the standards-valid local constexpr reference in this
+    # captureless lambda (C3493). Clang-cl and other compilers accept it, so
+    # leave their libjxl sources unchanged.
+    if _uses_msvc(builder):
+        exr_decoder = src_dir / "lib" / "extras" / "dec" / "exr.cc"
+        if exr_decoder.exists():
+            original_text = exr_decoder.read_text(encoding="utf-8", errors="replace")
+            text = original_text
+            marker = "// OIIO_BUILDER_MSVC_EXR_COORD_CAPTURE"
+            if marker not in text:
+                needle = """\
+  auto OutOfRange = [](int v) {
+    return v < -kEXRCoordBound || v > kEXRCoordBound;
+  };
+"""
+                replacement = """\
+  // OIIO_BUILDER_MSVC_EXR_COORD_CAPTURE
+  auto OutOfRange = [kEXRCoordBound](int v) {
+    return v < -kEXRCoordBound || v > kEXRCoordBound;
+  };
+"""
+                text = text.replace(needle, replacement, 1)
+            if text != original_text:
+                exr_decoder.write_text(text, encoding="utf-8")
+
     cmake_file = src_dir / "lib" / "jxl_extras.cmake"
     if cmake_file.exists():
         original_text = cmake_file.read_text(encoding="utf-8")

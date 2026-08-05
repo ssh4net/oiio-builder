@@ -203,6 +203,125 @@ def _build_current_branch_pull_cmd(path: Path, remote: str | None) -> list[str] 
     return None
 
 
+def resolve_repo_dir(src_root: Path, repo_dir: str, dir_candidates: list[str]) -> Path:
+    """Resolve a configured source directory without requiring a Builder instance."""
+    configured_dir = Path(repo_dir)
+    if configured_dir.is_absolute():
+        return configured_dir
+
+    for candidate in [repo_dir, *dir_candidates]:
+        path = src_root / candidate
+        if "*" in candidate or "?" in candidate:
+            matches = list(src_root.glob(candidate))
+            if matches:
+                return matches[0]
+        if path.exists():
+            return path
+    return src_root / repo_dir
+
+
+def _resolve_force_update_target(
+    path: Path,
+    remote: str | None,
+    ref: str | None,
+    ref_type: str,
+) -> tuple[str | None, str] | None:
+    """Return the branch (if any) and revision that a destructive refresh may use."""
+    if ref:
+        if ref_type == "branch":
+            if not remote or not _remote_branch_exists(path, remote, ref):
+                remote_name = remote or "the configured remote"
+                print(f"[skip-force-update] {path}: configured branch {ref!r} was not fetched from {remote_name}", flush=True)
+                return None
+            return ref, f"{remote}/{ref}"
+        return None, ref
+
+    if not remote:
+        print(f"[skip-force-update] {path}: no remote is configured", flush=True)
+        return None
+
+    target = _tracking_ref(path, remote)
+    if target is None:
+        target = _git_output(path, ["symbolic-ref", "--quiet", "--short", f"refs/remotes/{remote}/HEAD"])
+    if target is None or not target.startswith(f"{remote}/"):
+        print(f"[skip-force-update] {path}: cannot determine a branch from {remote}", flush=True)
+        return None
+
+    return target.removeprefix(f"{remote}/"), target
+
+
+def _force_update_checkout(path: Path, branch: str | None, target: str, *, dry_run: bool) -> None:
+    """Check out an already-validated force-update target after the worktree is clean."""
+    if branch is None:
+        run(["git", "-C", str(path), "checkout", "--detach", target], dry_run=dry_run)
+    else:
+        run(["git", "-C", str(path), "checkout", "-B", branch, target], dry_run=dry_run)
+    run(["git", "-C", str(path), "reset", "--hard", target], dry_run=dry_run)
+
+
+def _force_clean(path: Path, *, dry_run: bool) -> bool:
+    """Remove ordinary untracked files without aborting all source refreshes."""
+    try:
+        run(["git", "-C", str(path), "clean", "-fd"], dry_run=dry_run)
+    except subprocess.CalledProcessError:
+        print(
+            f"[warning] {path}: Git could not remove every untracked path; "
+            "the checkout refresh will continue but be reported incomplete",
+            flush=True,
+        )
+        return False
+    return True
+
+
+def force_update_repo(
+    path: Path,
+    url: str | None,
+    ref: str | None,
+    ref_type: str,
+    *,
+    dry_run: bool = False,
+) -> bool:
+    """Destructively restore an existing checkout to its configured upstream revision.
+
+    The caller must obtain explicit user confirmation before invoking this
+    function. Ignored files and nested Git repositories are intentionally left
+    alone; all tracked changes/local commits and normal untracked files are
+    discarded.
+    """
+    if not path.exists():
+        print(f"[skip-force-update] {path}: source checkout is missing", flush=True)
+        return False
+    if not (path / ".git").exists():
+        print(f"[skip-force-update] {path}: exists but is not a Git checkout", flush=True)
+        return False
+
+    remote = _select_remote(path, url, ref, ref_type)
+    if remote is None:
+        print(f"[skip-force-update] {path}: no remote is configured", flush=True)
+        return False
+    if remote and url and not _remote_url_matches(path, remote, url):
+        run(["git", "-C", str(path), "remote", "set-url", remote, url], dry_run=dry_run)
+
+    print(f"[force-update] {path}: discarding local Git changes", flush=True)
+    _run_git_update(_build_fetch_cmd(path, remote, ref, ref_type), dry_run=dry_run)
+    resolved_target = _resolve_force_update_target(path, remote, ref, ref_type)
+    if resolved_target is None:
+        return False
+    branch, target = resolved_target
+    if not _git_success(path, ["rev-parse", "--verify", f"{target}^{{commit}}"]):
+        print(f"[skip-force-update] {path}: configured revision {target!r} is unavailable after fetch", flush=True)
+        return False
+
+    # Clean first so a conflicting untracked file cannot prevent checkout.
+    run(["git", "-C", str(path), "reset", "--hard"], dry_run=dry_run)
+    clean_complete = _force_clean(path, dry_run=dry_run)
+    _force_update_checkout(path, branch, target, dry_run=dry_run)
+    # Catch files that become untracked when switching revisions.
+    if clean_complete:
+        clean_complete = _force_clean(path, dry_run=dry_run)
+    return clean_complete
+
+
 def ensure_repo(path: Path, url: str | None, ref: str | None, ref_type: str, update: bool, dry_run: bool) -> None:
     if path.exists():
         if not (path / ".git").exists():

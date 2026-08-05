@@ -4,7 +4,7 @@ from pathlib import Path
 
 from .policy import imageio_enabled
 
-STAMP_REVISION = "6"
+STAMP_REVISION = "7"
 
 
 def enabled(builder, _repo) -> bool:
@@ -25,6 +25,7 @@ def cmake_args(builder, ctx) -> list[str]:
     if builder.platform.os == "windows":
         args.append("-Dtiff-opengl=ON")
         args.extend(_windows_static_freeglut_args(builder, ctx))
+        args.extend(_windows_static_jpeg_args(builder, ctx))
         # Keep ASAN/Debug flags intact; inject required static-link defines via a
         # top-level include instead of overwriting CMAKE_*_FLAGS.
         include_path = Path(ctx.build_dir) / "oiio_builder_libtiff_defines.cmake"
@@ -75,6 +76,40 @@ def _windows_static_freeglut_args(builder, ctx) -> list[str]:
     if selected is None:
         return []
     return [f"-D{cache_name}={builder._cmake_path_arg(selected)}"]
+
+
+def _windows_static_jpeg_args(builder, ctx) -> list[str]:
+    if not builder.config.global_cfg.static_default:
+        return []
+
+    lib_dir = Path(ctx.install_prefix) / "lib"
+    include_dir = Path(ctx.install_prefix) / "include"
+    debug_postfix = str(builder.config.global_cfg.windows.get("debug_postfix", "d"))
+    if ctx.build_type == "Debug":
+        candidates = [
+            lib_dir / f"jpeg-static{debug_postfix}.lib",
+            lib_dir / "jpeg-staticd.lib",
+            lib_dir / f"jpeg{debug_postfix}.lib",
+            lib_dir / "jpegd.lib",
+        ]
+    else:
+        candidates = [
+            lib_dir / "jpeg-static.lib",
+            lib_dir / "jpeg.lib",
+        ]
+
+    selected = next((candidate for candidate in candidates if candidate.exists()), None)
+    if selected is None or not (include_dir / "jpeglib.h").is_file():
+        return []
+
+    # Libtiff 4.7.2 checks `if(TARGET ${JPEG_LIBRARIES})`. CMake's FindJPEG
+    # returns an `optimized;...;debug;...` list once both variants exist,
+    # making that expression invalid. Use the current build type's concrete
+    # archive, which also gives the imported JPEG target the correct location.
+    return [
+        f"-DJPEG_INCLUDE_DIR={builder._cmake_path_arg(include_dir)}",
+        f"-DJPEG_LIBRARY={builder._cmake_path_arg(selected)}",
+    ]
 
 
 def patch_source(_builder, src_dir) -> None:

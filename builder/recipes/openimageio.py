@@ -9,7 +9,7 @@ from .policy import ffmpeg_enabled, imageio_enabled, windows_use_ffmpeg_from_pre
 from ..tooling import resolve_openmp_root
 
 
-STAMP_REVISION = "12"
+STAMP_REVISION = "13"
 
 
 def enabled(builder, _repo) -> bool:
@@ -173,6 +173,41 @@ def _patch_msvc_python_module_link(src_dir: Path) -> None:
         raise RuntimeError(f"OpenImageIO python module patch no longer matches upstream source: {pythonutils}")
 
     pythonutils.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+
+def _patch_static_robinmap_config(src_dir: Path) -> None:
+    config_template = src_dir / "src" / "cmake" / "Config.cmake.in"
+    if not config_template.exists():
+        raise RuntimeError(f"OpenImageIO static robin-map config patch target is missing: {config_template}")
+
+    original_text = config_template.read_text(encoding="utf-8", errors="replace")
+    text = original_text
+    marker_begin = "# OIIO_BUILDER_ROBINMAP_STATIC_BEGIN"
+    marker_end = "# OIIO_BUILDER_ROBINMAP_STATIC_END"
+    block = """\
+    # OIIO_BUILDER_ROBINMAP_STATIC_BEGIN
+    # Static exported OIIO targets directly reference tsl::robin_map.
+    # Import its installed package before OpenImageIOTargets.cmake is loaded.
+    if (NOT TARGET tsl::robin_map)
+        find_dependency(tsl-robin-map CONFIG)
+    endif ()
+    # OIIO_BUILDER_ROBINMAP_STATIC_END
+"""
+    if marker_begin in text and marker_end in text:
+        marker_start = text.index(marker_begin)
+        start = text.rfind("\n", 0, marker_start) + 1
+        stop = text.index(marker_end, marker_start) + len(marker_end)
+        if text[stop : stop + 1] == "\n":
+            stop += 1
+        text = text[:start] + block + text[stop:]
+    elif "find_dependency(tsl-robin-map CONFIG)" not in text:
+        anchor = "if (NOT @BUILD_SHARED_LIBS@)\n"
+        if anchor not in text:
+            raise RuntimeError(f"OpenImageIO static robin-map config patch no longer matches upstream source: {config_template}")
+        text = text.replace(anchor, anchor + block, 1)
+
+    if text != original_text:
+        config_template.write_text(text, encoding="utf-8")
 
 
 def cmake_args(builder, ctx) -> list[str]:
@@ -1240,6 +1275,7 @@ def patch_source(builder, src_dir: Path) -> None:
     if not builder.dry_run:
         _patch_compiled_fmt_option(src_dir)
         _patch_msvc_python_module_link(src_dir)
+        _patch_static_robinmap_config(src_dir)
 
     cfg = builder.config.global_cfg
     if not getattr(cfg, "build_dng_sdk", False):
