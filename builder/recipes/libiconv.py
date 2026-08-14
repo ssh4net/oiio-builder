@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 
 from ..runner import banner
+from ..license_policy import LGPL_DYNAMIC
 from ..vcpkg_import import add_debug_postfix, copy_bin_payload, find_triplet, resolve_export_zip, stage_export
 
 
@@ -56,11 +57,22 @@ def build(builder, ctx, env: dict[str, str]) -> None:
     if installed_dir is None:
         return
 
-    triplet_dir = find_triplet(installed_dir, "include/iconv.h", zip_path)
+    static_linkage = bool(builder.config.global_cfg.static_default)
+    triplet_dir = find_triplet(installed_dir, "include/iconv.h", zip_path, prefer_static=static_linkage)
     include_src = triplet_dir / "include"
     lib_src = triplet_dir / "lib"
     debug_lib_src = triplet_dir / "debug" / "lib"
     bin_src = triplet_dir / "bin"
+
+    lgpl_dynamic = builder.license_profile is not None and builder.license_profile.name == LGPL_DYNAMIC
+    if lgpl_dynamic:
+        dll_names = [path.name.lower() for path in bin_src.glob("*.dll")]
+        missing_dlls = [stem for stem in ("iconv", "charset") if not any(stem in name for name in dll_names)]
+        if missing_dlls:
+            raise RuntimeError(
+                "lgpl-dynamic requires a shared libiconv vcpkg export; missing DLLs for: "
+                f"{', '.join(missing_dlls)} in {bin_src}"
+            )
 
     required = [
         include_src / "iconv.h",
@@ -93,7 +105,7 @@ def build(builder, ctx, env: dict[str, str]) -> None:
         if item.is_file():
             shutil.copy2(item, lib_dst / add_debug_postfix(item.name, debug_postfix))
 
-    copy_bin_payload(bin_src, bin_dst, "libiconv")
+    copy_bin_payload(bin_src, bin_dst, "libiconv", prefer_static=static_linkage)
 
     cmake_dir = ctx.install_prefix / "lib" / "cmake" / "Iconv"
     cmake_dir.mkdir(parents=True, exist_ok=True)

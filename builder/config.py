@@ -189,7 +189,7 @@ def _validate_user_override_keys(user_table: dict[str, Any], *, allowed: set[str
         raise ValueError(f"Unknown key(s) in {context}: {names_str}")
 
 
-def load_config(path: Path) -> Config:
+def load_config(path: Path, *, profile_override: object = None) -> Config:
     data = tomllib.loads(path.read_text(encoding="utf-8"))
     repo_root = path.parent
     if not isinstance(data, dict):
@@ -345,7 +345,8 @@ def load_config(path: Path) -> Config:
         asan_prefix = os.path.expanduser(asan_prefix)
         asan_prefix = asan_prefix.strip() or None
 
-    profile = normalize_profile(global_data.get("profile"))
+    profile_value = profile_override if profile_override is not None else global_data.get("profile")
+    profile = normalize_profile(profile_value)
     profile_prefix_base = global_data.get("profile_prefix_base")
     if isinstance(profile_prefix_base, str):
         profile_prefix_base = os.path.expandvars(profile_prefix_base)

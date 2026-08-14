@@ -11,6 +11,7 @@ Tools the builder expects to find (or be explicitly pointed at via config/env):
 - `pkg-config` (we recommend `pkgconf`)
 - `ccache` (optional, recommended on macOS/Linux)
 - `doxygen`
+- Perl 5 (OpenSSL configuration)
 - OpenMP runtime when enabling OpenMP (for example: `libraw_enable_openmp="ON"`). MSVC uses the Visual Studio `vcomp` runtime; clang/clang-cl uses LLVM `libomp`.
 - `nasm`/`yasm` on x86_64
 - Python 3.11+ (uses `tomllib`)
@@ -50,6 +51,7 @@ Linux GTK3 headers (needed for `nativefiledialog-extended` when `NFD_PORTAL=OFF`
    PKG_CONFIG_EXECUTABLE = "E:/vcpkg/installed/x64-windows/tools/pkgconf/pkgconf.exe"
    DOXYGEN_EXECUTABLE = "C:/Program Files/doxygen/bin/doxygen.exe"
    NASM_EXECUTABLE = "C:/Program Files/NASM/nasm.exe"
+   PERL_EXECUTABLE = "C:/Strawberry/perl/bin/perl.exe"
    # Needed for clang-cl OpenMP; MSVC cl uses Visual Studio's vcomp runtime.
    OpenMP_ROOT = "C:/LLVM" # provides <OpenMP_ROOT>/lib/libomp.lib
    ```
@@ -108,7 +110,7 @@ Key options:
   - `suffix`: legacy Unix layout using `debug_suffix`/`asan_suffix`.
 - `install_prefix`: canonical install prefix root (cross-platform).
 - `asan_prefix`: optional explicit ASAN prefix (cross-platform).
-- `profile`: optional license/linkage profile. `nongpl-static` is currently implemented; it rejects managed GPL/LGPL artifacts and uses its own prefix root.
+- `profile`: optional license/linkage profile. `nongpl-static` rejects managed GPL/LGPL artifacts and forces static linkage. `lgpl-dynamic` rejects GPL artifacts, permits reviewed LGPL components only as shared libraries, and forces dynamic linkage plus the dynamic MSVC runtime.
 - `profile_prefix_base`: root for isolated profile prefixes (default: `./developer/prefixes`).
 - `prefix_base`: legacy fallback prefix root used when `install_prefix` is not set.
 - `write_prefix_contract`: write and maintain a managed prefix contract bundle under `<prefix>/.oiio-builder/` (default: `true`).
@@ -132,10 +134,11 @@ Key options:
 - `windows.build_ffmpeg`: defaults to `false`; when `true`, Windows builds use prebuilt FFmpeg by default, or native FFmpeg source build when run from MSYS2 (see below).
 - `windows.use_ffmpeg_from_prefix`: defaults to `true`; on standard Windows builds, OpenImageIO auto-uses FFmpeg already installed in the active prefix even when `windows.build_ffmpeg = false`.
 - `windows.msvc_runtime`: `static` (default, `/MT`/`/MTd`) or `dynamic` (`/MD`/`/MDd`).
-- `windows.python_wrappers`: `auto` (default), `on`, `off` for OpenColorIO/OpenEXR Python bindings.
+- `windows.python_wrappers`: `auto` (default), `on`, `off` for OpenColorIO/OpenEXR/OpenMeta Python bindings.
   `auto` enables wrappers only when `windows.msvc_runtime=dynamic`.
+- Windows Debug CPython remains a dynamic build (`python_d.exe` using `python3XY_d.dll`), and its extension modules remain dynamically loaded. OpenMeta installs `_openmeta_d...pyd` directly into the prefix for Debug builds, but defers wheel generation to Release because `uv` cannot create an isolated wheel environment from the Debug interpreter.
 - `windows.cpython_fetch_externals`: `true` (default) uses `-e` (CPython fetch/builds externals); `false` passes `-E`.
-- On Windows, `sqlite` is imported from a vcpkg export zip (`external/vcpkg-export-sqlite.zip`) instead of source/autotools build.
+- `sqlite` is source-built on every platform. Windows uses upstream `Makefile.msc` with `nmake`; macOS/Linux use upstream `Makefile.linux-generic` with GNU Make.
 - On Windows, optional `libvpx` is imported from a vcpkg export zip (`external/vcpkg-export-libvpx.zip`) instead of source/autotools build.
 - `windows.clangcl_extra_flags`: clang-cl x86_64 baseline extra flags (default if unset: `-msse4.1`).
 - `windows.clangcl_extra_flags_append`: extra clang-cl x86_64 flags appended to the baseline (default: empty).
@@ -239,6 +242,7 @@ uv run build.py --print-prefixes
 
 # Build the separately stamped GPL/LGPL-free static prefix
 uv run build.py --profile nongpl-static --build-types Debug,Release
+uv run build.py --profile lgpl-dynamic --build-types Debug,Release
 
 # Force rebuild
 uv run build.py --force          # with --only: forces only selected repos
@@ -367,17 +371,22 @@ Example:
 vcpkg export libiconv:x64-windows-static --zip --output=vcpkg-export-libiconv
 ```
 
-### Windows: sqlite (for CPython)
-On Windows, `sqlite` is imported from a **vcpkg export zip** (no source/autotools build).
+### SQLite
 
-- Default path: `external/vcpkg-export-sqlite.zip`
-- Override (optional, via `[windows.env]` or process env):
-  - `SQLITE_VCPKG_EXPORT_ZIP` (also accepts `SQLITE3_VCPKG_EXPORT_ZIP`)
-- Prefer `*-static` triplets (e.g. `x64-windows-static`) to avoid DLL collisions in the shared prefix.
+SQLite is built from its canonical source checkout in every linkage and license profile. The recipe enables JSON, FTS5 with the built-in `unicode61` tokenizer, RTree, Geopoly, and zlib-backed ZIP/SQLAR support. ICU and external Tcl are not required.
 
-Examples:
+- Windows uses upstream `Makefile.msc` with `nmake` in a separate build directory. Run from a Visual Studio Native Tools prompt/PowerShell, or let the builder discover and load the VS 2022 environment.
+- macOS/Linux use upstream `Makefile.linux-generic` in a separate build tree with explicit FTS5, RTree, Geopoly, and linkage options. This avoids relying on a generated configure wrapper from a moving SQLite checkout.
+- Static prefixes install the SQLite static library and `sqlite3_zipfile` static extension library. Register `sqlite3_zipfile_init` in the consuming application before using the SQL `zipfile` virtual table.
+- Dynamic prefixes install the SQLite shared library plus a loadable `zipfile` module. Release modules can be loaded by filename; Debug Windows modules use a `d` postfix and should specify the `sqlite3_zipfile_init` entry point explicitly.
+- The recipe installs `SQLite3Config.cmake`, providing `SQLite::SQLite3`, compatibility target `SQLite3::SQLite3`, and `SQLite::Zipfile`, plus `sqlite3.pc`.
+
+Focused builds:
+
 ```bat
-vcpkg export sqlite3:x64-windows-static --zip --output=vcpkg-export-sqlite
+uv run build.py --only sqlite --build-types Debug,Release
+uv run build.py --profile nongpl-static --only sqlite --build-types Debug,Release
+uv run build.py --profile lgpl-dynamic --only sqlite --build-types Debug,Release
 ```
 
 ### Qt6 (static, optional)
@@ -437,14 +446,27 @@ Skip Qt6 (build everything else):
 uv run build.py --build-types Debug,Release --skip Qt6
 ```
 
-Windows: OpenSSL import (required)
-- Default expected path: `external/vcpkg-export-openssl.zip`
-- Override: `OPENSSL_VCPKG_EXPORT_ZIP` in `[windows.env]` (or process env)
+OpenSSL is built from the upstream `openssl-4.0` branch without optional zlib
+or ICU dependencies. Build it independently with:
 
-Example:
-```bat
-vcpkg export openssl:x64-windows-static --zip --output=vcpkg-export-openssl
+```bash
+uv run build.py --build-types Debug,Release --only openssl
 ```
+
+Windows requirements:
+- Use the native Windows builder from a Visual Studio 2022 Native Tools environment.
+- Install Strawberry Perl and NASM, then put both on `PATH` or set
+  `PERL_EXECUTABLE` and `NASM_EXECUTABLE` under `[windows.env]`.
+- `nmake.exe`, `cl.exe`, `lib.exe`, `link.exe`, `rc.exe`, and `mt.exe` come
+  from the Visual Studio C++ workload and Windows SDK.
+- Debug and Release share the managed Windows prefix. Debug OpenSSL keeps its
+  configuration and provider modules under `<prefix>/Debug` and exposes
+  `libcryptod.lib`/`libssld.lib` compatibility names in `<prefix>/lib`.
+
+WSL/Linux requirements are `build-essential`, Perl, Make, and NASM on x86-64.
+A WSL run produces Linux libraries; it cannot produce the MSVC DLL/import-lib
+package. OpenSSL recommends an ext4 source/build tree rather than `/mnt/*` for
+speed and to avoid NTFS/WSL permission or line-ending failures.
 
 Linux notes
 - The default Qt build uses XCB (`-qpa xcb`).
@@ -475,6 +497,7 @@ uv run build.py --build-types Debug,Release --only dng-sdk,libraw,OpenImageIO
 PKG_CONFIG_EXECUTABLE = "C:\\msys64\\usr\\bin\\pkg-config.exe"
 DOXYGEN_EXECUTABLE = "C:\\Program Files\\doxygen\\bin\\doxygen.exe"
 NASM_EXECUTABLE = "C:\\Program Files\\NASM\\nasm.exe"
+PERL_EXECUTABLE = "C:\\Strawberry\\perl\\bin\\perl.exe"
 ```
 
 ## Troubleshooting
@@ -491,9 +514,12 @@ NASM_EXECUTABLE = "C:\\Program Files\\NASM\\nasm.exe"
 - **Missing optional repos**: `yaml-cpp`, `pystring`, `expat`, `pugixml`, `libxml2` are skipped if not present. On Windows, `libiconv` is expected via `external/vcpkg-export-libiconv.zip`.
 - **OpenMP not found (macOS/Linux)**: set `OpenMP_ROOT` in `build.toml` or environment.
 - **NASM not detected on Windows**: set `windows.env.NASM_EXECUTABLE = "C:/Program Files/NASM/nasm.exe"` in `build.user.toml`. The builder also probes the default NASM installer path automatically.
+- **OpenSSL cannot find Perl or `nmake` on Windows**: install Strawberry Perl, set `windows.env.PERL_EXECUTABLE` if it is not on `PATH`, and run the builder from a Visual Studio Native Tools prompt. WSL Perl is valid only for a Linux/WSL OpenSSL build.
 - **Windows Ninja build unexpectedly tries `clang-cl`**: with `windows.generator = "ninja-msvc"` the builder now pins `cl` explicitly. If preflight still reports `cc: missing (cl)`, launch the build from a Visual Studio Developer Prompt/PowerShell.
 - **Windows CMake try-compile fails with `/bin/sh: ... cl.EXE: command not found`**: CMake picked MSYS2 POSIX Ninja (`C:/msys64/usr/bin/ninja.exe`). Put a native Ninja from CMake or Visual Studio earlier in `PATH`, set `windows.env.CMAKE_MAKE_PROGRAM = "C:/Program Files/CMake/bin/ninja.exe"`, or switch to `windows.generator = "msvc"`.
 - **Windows CMake try-compile fails with `rc` or `CMAKE_MT-NOTFOUND`**: install the Windows 10/11 SDK via the Visual Studio C++ workload. The builder now probes `rc.exe` and `mt.exe` and reports them in preflight.
+- **SQLite reports missing `nmake.exe`, `link.exe`, or (for static builds) `lib.exe`**: use a Visual Studio Native Tools prompt/PowerShell or install the Visual Studio C++ workload. SQLite's Windows recipe uses the upstream MSVC-compatible `Makefile.msc`, independently of the CMake generator selected for other repositories.
+- **SQLite's POSIX generator reports an invalid Tcl command containing the amalgamation header**: the source checkout was converted to CRLF. Set `core.autocrlf=false` for the builder's WSL/macOS/Linux source store, then run the guarded `--force-update` operation for `sqlite`; the recipe now detects this before starting compilation.
 - **ASAN failures on Windows**: prefer clang-cl and ensure the MSVC AddressSanitizer component is installed.
 - **PyOpenColorIO / PyOpenEXR link errors on Windows**: set `windows.msvc_runtime = "dynamic"` and `windows.python_wrappers = "on"` for wrapper builds.
 - **Preflight only**: run `uv run build.py` (no args) to see tool/repo readiness without building.

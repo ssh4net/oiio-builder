@@ -5,6 +5,7 @@ import os
 import shutil
 
 from .policy import ffmpeg_enabled, imageio_enabled, windows_ffmpeg_native_build_enabled
+from ..license_policy import LGPL_DYNAMIC
 from ..runner import banner, print_cmd, run
 
 
@@ -31,12 +32,18 @@ def _configure_args(builder, ctx) -> list[str]:
     prefix_arg = builder._windows_path_to_msys(ctx.install_prefix) if windows_native_ffmpeg else str(ctx.install_prefix)
     args = [
         f"--prefix={prefix_arg}",
-        "--disable-shared",
-        "--enable-static",
         "--enable-pic",
         "--disable-doc",
-        "--pkg-config-flags=--static",
     ]
+    if cfg.static_default:
+        args.extend(["--disable-shared", "--enable-static", "--pkg-config-flags=--static"])
+    else:
+        args.extend(["--enable-shared", "--disable-static"])
+    if builder.license_profile is not None and builder.license_profile.name == LGPL_DYNAMIC:
+        # Keep the resulting FFmpeg libraries under their default LGPL terms.
+        # These guards are explicit so a host configuration cannot turn the
+        # managed build into GPL/nonfree FFmpeg.
+        args.extend(["--disable-gpl", "--disable-nonfree"])
     if windows_native_ffmpeg:
         target_os = "win64" if builder.platform.arch in {"x86_64", "arm64"} else "win32"
         ffmpeg_arch = (
@@ -87,7 +94,11 @@ def _configure_args(builder, ctx) -> list[str]:
             args.append(f"--sysroot={sdkroot}")
 
     if windows_native_ffmpeg:
-        runtime_flag = "-MTd" if ctx.build_type == "Debug" else "-MT"
+        dynamic_runtime = builder._windows_runtime_mode() == "dynamic"
+        if dynamic_runtime:
+            runtime_flag = "-MDd" if ctx.build_type == "Debug" else "-MD"
+        else:
+            runtime_flag = "-MTd" if ctx.build_type == "Debug" else "-MT"
         args.append(f"--extra-cflags={runtime_flag}")
         args.append(f"--extra-cxxflags={runtime_flag}")
     else:

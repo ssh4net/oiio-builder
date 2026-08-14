@@ -145,6 +145,7 @@ def build(builder, ctx, env: dict[str, str]) -> None:
                 flush=True,
             )
 
+    static_linkage = bool(self.config.global_cfg.static_default)
     qt_args: list[str] = [
         "-prefix",
         self._cmake_path_arg(install_prefix),
@@ -152,7 +153,7 @@ def build(builder, ctx, env: dict[str, str]) -> None:
         self._cmake_path_arg(install_prefix),
         "-opensource",
         "-confirm-license",
-        "-static",
+        "-static" if static_linkage else "-shared",
         "-nomake",
         "tests",
         "-nomake",
@@ -189,7 +190,9 @@ def build(builder, ctx, env: dict[str, str]) -> None:
     if self.platform.os in {"linux", "windows"}:
         qt_args.append("-openssl-linked")
     if self.platform.os == "windows":
-        qt_args.extend(["-static-runtime", "-no-schannel"])
+        if self._windows_runtime_mode() == "static":
+            qt_args.append("-static-runtime")
+        qt_args.append("-no-schannel")
 
     if "qtmultimedia" in qt_submodule_set and ffmpeg_enabled(self):
         if self.platform.os == "linux":
@@ -211,7 +214,7 @@ def build(builder, ctx, env: dict[str, str]) -> None:
         f"-DCMAKE_PREFIX_PATH={self._cmake_path_arg(install_prefix)}",
         f"-DCMAKE_INCLUDE_PATH={self._cmake_path_arg(install_prefix / 'include')}",
         f"-DCMAKE_LIBRARY_PATH={self._cmake_path_arg(install_prefix / 'lib')}",
-        "-DPKG_CONFIG_USE_STATIC_LIBS=ON",
+        f"-DPKG_CONFIG_USE_STATIC_LIBS={'ON' if static_linkage else 'OFF'}",
     ]
     freetype_dir = install_prefix / "lib" / "cmake" / "freetype"
     if freetype_dir.exists():
@@ -431,11 +434,12 @@ def stamp_payload(builder, _repo, ctx, payload: dict) -> None:
         ),
         "qpa_default": ("xcb" if builder.platform.os == "linux" else "default"),
         "ssl": ("openssl-linked" if builder.platform.os in {"linux", "windows"} else "default"),
-        "static_runtime": (builder.platform.os == "windows"),
+        "linkage": "static" if builder.config.global_cfg.static_default else "dynamic",
+        "static_runtime": (builder.platform.os == "windows" and builder._windows_runtime_mode() == "static"),
         "system_libs": system_libs,
         "disabled_features": sorted(disabled_features),
         "feature_ffmpeg": (
             builder.platform.os != "windows" and "qtmultimedia" in qt_submodule_set and ffmpeg_enabled(builder)
         ),
-        "pkg_config_use_static_libs": True,
+        "pkg_config_use_static_libs": bool(builder.config.global_cfg.static_default),
     }

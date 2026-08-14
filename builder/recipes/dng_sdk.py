@@ -6,7 +6,87 @@ import os
 import shutil
 
 
-STAMP_REVISION = "12"
+STAMP_REVISION = "13"
+
+
+_LCMS2_TARGET_BRIDGE_BEGIN = "# OIIO_BUILDER_LCMS2_TARGET_BRIDGE_BEGIN"
+_LCMS2_TARGET_BRIDGE_END = "# OIIO_BUILDER_LCMS2_TARGET_BRIDGE_END"
+_LCMS2_TARGET_BRIDGE_ANCHOR = (
+    "        if((_dng_lcms2_release OR _dng_lcms2_debug) "
+    "AND NOT TARGET dng_sdk::lcms2)"
+)
+_LCMS2_TARGET_BRIDGE_BLOCK = """\
+        # OIIO_BUILDER_LCMS2_TARGET_BRIDGE_BEGIN
+        # Preserve the dependency target so CMake selects a DLL's import
+        # library on Windows instead of copying its runtime location.
+        if(TARGET lcms2::lcms2 AND NOT TARGET dng_sdk::lcms2)
+            add_library(dng_sdk::lcms2 INTERFACE IMPORTED)
+            set_property(TARGET dng_sdk::lcms2 PROPERTY
+                INTERFACE_LINK_LIBRARIES lcms2::lcms2
+            )
+        elseif((_dng_lcms2_release OR _dng_lcms2_debug) AND NOT TARGET dng_sdk::lcms2)
+            add_library(dng_sdk::lcms2 UNKNOWN IMPORTED)
+            if(_dng_lcms2_release)
+                set_target_properties(dng_sdk::lcms2 PROPERTIES
+                    IMPORTED_LOCATION "${_dng_lcms2_release}"
+                    IMPORTED_LOCATION_RELEASE "${_dng_lcms2_release}"
+                    IMPORTED_LOCATION_MINSIZEREL "${_dng_lcms2_release}"
+                    IMPORTED_LOCATION_RELWITHDEBINFO "${_dng_lcms2_release}"
+                )
+            endif()
+            if(_dng_lcms2_debug)
+                set_target_properties(dng_sdk::lcms2 PROPERTIES IMPORTED_LOCATION_DEBUG "${_dng_lcms2_debug}")
+            endif()
+        endif()
+        # OIIO_BUILDER_LCMS2_TARGET_BRIDGE_END
+"""
+
+
+def _patch_lcms2_target_bridge(text: str) -> str:
+    """Keep lcms2 as a target when available; retain path fallback otherwise."""
+    lines = text.splitlines()
+    begin = next(
+        (idx for idx, line in enumerate(lines) if _LCMS2_TARGET_BRIDGE_BEGIN in line),
+        None,
+    )
+    replacement = _LCMS2_TARGET_BRIDGE_BLOCK.rstrip("\n").splitlines()
+    if begin is not None:
+        end = next(
+            (
+                idx
+                for idx in range(begin + 1, len(lines))
+                if _LCMS2_TARGET_BRIDGE_END in lines[idx]
+            ),
+            None,
+        )
+        if end is None:
+            return text
+        lines[begin : end + 1] = replacement
+        return "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+
+    begin = next(
+        (idx for idx, line in enumerate(lines) if line == _LCMS2_TARGET_BRIDGE_ANCHOR),
+        None,
+    )
+    if begin is None:
+        return text
+
+    depth = 0
+    end = None
+    for idx in range(begin, len(lines)):
+        stripped = lines[idx].strip()
+        if stripped.startswith("if("):
+            depth += 1
+        elif stripped.startswith("endif("):
+            depth -= 1
+            if depth == 0:
+                end = idx
+                break
+    if end is None:
+        return text
+
+    lines[begin : end + 1] = replacement
+    return "\n".join(lines) + ("\n" if text.endswith("\n") else "")
 
 
 def enabled(builder, _repo) -> bool:
@@ -769,6 +849,11 @@ endfunction()
                 dng_lines[insert_at:insert_at] = fallback_block
                 dng_config_text = "\n".join(dng_lines) + "\n"
                 dng_config_changed = True
+
+        bridged_dng_config_text = _patch_lcms2_target_bridge(dng_config_text)
+        if bridged_dng_config_text != dng_config_text:
+            dng_config_text = bridged_dng_config_text
+            dng_config_changed = True
 
         if dng_config_changed:
             dng_config_in.write_text(dng_config_text, encoding="utf-8")

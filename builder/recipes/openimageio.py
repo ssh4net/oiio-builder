@@ -6,10 +6,11 @@ import shutil
 from pathlib import Path
 
 from .policy import ffmpeg_enabled, imageio_enabled, windows_use_ffmpeg_from_prefix
+from ..license_policy import LGPL_DYNAMIC
 from ..tooling import resolve_openmp_root
 
 
-STAMP_REVISION = "13"
+STAMP_REVISION = "15"
 
 
 def enabled(builder, _repo) -> bool:
@@ -173,6 +174,43 @@ def _patch_msvc_python_module_link(src_dir: Path) -> None:
         raise RuntimeError(f"OpenImageIO python module patch no longer matches upstream source: {pythonutils}")
 
     pythonutils.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+
+def _patch_giflib_windows_macro_leak(src_dir: Path) -> None:
+    gifinput = src_dir / "src" / "gif.imageio" / "gifinput.cpp"
+    if not gifinput.exists():
+        raise RuntimeError(f"OpenImageIO giflib macro patch target is missing: {gifinput}")
+
+    text = gifinput.read_text(encoding="utf-8", errors="replace")
+    marker = "// OIIO_BUILDER_GIFLIB_WIN32_MACROS_BEGIN"
+    if marker in text:
+        return
+
+    include = re.search(
+        r"^#include <gif_lib\.h>\r?\n(?:#undef reallocarray\r?\n)?",
+        text,
+        re.MULTILINE,
+    )
+    if include is None:
+        raise RuntimeError(f"OpenImageIO giflib macro patch no longer matches upstream source: {gifinput}")
+
+    # giflib's Windows compatibility header maps generic POSIX function names
+    # to MSVC CRT names. Those aliases are needed while building giflib, but
+    # must not rewrite OpenImageIO class members declared after gif_lib.h.
+    block = """\
+
+#ifdef _WIN32
+// OIIO_BUILDER_GIFLIB_WIN32_MACROS_BEGIN
+#    undef open
+#    undef close
+#    undef fdopen
+#    undef unlink
+#    undef strdup
+#    undef strtok_r
+// OIIO_BUILDER_GIFLIB_WIN32_MACROS_END
+#endif
+"""
+    gifinput.write_text(text[: include.end()] + block + text[include.end() :], encoding="utf-8")
 
 
 def _patch_static_robinmap_config(src_dir: Path) -> None:
@@ -364,7 +402,13 @@ def _ffmpeg_args(
                     f"lib{stem}{debug_postfix}.lib",
                 ]
         else:
-            candidate_names = [f"lib{stem}.a", f"lib{stem}.so", f"lib{stem}.dylib"]
+            lgpl_dynamic = builder.license_profile is not None and builder.license_profile.name == LGPL_DYNAMIC
+            if lgpl_dynamic:
+                candidate_names = [f"lib{stem}.so", f"lib{stem}.dylib"]
+            elif cfg.static_default:
+                candidate_names = [f"lib{stem}.a", f"lib{stem}.so", f"lib{stem}.dylib"]
+            else:
+                candidate_names = [f"lib{stem}.so", f"lib{stem}.dylib", f"lib{stem}.a"]
 
         for directory in ffmpeg_lib_dirs:
             for name in candidate_names:
@@ -440,6 +484,16 @@ def _ffmpeg_args(
         and ffmpeg_util is not None
         and ffmpeg_swscale is not None
     )
+    lgpl_dynamic = builder.license_profile is not None and builder.license_profile.name == LGPL_DYNAMIC
+    if complete and lgpl_dynamic and builder.platform.os == "windows":
+        dll_dir = ctx.install_prefix / "bin"
+        required_dlls = ("avcodec", "avformat", "avutil", "swscale")
+        missing_dlls = [stem for stem in required_dlls if not any(dll_dir.glob(f"*{stem}*.dll"))]
+        if missing_dlls:
+            raise RuntimeError(
+                "lgpl-dynamic found FFmpeg import/static libraries but no matching shared DLLs for: "
+                f"{', '.join(missing_dlls)}. Install an LGPL-only shared FFmpeg build into the profile prefix."
+            )
     if builder.platform.os == "windows" and emit_missing_note and not complete:
         missing_libs: list[str] = []
         if ffmpeg_codec is None:
@@ -457,7 +511,8 @@ def _ffmpeg_args(
         if ffmpeg_include is None:
             message += " (headers not found)"
         message += (
-            f"; searched: {searched}. Install MSVC-built static FFmpeg into the build prefix ({ctx.install_prefix}), "
+            f"; searched: {searched}. Install an MSVC-built {'shared' if lgpl_dynamic else 'static'} FFmpeg "
+            f"into the build prefix ({ctx.install_prefix}), "
             "or define FFMPEG_LIBAV* overrides that point inside it."
         )
         print(message, flush=True)
@@ -1275,6 +1330,8 @@ def patch_source(builder, src_dir: Path) -> None:
     if not builder.dry_run:
         _patch_compiled_fmt_option(src_dir)
         _patch_msvc_python_module_link(src_dir)
+        if builder.platform.os == "windows":
+            _patch_giflib_windows_macro_leak(src_dir)
         _patch_static_robinmap_config(src_dir)
 
     cfg = builder.config.global_cfg

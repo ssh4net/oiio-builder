@@ -5,7 +5,10 @@ from pathlib import Path
 from .policy import ocio_enabled
 
 
-STAMP_REVISION = "1"
+STAMP_REVISION = "2"
+
+_PYTHON_SUFFIX_FIX_BEGIN = "# OIIO_BUILDER_PYTHON_SUFFIX_FIX_BEGIN"
+_PYTHON_SUFFIX_FIX_END = "# OIIO_BUILDER_PYTHON_SUFFIX_FIX_END"
 
 
 def enabled(builder, _repo) -> bool:
@@ -78,20 +81,81 @@ def pre_build(builder, _repo, ctx, _env) -> None:
     builder._ensure_pystring_package(ctx.install_prefix, ctx.build_type)
 
 
-def patch_source(_builder, src_dir: Path) -> None:
+def post_install(builder, install_prefix: Path, build_type: str) -> None:
+    if builder.platform.os != "windows":
+        return
+
+    debug_postfix = str(builder.config.global_cfg.windows.get("debug_postfix", "d"))
+    package_dir = install_prefix / "lib" / "site-packages" / "PyOpenColorIO"
+    if build_type == "Debug":
+        legacy_module = package_dir / f"PyOpenColorIO{debug_postfix}.pyd"
+        abi_modules = list(package_dir.glob(f"PyOpenColorIO_{debug_postfix}.*.pyd"))
+    else:
+        legacy_module = package_dir / "PyOpenColorIO.pyd"
+        abi_modules = list(package_dir.glob("PyOpenColorIO.*.pyd"))
+
+    if abi_modules and legacy_module.is_file():
+        legacy_module.unlink()
+
+
+def patch_source(builder, src_dir: Path) -> None:
     # clang-cl defines _MSC_VER but doesn't provide MSVC's SVML intrinsic
     # `_mm_pow_ps()` (used by OCIO for a precise SIMD pow()).
     # Gate this path to MSVC-only by excluding clang.
     cpu_file = src_dir / "src" / "OpenColorIO" / "ops" / "fixedfunction" / "FixedFunctionOpCPU.cpp"
-    if not cpu_file.exists():
+    if cpu_file.exists():
+        original = cpu_file.read_text(encoding="utf-8", errors="replace")
+        text = original
+
+        needle = "#if (_MSC_VER >= 1920) && (OCIO_USE_AVX)"
+        replacement = "#if (_MSC_VER >= 1920) && !defined(__clang__) && (OCIO_USE_AVX)"
+        text = text.replace(needle, replacement)
+
+        if text != original:
+            cpu_file.write_text(text, encoding="utf-8")
+
+    if builder.platform.os != "windows":
         return
 
-    original = cpu_file.read_text(encoding="utf-8", errors="replace")
-    text = original
+    python_cmake = src_dir / "src" / "bindings" / "python" / "CMakeLists.txt"
+    if not python_cmake.exists():
+        return
 
-    needle = "#if (_MSC_VER >= 1920) && (OCIO_USE_AVX)"
-    replacement = "#if (_MSC_VER >= 1920) && !defined(__clang__) && (OCIO_USE_AVX)"
-    text = text.replace(needle, replacement)
+    original = python_cmake.read_text(encoding="utf-8", errors="replace")
+    if _PYTHON_SUFFIX_FIX_BEGIN in original:
+        return
 
-    if text != original:
-        cpu_file.write_text(text, encoding="utf-8")
+    windows_suffix_block = """\
+if(WIN32)
+\t# Windows uses .pyd extension for python modules
+\tset_target_properties(PyOpenColorIO PROPERTIES
+\t\tSUFFIX ".pyd"
+\t)
+endif()
+"""
+    if windows_suffix_block not in original:
+        raise RuntimeError(f"Could not locate PyOpenColorIO Windows suffix block in: {python_cmake}")
+
+    suffix_fix = f"""\
+{windows_suffix_block}
+{_PYTHON_SUFFIX_FIX_BEGIN}
+if(WIN32)
+\texecute_process(
+\t\tCOMMAND "${{Python_EXECUTABLE}}" -c
+\t\t\t"import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX') or '.pyd')"
+\t\tRESULT_VARIABLE _pyocio_extension_suffix_result
+\t\tOUTPUT_VARIABLE _pyocio_extension_suffix
+\t\tOUTPUT_STRIP_TRAILING_WHITESPACE
+\t\tERROR_QUIET
+\t)
+\tif(NOT _pyocio_extension_suffix_result EQUAL 0 OR NOT _pyocio_extension_suffix)
+\t\tset(_pyocio_extension_suffix ".pyd")
+\tendif()
+\tset_target_properties(PyOpenColorIO PROPERTIES
+\t\tSUFFIX "${{_pyocio_extension_suffix}}"
+\t\tDEBUG_POSTFIX ""
+\t)
+endif()
+{_PYTHON_SUFFIX_FIX_END}
+"""
+    python_cmake.write_text(original.replace(windows_suffix_block, suffix_fix, 1), encoding="utf-8")

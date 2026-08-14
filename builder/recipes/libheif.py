@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-STAMP_REVISION = "1"
+STAMP_REVISION = "2"
 
 from .policy import imageio_enabled
 
@@ -93,12 +93,16 @@ def patch_source(_builder, src_dir: Path) -> None:
     text = original_text
 
     marker = "# oiio-builder: windows static deps"
+    old_guard = f"            {marker}\n            if (WIN32)\n"
+    new_guard = f"            {marker}\n            if (WIN32 AND NOT BUILD_SHARED_LIBS)\n"
+    if old_guard in text:
+        text = text.replace(old_guard, new_guard, 1)
     if marker not in text:
         needle = "target_link_libraries(heif PRIVATE ${${varName}_LIBRARIES})"
         insert = (
             f"{needle}\n"
             f"            {marker}\n"
-            "            if (WIN32)\n"
+            "            if (WIN32 AND NOT BUILD_SHARED_LIBS)\n"
             "                if (\"${optionName}\" STREQUAL \"LIBDE265\")\n"
             "                    target_compile_definitions(heif PRIVATE LIBDE265_STATIC_BUILD)\n"
             "                elseif (\"${optionName}\" STREQUAL \"KVAZAAR\")\n"

@@ -89,7 +89,7 @@ def stage_export(builder: Any, ctx: Any, env: dict[str, str], zip_path: Path, st
     return _find_export_root(export_dir) / "installed"
 
 
-def find_triplet(installed_dir: Path, marker_rel: str, zip_path: Path) -> Path:
+def find_triplet(installed_dir: Path, marker_rel: str, zip_path: Path, *, prefer_static: bool = True) -> Path:
     marker_parts = Path(marker_rel).parts
     triplet_candidates = [
         p
@@ -102,14 +102,15 @@ def find_triplet(installed_dir: Path, marker_rel: str, zip_path: Path) -> Path:
     def _triplet_score(path: Path) -> tuple[int, str]:
         name = path.name.lower()
         score = 0
-        if "static" in name:
-            score -= 10
+        is_static = "static" in name
+        if is_static == prefer_static:
+            score += 10
         bin_dir = path / "bin"
-        if bin_dir.is_dir() and any(bin_dir.glob("*.dll")):
+        if not prefer_static and bin_dir.is_dir() and any(bin_dir.glob("*.dll")):
             score += 5
         return score, name
 
-    triplet_candidates.sort(key=_triplet_score)
+    triplet_candidates.sort(key=_triplet_score, reverse=True)
     return triplet_candidates[0]
 
 
@@ -137,11 +138,11 @@ def copy_include_tree(include_src: Path, include_dst: Path) -> None:
             shutil.copy2(item, dest)
 
 
-def copy_bin_payload(bin_src: Path, bin_dst: Path, package: str) -> None:
+def copy_bin_payload(bin_src: Path, bin_dst: Path, package: str, *, prefer_static: bool = True) -> None:
     if not bin_src.is_dir():
         return
     bin_dst.mkdir(parents=True, exist_ok=True)
-    if any(bin_src.glob("*.dll")):
+    if prefer_static and any(bin_src.glob("*.dll")):
         print(f"[note] {package} export contains DLLs; prefer exporting a *-static triplet for a fully static prefix", flush=True)
     for item in bin_src.iterdir():
         if item.is_file() and item.suffix.lower() in {".dll", ".pdb", ".exe"}:

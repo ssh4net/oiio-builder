@@ -104,6 +104,12 @@ def _autotools_args(builder: Any, repo: Any) -> list[str]:
     return recipe_registry.autotools_args(repo.name, builder, repo) or []
 
 
+def _autotools_linkage_args(builder: Any) -> list[str]:
+    if builder.config.global_cfg.static_default:
+        return ["--disable-shared", "--enable-static"]
+    return ["--enable-shared", "--disable-static"]
+
+
 def cmake_common_args(builder: Any, repo: Any, ctx: Any) -> list[str]:
     cfg = builder.config.global_cfg
     args: list[str] = [
@@ -114,7 +120,7 @@ def cmake_common_args(builder: Any, repo: Any, ctx: Any) -> list[str]:
         f"-DCMAKE_LIBRARY_PATH={builder._cmake_path_arg(ctx.install_prefix / 'lib')}",
         f"-DCMAKE_CXX_STANDARD={repo.cxx_standard or cfg.cxx_standard}",
         f"-DCMAKE_CXX_EXTENSIONS={'ON' if cfg.cxx_extensions else 'OFF'}",
-        "-DPKG_CONFIG_USE_STATIC_LIBS=ON",
+        f"-DPKG_CONFIG_USE_STATIC_LIBS={'ON' if cfg.static_default else 'OFF'}",
     ]
     if builder._ccache_path:
         args.append(f"-DCMAKE_C_COMPILER_LAUNCHER={builder._cmake_path_arg(builder._ccache_path)}")
@@ -362,7 +368,7 @@ def _build_autotools(builder: Any, ctx: Any, env: dict[str, str]) -> None:
         )
     prefix_arg = ctx.install_prefix.as_posix() if use_msys2_autotools else str(ctx.install_prefix)
     env = _autotools_build_env(builder, ctx, env)
-    configure_args = [f"--prefix={prefix_arg}", "--disable-shared", "--enable-static", *_autotools_args(builder, repo)]
+    configure_args = [f"--prefix={prefix_arg}", *_autotools_linkage_args(builder), *_autotools_args(builder, repo)]
     cmd = _autotools_configure_command(builder, configure, configure_args, env)
     print_cmd("configure command", cmd)
     banner(f"{repo.name} ({ctx.build_type}) - configure")
@@ -576,7 +582,11 @@ def _autotools_install_only(builder: Any, ctx: Any, env: dict[str, str]) -> bool
         return False
     prefix_arg = ctx.install_prefix.as_posix() if use_msys2_autotools else str(ctx.install_prefix)
     install_env = _autotools_build_env(builder, ctx, env)
-    configure_args = [f"--prefix={prefix_arg}", "--disable-shared", "--enable-static", *_autotools_args(builder, ctx.repo)]
+    configure_args = [
+        f"--prefix={prefix_arg}",
+        *_autotools_linkage_args(builder),
+        *_autotools_args(builder, ctx.repo),
+    ]
     cmd = _autotools_configure_command(builder, configure, configure_args, install_env)
     print_cmd("configure command", cmd)
     banner(f"{ctx.repo.name} ({ctx.build_type}) - configure")

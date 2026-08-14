@@ -62,7 +62,7 @@ This document captures global and per-platform requirements for the cross-platfo
 ## License-Aware Prefix Plan
 
 - Implemented first profile: `nongpl-static`. It is a separate, PIC static prefix that rejects GPL and LGPL managed artifacts; see [license_aware_builds.md](license_aware_builds.md).
-- Planned `lgpl-dynamic`: reject GPL and use normal shared LGPL endpoints with the required LGPL source/notices.
+- Implemented `lgpl-dynamic`: reject GPL and use normal shared LGPL endpoints with the required LGPL source/notices. FFmpeg is kept LGPL-only and libheif cannot rediscover x265.
 - Planned `lgpl-mixed`: retain static third-party libraries where appropriate, but contain each LGPL static combination in a dynamically replaceable, open-source OIIO endpoint. The primary design is OIIO image-I/O plugins with `EMBEDPLUGINS=OFF`.
 - Planned `gpl-*`: permit GPL artifacts only for GPL-compatible open-source distribution, while flagging incompatible terms for review.
 

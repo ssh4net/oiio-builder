@@ -13,7 +13,7 @@ from .config import Config, _expand_path
 from .core import Builder
 from .platform import PlatformInfo
 from .recipes.policy import ffmpeg_enabled, windows_ffmpeg_native_build_enabled
-from .tooling import normalize_override as _normalize_override, resolve_nasm_executable
+from .tooling import normalize_override as _normalize_override, resolve_executable_candidate, resolve_nasm_executable
 from .vcpkg_import import resolve_export_zip
 
 _PREFLIGHT_REPO_URLS: dict[str, str] = {
@@ -296,6 +296,9 @@ def _tool_checks(platform: PlatformInfo, env: dict[str, str], *, skip_ninja: boo
     doxygen_override = _normalize_override(env.get("DOXYGEN_EXECUTABLE"))
     pkg_override = _normalize_override(env.get("PKG_CONFIG_EXECUTABLE") or env.get("PKG_CONFIG"))
     nasm_override = resolve_nasm_executable(env, platform_os=platform.os)
+    perl_override = _normalize_override(
+        env.get("OPENSSL_PERL") or env.get("PERL_EXECUTABLE") or env.get("PERL")
+    )
     python_override = _normalize_override(
         env.get("Python3_EXECUTABLE")
         or env.get("PYTHON3_EXECUTABLE")
@@ -312,6 +315,12 @@ def _tool_checks(platform: PlatformInfo, env: dict[str, str], *, skip_ninja: boo
         ToolCheck("pkg-config", [pkg_override] if pkg_override else ["pkg-config", "pkgconf"], True),
         ToolCheck("doxygen", [doxygen_override] if doxygen_override else ["doxygen"], True),
         ToolCheck("sphinx-build", ["sphinx-build", "sphinx-build-3"], True),
+        ToolCheck(
+            "perl",
+            [perl_override] if perl_override else (["perl.exe", "perl"] if platform.os == "windows" else ["perl"]),
+            True,
+            "OpenSSL source build",
+        ),
     ]
     if not skip_ninja:
         checks.insert(2, ToolCheck("ninja", ["ninja"], True))
@@ -455,6 +464,62 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
             lines.append("  mt: missing (Windows SDK manifest tool)")
         if not rc_path or not mt_path:
             lines.append("  hint: install the Visual Studio C++ workload with the Windows 10/11 SDK.")
+        if any(repo.name == "sqlite" for repo in builder.repos):
+            lines.append("SQLite native tools:")
+            sqlite_build_type = config.global_cfg.build_types[0] if config.global_cfg.build_types else "Release"
+            sqlite_prefix = builder.prefixes.get(sqlite_build_type) or builder.prefixes.get("Release")
+            sqlite_env = builder._env_for_build(sqlite_build_type, sqlite_prefix or config.global_cfg.repo_root)
+            sqlite_path = sqlite_env.get("PATH") or os.environ.get("PATH", "")
+            sqlite_tools = ["nmake.exe", "link.exe"]
+            if config.global_cfg.static_default:
+                sqlite_tools.append("lib.exe")
+            for tool_name in sqlite_tools:
+                tool_path = shutil.which(tool_name, path=sqlite_path)
+                label = Path(tool_name).stem
+                if tool_path:
+                    lines.append(f"  {label}: ok ({tool_path})")
+                else:
+                    record_missing_tool(f"{tool_name}: required by SQLite Makefile.msc")
+                    lines.append(f"  {label}: missing (required by SQLite Makefile.msc)")
+            if any(shutil.which(name, path=sqlite_path) is None for name in sqlite_tools):
+                lines.append("  hint: run from a Visual Studio Native Tools prompt or install the C++ workload.")
+        if any(repo.name == "openssl" for repo in builder.repos):
+            lines.append("OpenSSL native tools:")
+            openssl_build_type = config.global_cfg.build_types[0] if config.global_cfg.build_types else "Release"
+            openssl_prefix = builder.prefixes.get(openssl_build_type) or builder.prefixes.get("Release")
+            openssl_env = builder._env_for_build(openssl_build_type, openssl_prefix or config.global_cfg.repo_root)
+            openssl_path = openssl_env.get("PATH") or os.environ.get("PATH", "")
+            perl_override = _normalize_override(
+                openssl_env.get("OPENSSL_PERL")
+                or openssl_env.get("PERL_EXECUTABLE")
+                or openssl_env.get("PERL")
+            )
+            perl_candidates = [perl_override] if perl_override else ["perl.exe", "perl"]
+            perl_path = None
+            for candidate in perl_candidates:
+                if not candidate:
+                    continue
+                perl_path = resolve_executable_candidate(candidate, search_path=openssl_path)
+                if perl_path:
+                    break
+            nmake_path = resolve_executable_candidate("nmake.exe", search_path=openssl_path)
+            nasm_path = resolve_nasm_executable(openssl_env, platform_os="windows")
+            for label, tool_path, requirement in (
+                ("perl", perl_path, "Strawberry Perl is recommended"),
+                ("nmake", nmake_path, "Visual Studio C++ workload"),
+                ("nasm", nasm_path, "required for x86-64 assembly"),
+            ):
+                if tool_path or (label == "nasm" and platform.arch != "x86_64"):
+                    detail = tool_path or "not required on this architecture"
+                    lines.append(f"  {label}: ok ({detail})")
+                else:
+                    record_missing_tool(f"{label}: OpenSSL source build ({requirement})")
+                    lines.append(f"  {label}: missing ({requirement})")
+            if not perl_path or not nmake_path or (platform.arch == "x86_64" and not nasm_path):
+                lines.append(
+                    "  hint: use a Visual Studio Native Tools prompt; install Strawberry Perl and NASM, "
+                    "or set PERL_EXECUTABLE/NASM_EXECUTABLE in [windows.env]."
+                )
         if builder._windows_ninja_generator_active():
             lines.append("Windows Ninja:")
             try:
@@ -809,16 +874,6 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
             "vcpkg-export-libiconv.zip",
             ("LIBICONV_VCPKG_EXPORT_ZIP", "VCPKG_LIBICONV_EXPORT_ZIP"),
             "vcpkg-export-libiconv*.zip",
-        ),
-        "openssl": (
-            "vcpkg-export-openssl.zip",
-            ("OPENSSL_VCPKG_EXPORT_ZIP", "VCPKG_OPENSSL_EXPORT_ZIP"),
-            "vcpkg-export-openssl*.zip",
-        ),
-        "sqlite": (
-            "vcpkg-export-sqlite.zip",
-            ("SQLITE_VCPKG_EXPORT_ZIP", "VCPKG_SQLITE_EXPORT_ZIP", "SQLITE3_VCPKG_EXPORT_ZIP", "VCPKG_SQLITE3_EXPORT_ZIP"),
-            "vcpkg-export-sqlite*.zip",
         ),
         "libvpx": (
             "vcpkg-export-libvpx.zip",

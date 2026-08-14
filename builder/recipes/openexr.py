@@ -4,7 +4,7 @@ import re
 
 from .policy import exr_enabled
 
-STAMP_REVISION = "3"
+STAMP_REVISION = "5"
 
 
 def enabled(builder, _repo) -> bool:
@@ -80,6 +80,19 @@ def patch_source(builder, src_dir) -> None:
         if begin_simd not in text:
             openexr_cmake.write_text(text + "\n" + simd_block_openexr, encoding="utf-8")
 
+    # OpenEXR 4 declares KeyCode::operator== without IMF_EXPORT, so it is
+    # omitted from Windows DLL import libraries even though PyOpenEXR uses it.
+    keycode_header = src_dir / "src" / "lib" / "OpenEXR" / "ImfKeyCode.h"
+    if keycode_header.exists():
+        text = keycode_header.read_text(encoding="utf-8", errors="replace")
+        declaration = "    bool operator== (const KeyCode& other) const;"
+        exported_declaration = f"    IMF_EXPORT\n{declaration}"
+        if exported_declaration not in text and declaration in text:
+            keycode_header.write_text(
+                text.replace(declaration, exported_declaration, 1),
+                encoding="utf-8",
+            )
+
     cmake_file = src_dir / "src" / "wrappers" / "python" / "CMakeLists.txt"
     if not cmake_file.exists():
         return
@@ -88,14 +101,7 @@ def patch_source(builder, src_dir) -> None:
     end = "# OIIO_BUILDER_PYOPENEXR_LINK_FIX_END"
     replacement = (
         "# OIIO_BUILDER_PYOPENEXR_LINK_FIX_BEGIN\n"
-        "target_link_libraries (PyOpenEXR PRIVATE OpenEXR::OpenEXR pybind11::headers)\n"
-        "if(TARGET Python3::Module)\n"
-        "  target_link_libraries (PyOpenEXR PRIVATE Python3::Module)\n"
-        "elseif(TARGET Python3::Python)\n"
-        "  target_link_libraries (PyOpenEXR PRIVATE Python3::Python)\n"
-        "else()\n"
-        "  target_link_libraries (PyOpenEXR PRIVATE ${Python3_LIBRARIES})\n"
-        "endif()\n"
+        "target_link_libraries (PyOpenEXR PRIVATE OpenEXR::OpenEXR pybind11::module)\n"
         "# OIIO_BUILDER_PYOPENEXR_LINK_FIX_END"
     )
     if begin in text and end in text:

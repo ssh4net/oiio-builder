@@ -4,6 +4,7 @@ import subprocess
 import sys
 import _thread
 import threading
+from collections.abc import Iterable
 from pathlib import Path
 
 
@@ -114,6 +115,7 @@ def run(
     env: dict[str, str] | None = None,
     dry_run: bool = False,
     log_path: str | None = None,
+    unset_env: Iterable[str] | None = None,
 ) -> None:
     if dry_run:
         _locked_print(f"[dry-run] {format_cmd(cmd)}")
@@ -129,6 +131,15 @@ def run(
                 merged_env[key] = value
         else:
             merged_env.update(env)
+    if unset_env:
+        if os.name == "nt":
+            lowered = {name.lower() for name in unset_env}
+            for existing in list(merged_env):
+                if existing.lower() in lowered:
+                    merged_env.pop(existing, None)
+        else:
+            for name in unset_env:
+                merged_env.pop(name, None)
 
     if not log_path:
         subprocess.run(cmd, cwd=cwd, env=merged_env, check=True)

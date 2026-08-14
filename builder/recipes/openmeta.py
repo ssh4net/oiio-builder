@@ -5,7 +5,7 @@ def _dng_sdk_requested(builder) -> bool:
     return any(repo.name == "dng-sdk" for repo in builder.repos)
 
 
-def cmake_args(builder, _ctx) -> list[str]:
+def cmake_args(builder, ctx) -> list[str]:
     cfg = builder.config.global_cfg
 
     build_python = True
@@ -13,7 +13,10 @@ def cmake_args(builder, _ctx) -> list[str]:
     if builder.platform.os == "windows":
         wrappers_enabled, reason = builder._windows_python_wrappers_enabled()
         build_python = wrappers_enabled
-        build_wheel = wrappers_enabled
+        # Windows debug CPython cannot seed the isolated environment used by
+        # uv to build a wheel. Keep the directly usable Debug bindings, and
+        # generate the distributable wheel once from the Release build.
+        build_wheel = wrappers_enabled and ctx.build_type == "Release"
         note_attr = "_openmeta_python_note_printed"
         if not wrappers_enabled and not getattr(builder, note_attr, False):
             if reason == "forced-off":

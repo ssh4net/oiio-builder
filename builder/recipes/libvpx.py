@@ -62,7 +62,13 @@ def build(builder, ctx, env: dict[str, str]) -> None:
     if installed_dir is None:
         return
 
-    triplet_dir = find_triplet(installed_dir, "include/vpx/vpx_codec.h", zip_path)
+    static_linkage = bool(builder.config.global_cfg.static_default)
+    triplet_dir = find_triplet(
+        installed_dir,
+        "include/vpx/vpx_codec.h",
+        zip_path,
+        prefer_static=static_linkage,
+    )
     include_src = triplet_dir / "include"
     lib_src = triplet_dir / "lib"
     debug_lib_src = triplet_dir / "debug" / "lib"
@@ -105,7 +111,7 @@ def build(builder, ctx, env: dict[str, str]) -> None:
             if item.is_file() and item.suffix.lower() == ".pc":
                 shutil.copy2(item, pkgconfig_dst / item.name)
 
-    copy_bin_payload(bin_src, bin_dst, "libvpx")
+    copy_bin_payload(bin_src, bin_dst, "libvpx", prefer_static=static_linkage)
 
     release_name = vpx_release.name if vpx_release is not None else "vpx.lib"
     debug_name = add_debug_postfix(release_name, debug_postfix)

@@ -16,13 +16,13 @@ def autotools_args(_builder, _repo) -> list[str]:
     return ["--without-fastfloat", "--without-threaded"]
 
 
-def cmake_args(_builder, _ctx) -> list[str]:
-    # Little-CMS defaults to building BOTH shared and static libraries. For a
-    # static OpenImageIO prefix, build only static to avoid linking both
-    # variants into downstream targets (LNK2005/LNK1169).
+def cmake_args(builder, _ctx) -> list[str]:
+    # Little-CMS defaults to building BOTH variants. Build exactly the linkage
+    # selected by the prefix to avoid duplicate downstream links on Windows.
+    static_linkage = bool(builder.config.global_cfg.static_default)
     return [
-        "-DLCMS2_BUILD_SHARED=OFF",
-        "-DLCMS2_BUILD_STATIC=ON",
+        f"-DLCMS2_BUILD_SHARED={'OFF' if static_linkage else 'ON'}",
+        f"-DLCMS2_BUILD_STATIC={'ON' if static_linkage else 'OFF'}",
         "-DLCMS2_BUILD_TOOLS=OFF",
         "-DLCMS2_BUILD_TESTS=OFF",
         "-DLCMS2_BUILD_JPGICC=OFF",
@@ -34,7 +34,8 @@ def cmake_args(_builder, _ctx) -> list[str]:
 
 
 def post_install(builder, install_prefix, _build_type: str) -> None:
-    builder._prune_lcms2_shared_artifacts(install_prefix)
+    if builder.config.global_cfg.static_default:
+        builder._prune_lcms2_shared_artifacts(install_prefix)
     _remove_stale_windows_cmake_package(builder, install_prefix)
 
 

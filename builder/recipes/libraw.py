@@ -6,7 +6,7 @@ from .policy import imageio_enabled
 from ..tooling import resolve_openmp_root
 
 
-STAMP_REVISION = "8"
+STAMP_REVISION = "9"
 
 
 def enabled(builder, _repo) -> bool:

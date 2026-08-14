@@ -5,7 +5,6 @@ from pathlib import Path
 
 from .config import Config, RepoConfig, load_config
 from .git_ops import force_update_repo, resolve_repo_dir
-from .license_policy import apply_profile_defaults, normalize_profile
 from .core import Builder
 from .platform import detect_platform
 from .preflight import run_preflight
@@ -32,6 +31,7 @@ def main() -> int:
             "  uv run build.py --build-types Debug --only OpenImageIO\n"
             "  uv run build.py --build-types Debug --only OpenImageIO --no-ffmpeg\n"
             "  uv run build.py --profile nongpl-static --build-types Release\n"
+            "  uv run build.py --profile lgpl-dynamic --build-types Debug,Release\n"
             "  uv run build.py --build-types Debug --force\n"
             "  uv run build.py --build-types Debug --force-all\n"
             "  uv run build.py --skip libheif,libwebp\n"
@@ -106,7 +106,7 @@ def main() -> int:
     parser.add_argument("--print-prefixes", action="store_true", help="Print install prefixes and exit")
     parser.add_argument(
         "--profile",
-        help="License/linkage profile. Currently supported: nongpl-static",
+        help="License/linkage profile. Supported: nongpl-static, lgpl-dynamic",
     )
 
     args = parser.parse_args()
@@ -116,17 +116,13 @@ def main() -> int:
             parser.error("--force-update must be used alone; it cannot be combined with other options")
 
     config_path = Path(args.config).expanduser().resolve()
-    config = load_config(config_path)
+    config = load_config(config_path, profile_override=args.profile)
 
     if args.force_update:
         return _run_force_update(config)
 
     if args.build_types:
         config.build_types = _parse_build_types(args.build_types)
-
-    if args.profile is not None:
-        config.global_cfg.profile = normalize_profile(args.profile)
-        apply_profile_defaults(config.global_cfg)
 
     if args.jobs is not None:
         if args.jobs < 0:

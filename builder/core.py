@@ -406,7 +406,7 @@ class Builder:
             "policy": {
                 "cxx_standard": int(cfg.cxx_standard),
                 "cxx_extensions": bool(cfg.cxx_extensions),
-                "pkg_config_use_static_libs": True,
+                "pkg_config_use_static_libs": bool(cfg.static_default),
                 "use_lld": bool(cfg.use_lld),
             },
             "license": {
@@ -427,7 +427,7 @@ class Builder:
             "CMAKE_CXX_STANDARD": int(cfg.cxx_standard),
             "CMAKE_CXX_EXTENSIONS": bool(cfg.cxx_extensions),
             "CMAKE_PREFIX_PATH": self._cmake_path_arg(install_prefix),
-            "PKG_CONFIG_USE_STATIC_LIBS": True,
+            "PKG_CONFIG_USE_STATIC_LIBS": bool(cfg.static_default),
         }
         if self.platform.os == "windows":
             cache["CMAKE_POLICY_DEFAULT_CMP0091"] = "NEW"
@@ -3040,41 +3040,45 @@ endif()
         except OSError:
             return
 
+        original_text = text
         marker_begin = "# OIIO_BUILDER_LCMS2_LOCATION_FALLBACK_BEGIN"
         marker_end = "# OIIO_BUILDER_LCMS2_LOCATION_FALLBACK_END"
-        if marker_begin in text and marker_end in text:
+        if marker_begin not in text or marker_end not in text:
+            lines = text.splitlines()
+            insert_at = next(
+                (
+                    idx
+                    for idx, line in enumerate(lines)
+                    if line.strip()
+                    == "if((_dng_lcms2_release OR _dng_lcms2_debug) AND NOT TARGET dng_sdk::lcms2)"
+                ),
+                None,
+            )
+            if insert_at is not None:
+                block = [
+                    "        # OIIO_BUILDER_LCMS2_LOCATION_FALLBACK_BEGIN",
+                    "        # Some installs expose only one configuration for lcms2::lcms2.",
+                    "        # Mirror the available location so imported targets are valid",
+                    "        # across single- and multi-config generators.",
+                    "        if(NOT _dng_lcms2_release AND _dng_lcms2_debug)",
+                    "            set(_dng_lcms2_release \"${_dng_lcms2_debug}\")",
+                    "        endif()",
+                    "        if(NOT _dng_lcms2_debug AND _dng_lcms2_release)",
+                    "            set(_dng_lcms2_debug \"${_dng_lcms2_release}\")",
+                    "        endif()",
+                    "        # OIIO_BUILDER_LCMS2_LOCATION_FALLBACK_END",
+                    "",
+                ]
+                lines[insert_at:insert_at] = block
+                text = "\n".join(lines) + "\n"
+
+        from .recipes.dng_sdk import _patch_lcms2_target_bridge
+
+        text = _patch_lcms2_target_bridge(text)
+        if text == original_text:
             return
-
-        lines = text.splitlines()
-        insert_at = next(
-            (
-                idx
-                for idx, line in enumerate(lines)
-                if "if((_dng_lcms2_release OR _dng_lcms2_debug) AND NOT TARGET dng_sdk::lcms2)" in line
-            ),
-            None,
-        )
-        if insert_at is None:
-            return
-
-        block = [
-            "        # OIIO_BUILDER_LCMS2_LOCATION_FALLBACK_BEGIN",
-            "        # Some installs expose only one configuration for lcms2::lcms2.",
-            "        # Mirror the available location so imported targets are valid",
-            "        # across single- and multi-config generators.",
-            "        if(NOT _dng_lcms2_release AND _dng_lcms2_debug)",
-            "            set(_dng_lcms2_release \"${_dng_lcms2_debug}\")",
-            "        endif()",
-            "        if(NOT _dng_lcms2_debug AND _dng_lcms2_release)",
-            "            set(_dng_lcms2_debug \"${_dng_lcms2_release}\")",
-            "        endif()",
-            "        # OIIO_BUILDER_LCMS2_LOCATION_FALLBACK_END",
-            "",
-        ]
-        lines[insert_at:insert_at] = block
-
         try:
-            config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            config_path.write_text(text, encoding="utf-8")
         except OSError:
             return
 
@@ -4056,6 +4060,13 @@ endif()
 
     def _post_install_repo(self, repo: RepoConfig, install_prefix: Path, build_type: str) -> None:
         recipe_registry.post_install(repo.name, self, install_prefix, build_type)
+        if not self.dry_run:
+            license_policy.validate_installed_artifacts(
+                self.license_profile,
+                repo.name,
+                install_prefix,
+                self.platform.os,
+            )
 
     def _install_only(self, repo: RepoConfig, ctx: BuildContext, env: dict[str, str]) -> bool:
         return build_backends.install_only(self, ctx, env)
