@@ -127,6 +127,8 @@ Key options:
 - `build_dng_sdk`: build Adobe DNG SDK + XMP (via `DNG-CMake`) into the prefix (optional; disabled by default).
 - `build_imgui`, `build_imgui_test_engine`: fetch optional Dear ImGui docking/test-engine sources (source-only repos; disabled by default).
 - `build_libvpx`, `build_opus`, `build_libyuv`: build optional media dependencies for downstream RustDesk/RustAdmin/FFmpeg experiments (disabled by default).
+- `build_nlohmann_json`: build/install the optional header-only nlohmann/json CMake package for local consumers (disabled by default).
+  Consumers use `find_package(nlohmann_json CONFIG REQUIRED)` and link `nlohmann_json::nlohmann_json`.
 - `build_toml11`: build/install optional header-only toml11 CMake package for local consumers (disabled by default).
 - `windows.generator`: choose one of `msvc`, `ninja-msvc`, `msvc-clang-cl`, `ninja-clang-cl`.
 - `windows.vs_generator`: optional CMake generator name override for `windows.generator=msvc`/`msvc-clang-cl` (e.g. `Visual Studio 18 2026` with CMake 4.2+).

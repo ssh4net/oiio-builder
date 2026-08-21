@@ -1,0 +1,6 @@
+[cmake.cache]
+BUILD_TESTING = false
+JSON_BuildTests = false
+JSON_Install = true
+JSON_MultipleHeaders = true
+NLOHMANN_JSON_BUILD_MODULES = false

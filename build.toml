@@ -49,6 +49,7 @@ preferred_repo_order = [
   "harfbuzz",
   "robinmap",
   "rapidfuzz-cpp",
+  "nlohmann-json",
   "toml11",
   "eigen",
   "LBFGSpp",
@@ -111,6 +112,7 @@ build_imgui_test_engine = false
 build_libvpx = false
 build_opus = false
 build_libyuv = false
+build_nlohmann_json = false
 build_toml11 = false
 # Default Qt stack for OIIO iv + Designer:
 # qt6_modules = ["qtbase", "qttools", "qtsvg"]
@@ -526,6 +528,13 @@ name = "rapidfuzz-cpp"
 dir = "rapidfuzz-cpp"
 url = "https://github.com/rapidfuzz/rapidfuzz-cpp.git"
 build_system = "cmake"
+
+[[repos]]
+name = "nlohmann-json"
+dir = "json"
+url = "https://github.com/nlohmann/json.git"
+build_system = "cmake"
+optional = true
 
 [[repos]]
 name = "toml11"

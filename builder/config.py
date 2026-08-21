@@ -97,6 +97,7 @@ class GlobalConfig:
     build_libvpx: bool = False
     build_opus: bool = False
     build_libyuv: bool = False
+    build_nlohmann_json: bool = False
     build_toml11: bool = False
     qt6_modules: list[str] = field(default_factory=lambda: list(_DEFAULT_QT6_MODULES))
     build_dng_sdk: bool = False
@@ -272,6 +273,7 @@ def load_config(path: Path, *, profile_override: object = None) -> Config:
             "build_libvpx",
             "build_opus",
             "build_libyuv",
+            "build_nlohmann_json",
             "build_toml11",
             "qt6_modules",
             "build_dng_sdk",
@@ -463,6 +465,7 @@ def load_config(path: Path, *, profile_override: object = None) -> Config:
         build_libvpx=bool(global_data.get("build_libvpx", False)),
         build_opus=bool(global_data.get("build_opus", False)),
         build_libyuv=bool(global_data.get("build_libyuv", False)),
+        build_nlohmann_json=bool(global_data.get("build_nlohmann_json", False)),
         build_toml11=bool(global_data.get("build_toml11", False)),
         qt6_modules=qt6_modules,
         build_dng_sdk=bool(global_data.get("build_dng_sdk", False)),

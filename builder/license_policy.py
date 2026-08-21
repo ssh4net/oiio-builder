@@ -85,6 +85,7 @@ LICENSE_RECORDS: dict[str, LicenseRecord] = {
     "openexr": LicenseRecord("BSD-3-Clause", "allow"),
     "rapidobj": LicenseRecord("MIT", "allow"),
     "rapidfuzz-cpp": LicenseRecord("MIT", "allow"),
+    "nlohmann-json": LicenseRecord("MIT", "allow"),
     "toml11": LicenseRecord("MIT", "allow"),
     "miniply": LicenseRecord("MIT", "allow"),
     "OpenMeta": LicenseRecord("MIT", "allow"),
