@@ -10,7 +10,7 @@ from ..license_policy import LGPL_DYNAMIC
 from ..tooling import resolve_openmp_root
 
 
-STAMP_REVISION = "18"
+STAMP_REVISION = "19"
 
 
 def enabled(builder, _repo) -> bool:
@@ -224,6 +224,9 @@ def _patch_nanobind_find_package_range_check(src_dir: Path) -> None:
                           VERSION_MIN 3.0.0 VERSION_MAX 3.9
                           BUILD_LOCAL missing)
 """
+    current_upstream = """\
+    checked_find_package (nanobind CONFIG REQUIRED)
+"""
     new = """\
     checked_find_package (nanobind CONFIG REQUIRED
                           VERSION_MIN 2.8.0 VERSION_MAX 3.9
@@ -236,6 +239,16 @@ def _patch_nanobind_find_package_range_check(src_dir: Path) -> None:
         text = text.replace(old_upstream, new, 1)
     elif old_previous_patch in text:
         text = text.replace(old_previous_patch, new, 1)
+    # Newer OpenImageIO discovers nanobind's CMake package from the selected
+    # Python interpreter and performs an unversioned lookup. It does not pass
+    # a version range to find_package, so the range-check workaround is not
+    # applicable.
+    elif current_upstream in text:
+        return
+    elif "checked_find_package (nanobind" not in text:
+        # nanobind support was removed or changed to another discovery path.
+        # There is no range-based find_package invocation for this workaround.
+        return
     else:
         raise RuntimeError(f"OpenImageIO nanobind CMake patch no longer matches upstream source: {externalpackages}")
 
