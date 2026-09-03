@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 
-STAMP_REVISION = "1"
+STAMP_REVISION = "2"
 
 
 def _patch_wayland_protocol_fallback(src_dir: Path) -> None:
@@ -20,6 +20,15 @@ def _patch_wayland_protocol_fallback(src_dir: Path) -> None:
     old = """\
     set(NFD_WAYLAND_PROTOCOL_XDG_FOREIGN ${CMAKE_CURRENT_SOURCE_DIR}/../3ps/wayland-protocols/unstable/xdg-foreign/xdg-foreign-unstable-v1.xml)
 """
+    # NativeFileDialog Extended v1.3.0 and older releases do not implement
+    # the optional Wayland backend, so they have no protocol XML to patch.
+    # Only newer revisions that contain this bundled-protocol lookup need the
+    # system wayland-protocols fallback below.
+    if old not in text:
+        if "NFD_WAYLAND_PROTOCOL_XDG_FOREIGN" not in text:
+            return
+        raise RuntimeError(f"nativefiledialog-extended Wayland protocol patch no longer matches upstream source: {cmake_path}")
+
     new = """\
     set(NFD_WAYLAND_PROTOCOL_XDG_FOREIGN ${CMAKE_CURRENT_SOURCE_DIR}/../3ps/wayland-protocols/unstable/xdg-foreign/xdg-foreign-unstable-v1.xml)
     # OIIO_BUILDER_WAYLAND_PROTOCOLS_FALLBACK
@@ -33,9 +42,6 @@ def _patch_wayland_protocol_fallback(src_dir: Path) -> None:
       message(FATAL_ERROR "Wayland protocol xdg-foreign XML not found. Initialize the nativefiledialog-extended 3ps/wayland-protocols submodule, install wayland-protocols, or configure with -DNFD_WAYLAND=OFF.")
     endif()
 """
-    if old not in text:
-        raise RuntimeError(f"nativefiledialog-extended Wayland protocol patch no longer matches upstream source: {cmake_path}")
-
     cmake_path.write_text(text.replace(old, new, 1), encoding="utf-8")
 
 
