@@ -52,3 +52,4 @@ Repositories referenced by `build_MOS_stack_until_OIIO.sh` plus builder-only add
 | imgui_test_engine | imgui_test_engine | https://github.com/ocornut/imgui_test_engine.git | Optional source-only checkout |
 | sqlite | sqlite | https://github.com/sqlite/sqlite.git | Source-built with JSON, FTS5, RTree, Geopoly, and zlib-backed ZIP support; no ICU/Tcl runtime dependency |
 | OpenSSL | openssl | https://github.com/openssl/openssl.git | Source-built from the moving `openssl-4.0` branch; requires Perl and Make/nmake, plus NASM on x86-64 |
+| libsodium | libsodium | https://github.com/jedisct1/libsodium.git | Optional ISC-licensed crypto library; source-built from the moving `stable` branch |

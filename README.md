@@ -131,6 +131,8 @@ Key options:
 - `build_nlohmann_json`: build/install the optional header-only nlohmann/json CMake package for local consumers (disabled by default).
   Consumers use `find_package(nlohmann_json CONFIG REQUIRED)` and link `nlohmann_json::nlohmann_json`.
 - `build_toml11`: build/install optional header-only toml11 CMake package for local consumers (disabled by default).
+- `build_libsodium`: build/install optional libsodium from its moving `stable` branch (disabled by default).
+  Consumers use `find_package(sodium CONFIG REQUIRED)` and link `sodium::sodium`.
 - `windows.generator`: choose one of `msvc`, `ninja-msvc`, `msvc-clang-cl`, `ninja-clang-cl`.
 - `windows.vs_generator`: optional CMake generator name override for `windows.generator=msvc`/`msvc-clang-cl` (e.g. `Visual Studio 18 2026` with CMake 4.2+).
 - `windows.generator = "ninja-clang-cl"` prefers Visual Studio's bundled `clang-cl.exe`; use absolute `[global].cc` / `[global].cxx` paths to force a standalone LLVM install.
@@ -476,6 +478,29 @@ WSL/Linux requirements are `build-essential`, Perl, Make, and NASM on x86-64.
 A WSL run produces Linux libraries; it cannot produce the MSVC DLL/import-lib
 package. OpenSSL recommends an ext4 source/build tree rather than `/mnt/*` for
 speed and to avoid NTFS/WSL permission or line-ending failures.
+
+### libsodium (optional)
+
+Set `build_libsodium = true` under `[global]` to build the upstream moving
+`stable` branch. libsodium has no additional third-party dependencies and its
+ISC license is permitted by both implemented license profiles.
+
+```bash
+uv run build.py --build-types Debug,Release --only libsodium
+```
+
+Linux and macOS use the tracked upstream Autotools release files. Native
+Windows uses the upstream Visual Studio 2022 solution and therefore requires
+`msbuild.exe` and `cl.exe`. Static Windows builds use the static MSVC runtime;
+DLL builds use the dynamic MSVC runtime. The upstream VS2022 solution has no
+ASAN configuration, so exclude libsodium from native Windows ASAN runs.
+
+The installed CMake package is relocatable:
+
+```cmake
+find_package(sodium CONFIG REQUIRED)
+target_link_libraries(my_target PRIVATE sodium::sodium)
+```
 
 Linux notes
 - The default Qt build uses XCB (`-qpa xcb`).

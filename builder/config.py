@@ -28,7 +28,7 @@ class RepoConfig:
     dir_candidates: list[str] = field(default_factory=list)
     url: str | None = None
     enabled: bool = True
-    build_system: str | None = None  # cmake, autotools, ffmpeg, libiconv, libvpx, openssl, sqlite, cpython
+    build_system: str | None = None  # cmake, autotools, ffmpeg, libiconv, libvpx, openssl, libsodium, sqlite, cpython
     ref: str | None = None
     ref_type: str = "branch"  # branch, tag, commit
     deps: list[str] = field(default_factory=list)
@@ -100,6 +100,7 @@ class GlobalConfig:
     build_libyuv: bool = False
     build_nlohmann_json: bool = False
     build_toml11: bool = False
+    build_libsodium: bool = False
     qt6_modules: list[str] = field(default_factory=lambda: list(_DEFAULT_QT6_MODULES))
     build_dng_sdk: bool = False
     openimageio_patch_png_include: bool = True
@@ -288,6 +289,7 @@ def load_config(
             "build_libyuv",
             "build_nlohmann_json",
             "build_toml11",
+            "build_libsodium",
             "qt6_modules",
             "build_dng_sdk",
             "openimageio_patch_png_include",
@@ -481,6 +483,7 @@ def load_config(
         build_libyuv=bool(global_data.get("build_libyuv", False)),
         build_nlohmann_json=bool(global_data.get("build_nlohmann_json", False)),
         build_toml11=bool(global_data.get("build_toml11", False)),
+        build_libsodium=bool(global_data.get("build_libsodium", False)),
         qt6_modules=qt6_modules,
         build_dng_sdk=bool(global_data.get("build_dng_sdk", False)),
         openimageio_patch_png_include=bool(global_data.get("openimageio_patch_png_include", True)),

@@ -40,6 +40,7 @@ LICENSE_RECORDS: dict[str, LicenseRecord] = {
     "zlib-ng": LicenseRecord("Zlib", "allow"),
     "pcre2": LicenseRecord("BSD-3-Clause", "allow"),
     "openssl": LicenseRecord("Apache-2.0", "allow"),
+    "libsodium": LicenseRecord("ISC", "allow"),
     "Qt6": LicenseRecord("LGPL-3.0-or-later OR GPL-3.0-only OR commercial", "lgpl", "The LGPL-3.0-or-later option is selected only for a shared Qt build; GPL-only modules and tools remain outside the profile."),
     "xz": LicenseRecord("0BSD for liblzma", "allow-with-constraint", "Only liblzma is installed; GPL command-line tools and scripts are disabled."),
     "libdeflate": LicenseRecord("MIT", "allow"),

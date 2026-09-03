@@ -31,6 +31,7 @@ preferred_repo_order = [
   "spdlog",
   "zlib-ng",
   "openssl",
+  "libsodium",
   "libdeflate",
   "xz",
   "zstd",
@@ -114,6 +115,7 @@ build_opus = false
 build_libyuv = false
 build_nlohmann_json = false
 build_toml11 = false
+build_libsodium = false
 # Default Qt stack for OIIO iv + Designer:
 # qt6_modules = ["qtbase", "qttools", "qtsvg"]
 # Example expanded stack:
@@ -217,6 +219,15 @@ ref_type = "branch"
 build_system = "openssl"
 
 [[repos]]
+name = "libsodium"
+dir = "libsodium"
+url = "https://github.com/jedisct1/libsodium.git"
+ref = "stable"
+ref_type = "branch"
+build_system = "libsodium"
+optional = true
+
+[[repos]]
 name = "Qt6"
 dir = "Qt6"
 dir_candidates = ["Qt6", "qt6", "qt", "Qt", "qt5", "Qt5"]
@@ -287,6 +298,7 @@ name = "libjpeg-turbo"
 dir = "libjpeg-turbo"
 url = "https://github.com/libjpeg-turbo/libjpeg-turbo"
 build_system = "cmake"
+deps = ["zlib-ng"]
 
 [[repos]]
 name = "libpng"

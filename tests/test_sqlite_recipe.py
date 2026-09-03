@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+from builder.core import Builder
 from builder.recipes import sqlite
 
 
@@ -58,15 +59,23 @@ class SQLiteRecipeTests(unittest.TestCase):
         self.assertIn("#include <sqlite3.h>", text)
         self.assertNotIn("#include <sqlite3ext.h>", text)
 
-    def test_posix_source_rejects_crlf_generators_early(self):
+    def test_posix_source_normalizes_crlf_generators(self):
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp)
             generator = source / "tool" / "mksqlite3c.tcl"
             generator.parent.mkdir()
             generator.write_bytes(b"set value 1\r\nputs $value\r\n")
+            builder = SimpleNamespace(
+                platform=SimpleNamespace(os="linux"),
+                dry_run=False,
+            )
+            builder._normalize_posix_shell_scripts = lambda repo_name, paths: (
+                Builder._normalize_posix_shell_scripts(builder, repo_name, paths)
+            )
 
-            with self.assertRaisesRegex(RuntimeError, "core.autocrlf=false"):
-                sqlite._validate_posix_source_line_endings(source, dry_run=False)
+            sqlite._normalize_posix_source_line_endings(builder, source)
+
+            self.assertEqual(generator.read_bytes(), b"set value 1\nputs $value\n")
 
     def test_posix_features_are_explicit_and_do_not_require_tcl_or_icu(self):
         with tempfile.TemporaryDirectory() as tmp:
