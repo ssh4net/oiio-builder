@@ -223,7 +223,10 @@ The contract is intended to protect a prefix from accidental reuse with incompat
 - Windows CRT mode (`/MT` vs `/MD`)
 - ASAN vs non-ASAN prefixes
 
-Preflight reports contract state per computed prefix. A populated prefix without a matching contract is treated as an error.
+Preflight reports contract state per computed prefix. A populated prefix without
+a matching contract is treated as an error. Build and prepare operations also
+refuse to overwrite a populated prefix when its existing ABI or license contract
+does not match the requested configuration.
 
 ## Common Commands
 
@@ -491,9 +494,12 @@ uv run build.py --build-types Debug,Release --only libsodium
 
 Linux and macOS use the tracked upstream Autotools release files. Native
 Windows uses the upstream Visual Studio 2022 solution and therefore requires
-`msbuild.exe` and `cl.exe`. Static Windows builds use the static MSVC runtime;
-DLL builds use the dynamic MSVC runtime. The upstream VS2022 solution has no
-ASAN configuration, so exclude libsodium from native Windows ASAN runs.
+`msbuild.exe` and `cl.exe`. The builder overrides the upstream project's CRT
+selection so DLL and static-library builds both follow `windows.msvc_runtime`.
+This also permits a DLL in a static-runtime prefix. As with any `/MT` DLL, keep
+CRT-owned allocations and state within the module that created them. The
+upstream VS2022 solution has no ASAN configuration, so exclude libsodium from
+native Windows ASAN runs.
 
 The installed CMake package is relocatable:
 

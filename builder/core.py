@@ -593,6 +593,34 @@ class Builder:
         if not self._prefix_contract_enabled():
             return
         for install_prefix, build_types in self._unique_prefix_items():
+            check = self.check_prefix_contract(install_prefix, build_types)
+            blocking_mismatches = [
+                item
+                for item in check.hard_mismatches
+                if not item.startswith("missing generated files:")
+            ]
+            populated = self._prefix_has_non_metadata_content(install_prefix)
+            if check.state == "missing-populated":
+                raise RuntimeError(
+                    f"Refusing to adopt populated prefix without a managed contract: "
+                    f"{install_prefix}. Use an empty prefix or restore its matching "
+                    "<prefix>/.oiio-builder/prefix-contract.json."
+                )
+            if populated and (check.state == "invalid" or blocking_mismatches):
+                details = "; ".join(blocking_mismatches or check.hard_mismatches)
+                suffix = f" ({details})" if details else ""
+                raise RuntimeError(
+                    f"Refusing to overwrite an incompatible contract for populated prefix "
+                    f"{install_prefix}{suffix}. Use the matching configuration or an empty "
+                    "prefix. The existing contract was not changed."
+                )
+            if check.state == "soft-mismatch":
+                details = "; ".join(check.soft_mismatches)
+                print(
+                    f"[warning] prefix contract policy changed for {install_prefix}: "
+                    f"{details}",
+                    flush=True,
+                )
             paths = self._prefix_contract_file_paths(install_prefix)
             payload = self._prefix_contract_payload(install_prefix, build_types)
             self._write_managed_text_file(
@@ -4326,8 +4354,8 @@ endif()
             preferred_order=self.config.global_cfg.preferred_repo_order,
         )
         repos_by_name = {repo.name: repo for repo in self.repos}
-        self._sync_repos(order, repos_by_name)
         self._ensure_prefix_contracts()
+        self._sync_repos(order, repos_by_name)
 
         for repo_name in order:
             repo = repos_by_name[repo_name]
@@ -4353,9 +4381,9 @@ endif()
         build_types = self._build_type_order()
         report = BuildReport(build_types, order, self.prefixes)
 
-        # Resolve paths and clone/update repos.
-        self._sync_repos(order, repos_by_name)
         self._ensure_prefix_contracts()
+        # Resolve paths and clone/update repos only after the prefix contract is accepted.
+        self._sync_repos(order, repos_by_name)
 
         if self.parallel_build_types and self.platform.os in {"macos", "linux"} and len(build_types) > 1:
             self._run_parallel_build_types(build_types, order, repos_by_name, report)

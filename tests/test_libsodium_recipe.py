@@ -12,8 +12,17 @@ from builder.license_policy import LICENSE_RECORDS
 from builder.recipes import libsodium
 
 
-def _builder(*, static: bool, os_name: str = "windows", dry_run: bool = True):
-    windows = {"debug_postfix": "d", "msvc_runtime": "static" if static else "dynamic"}
+def _builder(
+    *,
+    static: bool,
+    os_name: str = "windows",
+    dry_run: bool = True,
+    runtime: str | None = None,
+):
+    windows = {
+        "debug_postfix": "d",
+        "msvc_runtime": runtime or ("static" if static else "dynamic"),
+    }
     return SimpleNamespace(
         config=SimpleNamespace(
             global_cfg=SimpleNamespace(
@@ -99,21 +108,38 @@ class LibsodiumRecipeTests(unittest.TestCase):
     def test_windows_dynamic_release_uses_dll_configuration(self):
         with tempfile.TemporaryDirectory() as tmp:
             ctx = _context(Path(tmp), "Release")
-            command = libsodium._windows_build_command(_builder(static=False), ctx, {})
+            command = libsodium._windows_build_command(
+                _builder(static=False, runtime="static"), ctx, {}
+            )
 
         self.assertIn("/property:Configuration=DynRelease", command)
         self.assertIn("/property:TargetName=libsodium", command)
+        self.assertIn(
+            f"/property:ForceImportBeforeCppTargets={ctx.build_dir / 'oiio-builder-msvc-runtime.props'}",
+            command,
+        )
 
-    def test_windows_rejects_unsupported_toolchain_runtime_and_asan(self):
+    def test_windows_runtime_property_sheet_is_independent_of_linkage(self):
+        static_dll = libsodium._windows_runtime_props_text(
+            _builder(static=False, runtime="static"), "Debug"
+        )
+        dynamic_static_library = libsodium._windows_runtime_props_text(
+            _builder(static=True, runtime="dynamic"), "Release"
+        )
+
+        self.assertIn("<RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>", static_dll)
+        self.assertIn("<UndefinePreprocessorDefinitions>_DLL;", static_dll)
+        self.assertIn(
+            "<RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>",
+            dynamic_static_library,
+        )
+        self.assertNotIn("UndefinePreprocessorDefinitions", dynamic_static_library)
+
+    def test_windows_rejects_unsupported_toolchain_and_asan(self):
         static_builder = _builder(static=True)
         static_builder.toolchain["cc"] = "clang-cl.exe"
         with self.assertRaisesRegex(RuntimeError, "VS2022 MSVC project"):
             libsodium._validate_windows_toolchain(static_builder)
-
-        dynamic_builder = _builder(static=False)
-        dynamic_builder.config.global_cfg.windows["msvc_runtime"] = "static"
-        with self.assertRaisesRegex(RuntimeError, "Set windows.msvc_runtime"):
-            libsodium._validate_windows_toolchain(dynamic_builder)
 
         with self.assertRaisesRegex(RuntimeError, "no ASAN configuration"):
             libsodium._windows_configuration(_builder(static=True), "ASAN")

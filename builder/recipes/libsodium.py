@@ -8,7 +8,7 @@ from pathlib import Path
 from ..runner import banner, print_cmd, run
 
 
-STAMP_REVISION = "1"
+STAMP_REVISION = "2"
 
 
 def enabled(builder, _repo) -> bool:
@@ -85,16 +85,55 @@ def _validate_windows_toolchain(builder) -> None:
             "select the msvc or ninja-msvc generator."
         )
 
-    static_linkage = bool(builder.config.global_cfg.static_default)
-    expected_runtime = "static" if static_linkage else "dynamic"
-    actual_runtime = builder._windows_runtime_mode()
-    if actual_runtime != expected_runtime:
-        library_kind = "static library" if static_linkage else "DLL"
+
+def _windows_runtime_library(builder, build_type: str) -> str:
+    runtime_mode = builder._windows_runtime_mode()
+    runtime_libraries = {
+        ("static", "Debug"): "MultiThreadedDebug",
+        ("static", "Release"): "MultiThreaded",
+        ("dynamic", "Debug"): "MultiThreadedDebugDLL",
+        ("dynamic", "Release"): "MultiThreadedDLL",
+    }
+    runtime_library = runtime_libraries.get((runtime_mode, build_type))
+    if runtime_library is None:
         raise RuntimeError(
-            f"libsodium's upstream Windows {library_kind} configuration uses the "
-            f"{expected_runtime} MSVC runtime, but windows.msvc_runtime is {actual_runtime!r}. "
-            f"Set windows.msvc_runtime = \"{expected_runtime}\"."
+            f"Unsupported libsodium Windows runtime/build type: {runtime_mode}/{build_type}"
         )
+    return runtime_library
+
+
+def _windows_runtime_props_path(ctx) -> Path:
+    return ctx.build_dir / "oiio-builder-msvc-runtime.props"
+
+
+def _windows_runtime_props_text(builder, build_type: str) -> str:
+    runtime_library = _windows_runtime_library(builder, build_type)
+    undefine_dll = ""
+    if builder._windows_runtime_mode() == "static":
+        undefine_dll = (
+            "\n      <UndefinePreprocessorDefinitions>"
+            "_DLL;%(UndefinePreprocessorDefinitions)"
+            "</UndefinePreprocessorDefinitions>"
+        )
+    return f"""<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <RuntimeLibrary>{runtime_library}</RuntimeLibrary>{undefine_dll}
+    </ClCompile>
+  </ItemDefinitionGroup>
+</Project>
+"""
+
+
+def _write_windows_runtime_props(builder, ctx) -> Path:
+    props_path = _windows_runtime_props_path(ctx)
+    if not builder.dry_run:
+        props_path.write_text(
+            _windows_runtime_props_text(builder, ctx.build_type),
+            encoding="utf-8",
+        )
+    return props_path
 
 
 def _msbuild_executable(builder, env: dict[str, str]) -> str:
@@ -127,6 +166,7 @@ def _windows_build_command(builder, ctx, env: dict[str, str]) -> list[str]:
     output_dir = _windows_output_dir(ctx)
     object_dir = ctx.build_dir / "obj"
     target_name = _windows_target_name(builder, ctx.build_type)
+    runtime_props = _windows_runtime_props_path(ctx)
     return [
         _msbuild_executable(builder, env),
         str(solution),
@@ -139,6 +179,7 @@ def _windows_build_command(builder, ctx, env: dict[str, str]) -> list[str]:
         f"/property:OutDir={output_dir}{os.sep}",
         f"/property:IntDir={object_dir}{os.sep}",
         f"/property:TargetName={target_name}",
+        f"/property:ForceImportBeforeCppTargets={runtime_props}",
     ]
 
 
@@ -150,6 +191,7 @@ def _clean_build_dir(builder, build_dir: Path) -> None:
 
 def _build_windows(builder, ctx, env: dict[str, str]) -> None:
     _clean_build_dir(builder, ctx.build_dir)
+    _write_windows_runtime_props(builder, ctx)
     command = _windows_build_command(builder, ctx, env)
     print_cmd("build command", command)
     banner(f"{ctx.repo.name} ({ctx.build_type}) - building")
