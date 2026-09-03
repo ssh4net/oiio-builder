@@ -18,6 +18,30 @@ _CURRENT_NANOBIND_LOOKUP = """\
     checked_find_package (nanobind CONFIG REQUIRED)
 """
 
+_NANOBIND_DISCOVERY_MACRO = """\
+macro (discover_nanobind_cmake_dir)
+    if (nanobind_DIR OR nanobind_ROOT OR "$ENV{nanobind_DIR}" OR "$ENV{nanobind_ROOT}")
+        return()
+    endif ()
+
+    if (NOT Python3_Interpreter_FOUND)
+        return()
+    endif ()
+
+    execute_process (
+        COMMAND ${Python3_EXECUTABLE} -m nanobind --cmake_dir
+        RESULT_VARIABLE _oiio_nanobind_result
+        OUTPUT_VARIABLE _oiio_nanobind_cmake_dir
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+    if (_oiio_nanobind_result EQUAL 0
+            AND EXISTS "${_oiio_nanobind_cmake_dir}/nanobind-config.cmake")
+        set (nanobind_DIR "${_oiio_nanobind_cmake_dir}" CACHE PATH
+             "Path to the nanobind CMake package" FORCE)
+    endif ()
+endmacro()
+"""
+
 
 class OpenImageIORecipeTests(unittest.TestCase):
     def _externalpackages_file(self, root: Path, contents: str) -> Path:
@@ -54,6 +78,22 @@ class OpenImageIORecipeTests(unittest.TestCase):
 
             with self.assertRaisesRegex(RuntimeError, "no longer matches upstream source"):
                 openimageio._patch_nanobind_find_package_range_check(Path(tmp))
+
+    def test_rewrites_return_from_nanobind_discovery_macro(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pythonutils = root / "src" / "cmake" / "pythonutils.cmake"
+            pythonutils.parent.mkdir(parents=True)
+            pythonutils.write_text(_NANOBIND_DISCOVERY_MACRO, encoding="utf-8")
+
+            openimageio._patch_nanobind_discovery_macro_return(root)
+            patched = pythonutils.read_text(encoding="utf-8")
+            self.assertIn("OIIO_BUILDER_NANOBIND_DISCOVERY_NO_RETURN", patched)
+            self.assertNotRegex(patched, r"(?m)^\s*return\(\)")
+            self.assertIn("AND Python3_Interpreter_FOUND", patched)
+
+            openimageio._patch_nanobind_discovery_macro_return(root)
+            self.assertEqual(patched, pythonutils.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

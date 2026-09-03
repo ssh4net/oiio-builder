@@ -10,7 +10,7 @@ from ..license_policy import LGPL_DYNAMIC
 from ..tooling import resolve_openmp_root
 
 
-STAMP_REVISION = "19"
+STAMP_REVISION = "20"
 
 
 def enabled(builder, _repo) -> bool:
@@ -206,6 +206,75 @@ def _patch_nanobind_msvc_debug_python(src_dir: Path) -> None:
         raise RuntimeError(f"OpenImageIO nanobind Python debug patch no longer matches upstream source: {pythonutils}")
 
     pythonutils.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+
+def _patch_nanobind_discovery_macro_return(src_dir: Path) -> None:
+    pythonutils = src_dir / "src" / "cmake" / "pythonutils.cmake"
+    if not pythonutils.exists():
+        raise RuntimeError(f"OpenImageIO nanobind discovery patch target is missing: {pythonutils}")
+
+    text = pythonutils.read_text(encoding="utf-8", errors="replace")
+    marker = "OIIO_BUILDER_NANOBIND_DISCOVERY_NO_RETURN"
+    if marker in text:
+        return
+
+    old = """\
+macro (discover_nanobind_cmake_dir)
+    if (nanobind_DIR OR nanobind_ROOT OR "$ENV{nanobind_DIR}" OR "$ENV{nanobind_ROOT}")
+        return()
+    endif ()
+
+    if (NOT Python3_Interpreter_FOUND)
+        return()
+    endif ()
+
+    execute_process (
+        COMMAND ${Python3_EXECUTABLE} -m nanobind --cmake_dir
+        RESULT_VARIABLE _oiio_nanobind_result
+        OUTPUT_VARIABLE _oiio_nanobind_cmake_dir
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+    if (_oiio_nanobind_result EQUAL 0
+            AND EXISTS "${_oiio_nanobind_cmake_dir}/nanobind-config.cmake")
+        set (nanobind_DIR "${_oiio_nanobind_cmake_dir}" CACHE PATH
+             "Path to the nanobind CMake package" FORCE)
+    endif ()
+endmacro()
+"""
+    new = """\
+macro (discover_nanobind_cmake_dir)
+    # OIIO_BUILDER_NANOBIND_DISCOVERY_NO_RETURN
+    # return() in a macro returns from the including file, not the macro.
+    # Keep an explicit nanobind_DIR/ROOT override, but continue configuring
+    # the remaining external dependencies.
+    if (NOT nanobind_DIR AND NOT nanobind_ROOT
+            AND NOT "$ENV{nanobind_DIR}" AND NOT "$ENV{nanobind_ROOT}"
+            AND Python3_Interpreter_FOUND)
+        execute_process (
+            COMMAND ${Python3_EXECUTABLE} -m nanobind --cmake_dir
+            RESULT_VARIABLE _oiio_nanobind_result
+            OUTPUT_VARIABLE _oiio_nanobind_cmake_dir
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET)
+        if (_oiio_nanobind_result EQUAL 0
+                AND EXISTS "${_oiio_nanobind_cmake_dir}/nanobind-config.cmake")
+            set (nanobind_DIR "${_oiio_nanobind_cmake_dir}" CACHE PATH
+                 "Path to the nanobind CMake package" FORCE)
+        endif ()
+    endif ()
+endmacro()
+"""
+    if old in text:
+        pythonutils.write_text(text.replace(old, new, 1), encoding="utf-8")
+        return
+
+    macro_start = "macro (discover_nanobind_cmake_dir)"
+    if macro_start not in text:
+        return
+    macro_end = text.find("endmacro()", text.find(macro_start))
+    if macro_end != -1 and "return()" not in text[text.find(macro_start) : macro_end]:
+        return
+    raise RuntimeError(f"OpenImageIO nanobind discovery patch no longer matches upstream source: {pythonutils}")
 
 
 def _patch_nanobind_find_package_range_check(src_dir: Path) -> None:
@@ -1504,6 +1573,7 @@ def patch_source(builder, src_dir: Path) -> None:
     if not builder.dry_run:
         _patch_compiled_fmt_option(src_dir)
         _patch_msvc_python_module_link(src_dir)
+        _patch_nanobind_discovery_macro_return(src_dir)
         _patch_nanobind_find_package_range_check(src_dir)
         _patch_nanobind_msvc_debug_python(src_dir)
         if builder.platform.os == "windows":
