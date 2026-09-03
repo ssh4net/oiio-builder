@@ -9,7 +9,7 @@ from ..runner import banner, print_cmd, run
 from ..tooling import normalize_override, resolve_executable_candidate, resolve_nasm_executable
 
 
-STAMP_REVISION = "3"
+STAMP_REVISION = "4"
 
 _WINDOWS_CONFIGURE_FLAG_ENV = (
     "CL",
@@ -206,6 +206,12 @@ def _build_environment(builder, ctx, env: dict[str, str]) -> dict[str, str]:
         # remove inherited copies from the native process environment too.
         for variable in _WINDOWS_CONFIGURE_FLAG_ENV:
             build_env.pop(variable, None)
+
+        compiler = normalize_override(str(builder.toolchain.get("cc") or ""))
+        if compiler:
+            compiler_dir = Path(compiler).parent
+            if compiler_dir != Path("."):
+                builder._prepend_windows_env_paths(build_env, "PATH", [compiler_dir])
     else:
         cflags, _, ldflags = builder._non_cmake_flags(ctx.build_type)
         build_env["CC"] = str(builder.toolchain.get("cc") or "cc")

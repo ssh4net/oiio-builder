@@ -45,7 +45,8 @@ Linux GTK3 headers (needed for `nativefiledialog-extended` when `NFD_PORTAL=OFF`
    ```bash
    uv pip install sphinx
    ```
-5. (Optional, recommended) Create `build.user.toml` for local overrides (gitignored). Example for Windows tool paths:
+5. (Optional, recommended) Create `build.user.toml` for local overrides (gitignored), or keep named user
+   config files and select one with `--user-config`. Example for Windows tool paths:
    ```toml
    [windows.env]
    PKG_CONFIG_EXECUTABLE = "E:/vcpkg/installed/x64-windows/tools/pkgconf/pkgconf.exe"
@@ -159,6 +160,10 @@ environment adjustment, pre-build shims, post-install fixes, and stamp payload a
 
 Local overrides are read from `build.user.toml` (gitignored) and merged on top of `build.toml`
 (CLI flags still win). You can override `[global]`, `[windows]`, and per-repo CMake cache settings.
+Use `--user-config path/to/user.toml` to select a different override file; an explicit user config replaces
+the default `build.user.toml`. Use `--no-user-config` to load only `build.toml`. Relative paths inside the
+selected user config keep the same semantics as `build.user.toml`: they resolve against the directory that
+contains the selected `build.toml`.
 
 ```toml
 [global]
@@ -297,6 +302,8 @@ uv run build.py --build-types Debug,Release
 :: Ninja + clang-cl
 :: (set windows.generator = "ninja-clang-cl")
 uv run build.py --config build.toml --build-types Debug,Release
+uv run build.py --user-config build.windows.toml --build-types Debug,Release
+uv run build.py --no-user-config --preflight
 
 :: Visual Studio solution + clang-cl
 :: (set windows.generator = \"msvc-clang-cl\" in build.toml)
@@ -507,7 +514,7 @@ PERL_EXECUTABLE = "C:\\Strawberry\\perl\\bin\\perl.exe"
 - **Rebuild not triggered after local edits**: stamps track dependency fingerprints and applied per-repo option layers, but not uncommitted working tree changes. Use `--force --only <repo>` for targeted rebuilds or `--force-all` for a clean run.
 - **A source checkout blocks `--update`**: normal updates intentionally preserve tracked changes and local commits. Run `uv run build.py --force-update` by itself, review its warning, and type `FORCE-UPDATE` to restore every existing configured checkout. It discards tracked changes/local commits and ordinary untracked files, but leaves ignored files and does not clone missing sources. A path that Git cannot remove is reported as an incomplete checkout while the remaining refreshes continue.
 - **uv cache permission issues**: set `UV_CACHE_DIR` to a writable directory (e.g. `UV_CACHE_DIR=/tmp/uv-cache`).
-- **nativefiledialog-extended (Linux) missing/broken GTK deps**: the builder configures `nativefiledialog-extended` with the GTK3 backend (`NFD_PORTAL=OFF`). On Ubuntu/Debian install with `sudo apt-get install pkg-config libgtk-3-dev`, then verify `pkg-config --modversion gtk+-3.0`. To use the portal backend instead, override `NFD_PORTAL=ON`.
+- **nativefiledialog-extended (Linux) missing/broken GTK or Wayland deps**: the builder configures `nativefiledialog-extended` with the GTK3 backend (`NFD_PORTAL=OFF`) and upstream Wayland support (`NFD_WAYLAND=ON`). On Ubuntu/Debian install with `sudo apt-get install pkg-config libgtk-3-dev libwayland-dev wayland-protocols`, then verify `pkg-config --modversion gtk+-3.0 wayland-client wayland-protocols`. To use the portal backend instead, override `NFD_PORTAL=ON`; to avoid Wayland protocol generation, override `NFD_WAYLAND=OFF`.
 - **Linux link error `ld.lld: error: unable to find library -lvdpau`**: install `libvdpau-dev` (`sudo apt-get install libvdpau-dev`). This library is used by FFmpeg VDPAU hardware-acceleration support and may be pulled transitively when statically linking OpenImageIO with FFmpeg enabled.
 - **Linux link error `ld.lld: error: unable to find library -lsystemd`**: install `libsystemd-dev` (`sudo apt-get install libsystemd-dev`). This library is pulled in by static Qt6 DBus linkage when linking the OpenImageIO `iv` app.
 - **OpenImageIO/Qt6 link errors mentioning `std::condition_variable`, `std::__once_*`, or `std::__throw_system_error` from `libicuuc.a` / `libicui18n.a`**: rebuild Qt6 after this builder change so Qt is configured with `FEATURE_icu=OFF` for Linux `libc++` builds.
@@ -517,11 +524,13 @@ PERL_EXECUTABLE = "C:\\Strawberry\\perl\\bin\\perl.exe"
 - **OpenMP not found (macOS/Linux)**: set `OpenMP_ROOT` in `build.toml` or environment.
 - **NASM not detected on Windows**: set `windows.env.NASM_EXECUTABLE = "C:/Program Files/NASM/nasm.exe"` in `build.user.toml`. The builder also probes the default NASM installer path automatically.
 - **OpenSSL cannot find Perl or `nmake` on Windows**: install Strawberry Perl, set `windows.env.PERL_EXECUTABLE` if it is not on `PATH`, and run the builder from a Visual Studio Native Tools prompt. WSL Perl is valid only for a Linux/WSL OpenSSL build.
+- **CPython install fails because `Modules/_ssl...so` is missing**: inspect CPython's build log for an earlier `_ssl failed to import` line. When the active prefix contains OpenSSL 4, the POSIX CPython recipe defines the removed legacy TLS method guards before configure/build so `_ssl` does not reference symbols such as `TLSv1_method`.
 - **Windows Ninja build unexpectedly tries `clang-cl`**: with `windows.generator = "ninja-msvc"` the builder now pins `cl` explicitly. If preflight still reports `cc: missing (cl)`, launch the build from a Visual Studio Developer Prompt/PowerShell.
 - **Windows CMake try-compile fails with `/bin/sh: ... cl.EXE: command not found`**: CMake picked MSYS2 POSIX Ninja (`C:/msys64/usr/bin/ninja.exe`). Put a native Ninja from CMake or Visual Studio earlier in `PATH`, set `windows.env.CMAKE_MAKE_PROGRAM = "C:/Program Files/CMake/bin/ninja.exe"`, or switch to `windows.generator = "msvc"`.
 - **Windows CMake try-compile fails with `rc` or `CMAKE_MT-NOTFOUND`**: install the Windows 10/11 SDK via the Visual Studio C++ workload. The builder now probes `rc.exe` and `mt.exe` and reports them in preflight.
 - **SQLite reports missing `nmake.exe`, `link.exe`, or (for static builds) `lib.exe`**: use a Visual Studio Native Tools prompt/PowerShell or install the Visual Studio C++ workload. SQLite's Windows recipe uses the upstream MSVC-compatible `Makefile.msc`, independently of the CMake generator selected for other repositories.
-- **SQLite's POSIX generator reports an invalid Tcl command containing the amalgamation header**: the source checkout was converted to CRLF. Set `core.autocrlf=false` for the builder's WSL/macOS/Linux source store, then run the guarded `--force-update` operation for `sqlite`; the recipe now detects this before starting compilation.
+- **SQLite's POSIX generator reports an invalid Tcl command containing the amalgamation header**: the source checkout was converted to CRLF. The POSIX recipe normalizes the makefiles and generator scripts it executes before building. Set `core.autocrlf=false` for the builder's WSL/macOS/Linux source store to avoid repeated line-ending churn on future updates.
+- **libpng POSIX build fails with `options.awk: bad line ... com`**: the libpng generator inputs were converted to CRLF. The POSIX recipe normalizes libpng's CMake/awk generator inputs before configure/build. Set `core.autocrlf=false` for WSL/macOS/Linux source checkouts to avoid repeated line-ending churn.
 - **ASAN failures on Windows**: prefer clang-cl and ensure the MSVC AddressSanitizer component is installed.
 - **PyOpenColorIO / PyOpenEXR link errors on Windows**: set `windows.msvc_runtime = "dynamic"` and `windows.python_wrappers = "on"` for wrapper builds.
 - **Preflight only**: run `uv run build.py` (no args) to see tool/repo readiness without building.

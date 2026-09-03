@@ -6,7 +6,7 @@ import os
 import shutil
 
 
-STAMP_REVISION = "13"
+STAMP_REVISION = "14"
 
 
 _LCMS2_TARGET_BRIDGE_BEGIN = "# OIIO_BUILDER_LCMS2_TARGET_BRIDGE_BEGIN"
@@ -307,6 +307,30 @@ set_property(CACHE DNG_VALIDATE PROPERTY STRINGS AUTO ON OFF)"""
                     top_text = top_text.replace(validate_option, auto_validate_block, 1)
                     top_changed = True
                     break
+
+        dng_jxl_apply_marker = "# OIIO_BUILDER_DNGSDK_JXL_PATCH_IGNORE_SPACE"
+        if dng_jxl_apply_marker not in top_text and "cmake/dng_jxl.patch" in top_text:
+            top_text = top_text.replace(
+                "# Apply patch to dng_jxl.cpp if needed",
+                "# Apply patch to dng_jxl.cpp if needed\n"
+                f"{dng_jxl_apply_marker}\n"
+                "# Adobe SDK payloads can differ in whitespace/line endings while\n"
+                "# still needing the same libjxl 0.9+ API compatibility patch.",
+                1,
+            )
+            top_text = top_text.replace(
+                "COMMAND git apply --check --reverse --unsafe-paths --directory=dng_sdk/source ${PATCH_FILE}",
+                "COMMAND git apply --check --reverse --ignore-space-change --unsafe-paths --directory=dng_sdk/source ${PATCH_FILE}",
+            )
+            top_text = top_text.replace(
+                "COMMAND git apply --check --unsafe-paths --directory=dng_sdk/source ${PATCH_FILE}",
+                "COMMAND git apply --check --ignore-space-change --unsafe-paths --directory=dng_sdk/source ${PATCH_FILE}",
+            )
+            top_text = top_text.replace(
+                "COMMAND git apply --unsafe-paths --directory=dng_sdk/source ${PATCH_FILE}",
+                "COMMAND git apply --ignore-space-change --unsafe-paths --directory=dng_sdk/source ${PATCH_FILE}",
+            )
+            top_changed = True
 
         if top_changed:
             top_cmake.write_text(top_text, encoding="utf-8")

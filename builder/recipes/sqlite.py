@@ -8,7 +8,7 @@ from pathlib import Path
 from ..runner import banner, print_cmd, run
 
 
-STAMP_REVISION = "3"
+STAMP_REVISION = "4"
 
 _FEATURE_DEFINES = (
     "-DSQLITE_ENABLE_FTS5=1",
@@ -163,18 +163,31 @@ def _clean_build_dir(builder, build_dir: Path) -> None:
     build_dir.mkdir(parents=True, exist_ok=True)
 
 
-def _validate_posix_source_line_endings(src_dir: Path, *, dry_run: bool) -> None:
-    if dry_run:
-        return
-    generator = src_dir / "tool" / "mksqlite3c.tcl"
-    if not generator.exists():
-        raise RuntimeError(f"Missing SQLite amalgamation generator: {generator}")
-    if b"\r\n" in generator.read_bytes():
-        raise RuntimeError(
-            "SQLite's POSIX code generators require an LF checkout, but "
-            f"{generator} contains CRLF line endings. Configure the builder source store "
-            "with Git core.autocrlf=false, then force-update the sqlite checkout."
+def _posix_line_ending_files(src_dir: Path) -> list[Path]:
+    paths = [
+        src_dir / "Makefile.linux-generic",
+        src_dir / "main.mk",
+        src_dir / "src" / "parse.y",
+        src_dir / "ext" / "fts5" / "fts5parse.y",
+    ]
+    for root in (src_dir / "tool", src_dir / "ext" / "fts5" / "tool"):
+        if not root.is_dir():
+            continue
+        paths.extend(
+            sorted(
+                path
+                for path in root.rglob("*")
+                if path.is_file() and path.suffix.lower() in {".sh", ".tcl"}
+            )
         )
+    return paths
+
+
+def _normalize_posix_source_line_endings(builder, src_dir: Path) -> None:
+    generator = src_dir / "tool" / "mksqlite3c.tcl"
+    if not builder.dry_run and not generator.exists():
+        raise RuntimeError(f"Missing SQLite amalgamation generator: {generator}")
+    builder._normalize_posix_shell_scripts("sqlite", _posix_line_ending_files(src_dir))
 
 
 def _posix_make_arguments(builder, ctx) -> list[str]:
@@ -218,7 +231,7 @@ def _build_posix(builder, ctx, env: dict[str, str]) -> None:
     makefile = ctx.src_dir / "Makefile.linux-generic"
     if not builder.dry_run and not makefile.exists():
         raise RuntimeError(f"Missing SQLite generic makefile: {makefile}")
-    _validate_posix_source_line_endings(ctx.src_dir, dry_run=builder.dry_run)
+    _normalize_posix_source_line_endings(builder, ctx.src_dir)
 
     _clean_build_dir(builder, ctx.build_dir)
     make = shutil.which("gmake") or shutil.which("make") or "make"

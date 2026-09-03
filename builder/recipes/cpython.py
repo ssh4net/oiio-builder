@@ -9,7 +9,15 @@ from .policy import cpython_requested
 from ..runner import banner, print_cmd, run
 
 
-STAMP_REVISION = "5"
+STAMP_REVISION = "6"
+
+_OPENSSL4_REMOVED_METHOD_DEFINES = (
+    "-DOPENSSL_NO_SSL3",
+    "-DOPENSSL_NO_SSL3_METHOD",
+    "-DOPENSSL_NO_TLS1_METHOD",
+    "-DOPENSSL_NO_TLS1_1_METHOD",
+    "-DOPENSSL_NO_TLS1_2_METHOD",
+)
 
 
 def enabled(builder, _repo) -> bool:
@@ -87,6 +95,35 @@ def _windows_fetch_externals(builder) -> bool:
     return True
 
 
+def _append_env_flags(env: dict[str, str], variable: str, flags: tuple[str, ...]) -> None:
+    existing = env.get(variable, "").strip()
+    added = " ".join(flags)
+    env[variable] = f"{existing} {added}".strip() if existing else added
+
+
+def _installed_openssl_major(install_prefix: Path) -> int | None:
+    header = install_prefix / "include" / "openssl" / "opensslv.h"
+    if not header.exists():
+        return None
+    text = header.read_text(encoding="utf-8", errors="replace")
+    match = re.search(r"(?m)^\s*#\s*define\s+OPENSSL_VERSION_MAJOR\s+(\d+)\b", text)
+    if match is None:
+        return None
+    return int(match.group(1))
+
+
+def _apply_openssl_compat_flags(builder, env: dict[str, str], install_prefix: Path) -> None:
+    openssl_major = _installed_openssl_major(install_prefix)
+    if openssl_major is None or openssl_major < 4:
+        return
+    _append_env_flags(env, "CPPFLAGS", _OPENSSL4_REMOVED_METHOD_DEFINES)
+    prefix = "[dry-run]" if builder.dry_run else "[note]"
+    print(
+        f"{prefix} cpython: define removed OpenSSL {openssl_major} legacy TLS method guards",
+        flush=True,
+    )
+
+
 def _build_posix(builder, ctx, env: dict[str, str]) -> None:
     build_dir = ctx.build_dir
     src_dir = ctx.src_dir
@@ -134,6 +171,7 @@ def _build_posix(builder, ctx, env: dict[str, str]) -> None:
         py_env["CXXFLAGS"] = cxxflags
     if ldflags:
         py_env["LDFLAGS"] = ldflags
+    _apply_openssl_compat_flags(builder, py_env, install_prefix)
     if (install_prefix / "lib" / "pkgconfig" / "sqlite3.pc").exists():
         py_env.setdefault("LIBSQLITE3_CFLAGS", f"-I{(install_prefix / 'include').as_posix()}")
         py_env.setdefault("LIBSQLITE3_LIBS", f"-L{(install_prefix / 'lib').as_posix()} -lsqlite3 -lz -lm")

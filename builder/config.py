@@ -43,6 +43,7 @@ class RepoConfig:
 @dataclass
 class GlobalConfig:
     repo_root: Path
+    user_config_path: Path | None
     src_root: Path
     build_root: Path
     prefix_base: str | None
@@ -190,7 +191,13 @@ def _validate_user_override_keys(user_table: dict[str, Any], *, allowed: set[str
         raise ValueError(f"Unknown key(s) in {context}: {names_str}")
 
 
-def load_config(path: Path, *, profile_override: object = None) -> Config:
+def load_config(
+    path: Path,
+    *,
+    profile_override: object = None,
+    user_config_path: Path | None = None,
+    load_user_config: bool = True,
+) -> Config:
     data = tomllib.loads(path.read_text(encoding="utf-8"))
     repo_root = path.parent
     if not isinstance(data, dict):
@@ -208,9 +215,15 @@ def load_config(path: Path, *, profile_override: object = None) -> Config:
     if not isinstance(windows_section, dict):
         raise TypeError(f"{path}: [windows] must be a table")
 
-    # Optional local overrides (gitignored).
-    user_path = repo_root / "build.user.toml"
-    if user_path.exists():
+    # Optional local overrides. The default file is optional, but an explicit
+    # --user-config path is treated as intentional and must exist.
+    selected_user_path: Path | None = None
+    if load_user_config:
+        selected_user_path = user_config_path or (repo_root / "build.user.toml")
+        if user_config_path is not None and not selected_user_path.exists():
+            raise FileNotFoundError(f"User config not found: {selected_user_path}")
+    if selected_user_path is not None and selected_user_path.exists():
+        user_path = selected_user_path
         user_data = tomllib.loads(user_path.read_text(encoding="utf-8"))
         if user_data is None:
             user_data = {}
@@ -415,6 +428,7 @@ def load_config(path: Path, *, profile_override: object = None) -> Config:
     windows_env = {str(k): str(v) for k, v in windows_section.get("env", {}).items()}
     global_cfg = GlobalConfig(
         repo_root=repo_root,
+        user_config_path=selected_user_path,
         src_root=src_root,
         build_root=build_root,
         prefix_base=prefix_base,

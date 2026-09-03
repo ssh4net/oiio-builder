@@ -379,6 +379,14 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
         lines.append(f"  excluded managed repositories: {excluded or '(none)'}")
     lines.append("Paths:")
     lines.append(f"  repo_root: {config.global_cfg.repo_root}")
+    user_config = config.global_cfg.user_config_path
+    if user_config is None:
+        user_config_display = "(disabled)"
+    elif user_config.exists():
+        user_config_display = str(user_config)
+    else:
+        user_config_display = f"{user_config} (not present)"
+    lines.append(f"  user_config: {user_config_display}")
     lines.append(f"  src_root: {config.global_cfg.src_root}")
     lines.append(f"  build_root: {config.global_cfg.build_root}")
     prefix_base = config.global_cfg.prefix_base
@@ -531,8 +539,18 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
                 lines.append(f"  ninja: ok ({native_ninja})")
     lines.append("Tools:")
     checks = _tool_checks(platform, env, skip_ninja=platform.os == "windows")
-    if platform.os == "linux" and any(repo.build_system == "qt6" for repo in builder.repos):
-        checks.append(ToolCheck("wayland-scanner", ["wayland-scanner"], True, "qtwayland"))
+    nfd_linux_options = None
+    nfd_repo = None
+    nfd_wayland_enabled = False
+    if platform.os == "linux":
+        nfd_repo = next((repo for repo in builder.repos if repo.name == "nativefiledialog-extended"), None)
+    if nfd_repo is not None:
+        nfd_linux_options = builder._repo_cmake_effective_toml_options("nativefiledialog-extended")
+        nfd_wayland_enabled = _bool_from_cache_value(nfd_linux_options.cache.get("NFD_WAYLAND"), default=True)
+    if platform.os == "linux" and (
+        any(repo.build_system == "qt6" for repo in builder.repos) or nfd_wayland_enabled
+    ):
+        checks.append(ToolCheck("wayland-scanner", ["wayland-scanner"], True, "Wayland protocol generation"))
     for check in checks:
         path, resolved = _find_any(check.candidates)
         if path:
@@ -759,21 +777,36 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
                 lines.append("  used by static Qt6 DBus linkage pulled into the OpenImageIO `iv` link.")
 
     # nativefiledialog-extended Linux dependency checks
-    if platform.os == "linux" and any(repo.name == "nativefiledialog-extended" for repo in builder.repos):
+    if nfd_repo is not None:
         lines.append("nativefiledialog-extended (Linux prerequisites):")
-        nfd_options = builder._repo_cmake_effective_toml_options("nativefiledialog-extended")
+        nfd_options = nfd_linux_options or builder._repo_cmake_effective_toml_options("nativefiledialog-extended")
         portal_enabled = _bool_from_cache_value(nfd_options.cache.get("NFD_PORTAL"), default=False)
+        wayland_enabled = _bool_from_cache_value(nfd_options.cache.get("NFD_WAYLAND"), default=True)
+        pkg_override = _normalize_override(env.get("PKG_CONFIG_EXECUTABLE") or env.get("PKG_CONFIG"))
+        pkg_candidates = [pkg_override] if pkg_override else ["pkg-config", "pkgconf"]
+        pkg_path, _ = _find_any(pkg_candidates)
+        nfd_prefix = builder.prefixes.get("Release") or builder.prefixes.get("Debug") or config.global_cfg.repo_root
+        build_env = builder._env_for_repo_build(nfd_repo, "Release", nfd_prefix)
         if portal_enabled:
             lines.append("  backend: portal (NFD_PORTAL=ON), gtk+-3.0 check skipped")
         else:
             lines.append("  backend: gtk3 (NFD_PORTAL=OFF)")
-            pkg_override = _normalize_override(env.get("PKG_CONFIG_EXECUTABLE") or env.get("PKG_CONFIG"))
-            pkg_candidates = [pkg_override] if pkg_override else ["pkg-config", "pkgconf"]
-            pkg_path, _ = _find_any(pkg_candidates)
-            build_env = _build_env_for_pkg_config(builder, "Release")
-            if not pkg_path:
-                record_missing_prereq("nativefiledialog-extended pkg-config executable for gtk+-3.0")
-                lines.append("  pkg-config: missing (required to resolve gtk+-3.0)")
+
+        if not pkg_path:
+            record_missing_prereq("nativefiledialog-extended pkg-config executable")
+            lines.append("  pkg-config: missing (required to resolve Linux nativefiledialog-extended dependencies)")
+        else:
+            if portal_enabled:
+                dbus_ok, dbus_version = _pkg_config_check(pkg_path, "dbus-1", build_env)
+                if dbus_ok:
+                    version_note = f" ({dbus_version})" if dbus_version else ""
+                    lines.append(f"  dbus-1: ok{version_note}")
+                else:
+                    record_missing_prereq("pkg-config module: dbus-1")
+                    lines.append("  dbus-1: missing")
+                    os_release = _read_os_release()
+                    if _is_debian_like(os_release):
+                        lines.append("  install hint (Debian/Ubuntu): sudo apt-get install libdbus-1-dev")
             else:
                 gtk_ok, gtk_version = _pkg_config_check(pkg_path, "gtk+-3.0", build_env)
                 if gtk_ok:
@@ -786,6 +819,26 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
                     if _is_debian_like(os_release):
                         lines.append("  install hint (Debian/Ubuntu): sudo apt-get install pkg-config libgtk-3-dev")
                     lines.append("  install GTK3 development packages so pkg-config can resolve `gtk+-3.0`.")
+            if wayland_enabled:
+                missing_wayland = False
+                for module in ("wayland-client", "wayland-protocols"):
+                    ok, version = _pkg_config_check(pkg_path, module, build_env)
+                    if ok:
+                        version_note = f" ({version})" if version else ""
+                        lines.append(f"  {module}: ok{version_note}")
+                    else:
+                        missing_wayland = True
+                        record_missing_prereq(f"pkg-config module: {module}")
+                        lines.append(f"  {module}: missing")
+                if _find_any(["wayland-scanner"])[0] is None:
+                    missing_wayland = True
+                    record_missing_prereq("wayland-scanner executable")
+                    lines.append("  wayland-scanner: missing")
+                os_release = _read_os_release()
+                if missing_wayland and _is_debian_like(os_release):
+                    lines.append("  install hint (Debian/Ubuntu): sudo apt-get install libwayland-dev wayland-protocols")
+            else:
+                lines.append("  wayland: disabled (NFD_WAYLAND=OFF)")
 
     if any(repo.name == "glslang" for repo in builder.repos):
         lines.append("Vulkan SDK:")

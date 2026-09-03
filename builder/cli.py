@@ -42,6 +42,16 @@ def main() -> int:
         default=str(Path(__file__).resolve().parents[1] / "build.toml"),
         help="Path to build.toml",
     )
+    user_config_group = parser.add_mutually_exclusive_group()
+    user_config_group.add_argument(
+        "--user-config",
+        help="Path to a TOML file with local overrides; replaces the default build.user.toml",
+    )
+    user_config_group.add_argument(
+        "--no-user-config",
+        action="store_true",
+        help="Skip build.user.toml and any local user override file",
+    )
     parser.add_argument("--build-types", help="Comma-separated: Debug,Release,ASAN")
     parser.add_argument(
         "--jobs",
@@ -116,7 +126,15 @@ def main() -> int:
             parser.error("--force-update must be used alone; it cannot be combined with other options")
 
     config_path = Path(args.config).expanduser().resolve()
-    config = load_config(config_path, profile_override=args.profile)
+    user_config_path = Path(args.user_config).expanduser().resolve() if args.user_config else None
+    if user_config_path is not None and not user_config_path.exists():
+        raise SystemExit(f"--user-config not found: {user_config_path}")
+    config = load_config(
+        config_path,
+        profile_override=args.profile,
+        user_config_path=user_config_path,
+        load_user_config=not args.no_user_config,
+    )
 
     if args.force_update:
         return _run_force_update(config)

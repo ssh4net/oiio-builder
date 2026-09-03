@@ -125,8 +125,12 @@ class Builder:
         self._windows_python_wrappers_forced_on_note_printed = False
         self._repo_defaults_dir = Path(__file__).resolve().parent / "recipes" / "defaults"
         self._repo_cmake_defaults = load_repo_defaults(self._repo_defaults_dir)
-        self._user_overrides_path = self.config.global_cfg.repo_root / "build.user.toml"
-        self._repo_cmake_user_overrides = load_user_overrides(self._user_overrides_path)
+        self._user_overrides_path = self.config.global_cfg.user_config_path
+        self._repo_cmake_user_overrides = (
+            load_user_overrides(self._user_overrides_path)
+            if self._user_overrides_path is not None
+            else {}
+        )
         self._validate_user_overrides()
         self._windows_msvc_env_cache: dict[str, str] | None = None
         self._windows_msvc_env_loaded = False
@@ -229,7 +233,10 @@ class Builder:
         unknown = sorted(name for name in self._repo_cmake_user_overrides.keys() if name not in known)
         if unknown:
             names_str = ", ".join(unknown)
-            raise SystemExit(f"Unknown repo name(s) in {self._user_overrides_path.name}: {names_str}")
+            user_overrides_label = (
+                str(self._user_overrides_path) if self._user_overrides_path is not None else "user config"
+            )
+            raise SystemExit(f"Unknown repo name(s) in {user_overrides_label}: {names_str}")
 
     def _repo_cmake_defaults_args(self, repo_name: str) -> list[str]:
         defaults = self._repo_cmake_defaults.get(repo_name)
@@ -3649,10 +3656,18 @@ endif()
             return None
 
         link_parts: list[str] = []
-        for stem in ("x265-static", "libde265", "libkvazaar", "libsharpyuv"):
-            expr = _config_expr(stem)
-            if expr is not None:
-                link_parts.append(expr)
+        for stems in (
+            ("x265-static", "x265"),
+            ("libde265", "de265"),
+            ("libkvazaar", "kvazaar"),
+            ("libx264", "x264"),
+            ("libsharpyuv", "sharpyuv"),
+        ):
+            for stem in stems:
+                expr = _config_expr(stem)
+                if expr is not None:
+                    link_parts.append(expr)
+                    break
         if not link_parts:
             return
 

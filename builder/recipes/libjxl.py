@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-STAMP_REVISION = "7"
+STAMP_REVISION = "8"
 
 
 def enabled(builder, _repo) -> bool:
@@ -119,6 +119,75 @@ def patch_source(builder, src_dir) -> None:
                 text = text.replace(needle, replacement, 1)
             if text != original_text:
                 exr_decoder.write_text(text, encoding="utf-8")
+
+    jxl_cmake = src_dir / "lib" / "jxl.cmake"
+    if jxl_cmake.exists():
+        original_text = jxl_cmake.read_text(encoding="utf-8")
+        text = original_text
+        marker = "# OIIO_BUILDER_PUBLIC_JXL_INCLUDE_ORDER"
+        if marker not in text:
+            text = text.replace(
+                """\
+add_library(jxl_base INTERFACE)
+target_include_directories(jxl_base BEFORE INTERFACE
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>"
+)
+target_include_directories(jxl_base BEFORE INTERFACE
+  ${PROJECT_SOURCE_DIR}
+  ${JXL_HWY_INCLUDE_DIRS}
+)
+""",
+                """\
+add_library(jxl_base INTERFACE)
+# OIIO_BUILDER_PUBLIC_JXL_INCLUDE_ORDER
+target_include_directories(jxl_base BEFORE INTERFACE
+  ${PROJECT_SOURCE_DIR}
+  ${JXL_HWY_INCLUDE_DIRS}
+)
+target_include_directories(jxl_base BEFORE INTERFACE
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>"
+)
+""",
+                1,
+            )
+            text = text.replace(
+                """\
+target_include_directories(jxl_dec-obj BEFORE PUBLIC
+  "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}>"
+  "${JXL_HWY_INCLUDE_DIRS}"
+  "$<BUILD_INTERFACE:$<TARGET_PROPERTY:brotlicommon,INTERFACE_INCLUDE_DIRECTORIES>>"
+)
+""",
+                """\
+target_include_directories(jxl_dec-obj BEFORE PUBLIC
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>"
+  "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}>"
+  "${JXL_HWY_INCLUDE_DIRS}"
+  "$<BUILD_INTERFACE:$<TARGET_PROPERTY:brotlicommon,INTERFACE_INCLUDE_DIRECTORIES>>"
+)
+""",
+                1,
+            )
+            text = text.replace(
+                """\
+target_include_directories(jxl_enc-obj BEFORE PUBLIC
+  ${PROJECT_SOURCE_DIR}
+  ${JXL_HWY_INCLUDE_DIRS}
+  $<TARGET_PROPERTY:brotlicommon,INTERFACE_INCLUDE_DIRECTORIES>
+)
+""",
+                """\
+target_include_directories(jxl_enc-obj BEFORE PUBLIC
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>"
+  ${PROJECT_SOURCE_DIR}
+  ${JXL_HWY_INCLUDE_DIRS}
+  $<TARGET_PROPERTY:brotlicommon,INTERFACE_INCLUDE_DIRECTORIES>
+)
+""",
+                1,
+            )
+        if text != original_text:
+            jxl_cmake.write_text(text, encoding="utf-8")
 
     cmake_file = src_dir / "lib" / "jxl_extras.cmake"
     if cmake_file.exists():

@@ -10,7 +10,7 @@ from ..license_policy import LGPL_DYNAMIC
 from ..tooling import resolve_openmp_root
 
 
-STAMP_REVISION = "15"
+STAMP_REVISION = "18"
 
 
 def enabled(builder, _repo) -> bool:
@@ -174,6 +174,72 @@ def _patch_msvc_python_module_link(src_dir: Path) -> None:
         raise RuntimeError(f"OpenImageIO python module patch no longer matches upstream source: {pythonutils}")
 
     pythonutils.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+
+def _patch_nanobind_msvc_debug_python(src_dir: Path) -> None:
+    pythonutils = src_dir / "src" / "cmake" / "pythonutils.cmake"
+    if not pythonutils.exists():
+        raise RuntimeError(f"OpenImageIO nanobind Python debug patch target is missing: {pythonutils}")
+
+    text = pythonutils.read_text(encoding="utf-8", errors="replace")
+    marker = "OIIO_BUILDER_NANOBIND_PYDEBUG_BEGIN"
+    if marker in text:
+        return
+
+    old = """\
+    nanobind_add_module(${target_name} ${lib_SOURCES})
+"""
+    new = """\
+    nanobind_add_module(${target_name} ${lib_SOURCES})
+    # OIIO_BUILDER_NANOBIND_PYDEBUG_BEGIN
+    if (MSVC AND (Python3_LIBRARY_DEBUG OR Python_LIBRARY_DEBUG))
+        target_compile_definitions (${target_name}
+                                    PRIVATE "$<$<CONFIG:Debug>:Py_DEBUG>")
+        if (TARGET nanobind-static)
+            target_compile_definitions (nanobind-static
+                                        PRIVATE "$<$<CONFIG:Debug>:Py_DEBUG>")
+        endif ()
+    endif ()
+    # OIIO_BUILDER_NANOBIND_PYDEBUG_END
+"""
+    if old not in text:
+        raise RuntimeError(f"OpenImageIO nanobind Python debug patch no longer matches upstream source: {pythonutils}")
+
+    pythonutils.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+
+def _patch_nanobind_find_package_range_check(src_dir: Path) -> None:
+    externalpackages = src_dir / "src" / "cmake" / "externalpackages.cmake"
+    if not externalpackages.exists():
+        raise RuntimeError(f"OpenImageIO nanobind CMake patch target is missing: {externalpackages}")
+
+    text = externalpackages.read_text(encoding="utf-8", errors="replace")
+    old_upstream = """\
+    checked_find_package (nanobind CONFIG REQUIRED
+                          VERSION_MIN 2.8.0 VERSION_MAX 3.9
+                          BUILD_LOCAL missing)
+"""
+    old_previous_patch = """\
+    checked_find_package (nanobind CONFIG REQUIRED
+                          VERSION_MIN 3.0.0 VERSION_MAX 3.9
+                          BUILD_LOCAL missing)
+"""
+    new = """\
+    checked_find_package (nanobind CONFIG REQUIRED
+                          VERSION_MIN 2.8.0 VERSION_MAX 3.9
+                          NO_FP_RANGE_CHECK
+                          BUILD_LOCAL missing)
+"""
+    if new in text:
+        return
+    if old_upstream in text:
+        text = text.replace(old_upstream, new, 1)
+    elif old_previous_patch in text:
+        text = text.replace(old_previous_patch, new, 1)
+    else:
+        raise RuntimeError(f"OpenImageIO nanobind CMake patch no longer matches upstream source: {externalpackages}")
+
+    externalpackages.write_text(text, encoding="utf-8")
 
 
 def _patch_giflib_windows_macro_leak(src_dir: Path) -> None:
@@ -446,6 +512,9 @@ def _ffmpeg_args(
     ffmpeg_util = _maybe_override_lib(ffmpeg_util_override) or _pick_ffmpeg_lib("avutil")
     ffmpeg_swscale = _maybe_override_lib(ffmpeg_swscale_override) or _pick_ffmpeg_lib("swscale")
 
+    if ffmpeg_codec is not None:
+        _validate_ffmpeg_x265_abi(builder, ctx.install_prefix, ffmpeg_codec)
+
     ffmpeg_root_hint: Path | None = None
     if builder.platform.os == "windows":
         ffmpeg_root_hint = prefix_root
@@ -520,6 +589,58 @@ def _ffmpeg_args(
     return args, complete
 
 
+def _validate_ffmpeg_x265_abi(builder, prefix: Path, avcodec_lib: Path) -> None:
+    if builder.dry_run or builder.platform.os != "windows":
+        return
+    if not avcodec_lib.exists():
+        return
+
+    try:
+        data = avcodec_lib.read_bytes()
+    except OSError:
+        return
+
+    required_builds = sorted({int(match) for match in re.findall(rb"x265_(?:api_get|encoder_open)_([0-9]+)", data)})
+    if not required_builds:
+        return
+
+    include_dir = prefix / "include"
+    installed_build: int | None = None
+    installed_header: Path | None = None
+    for header in (include_dir / "x265_config.h", include_dir / "x265.h"):
+        try:
+            text = header.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        match = re.search(r"^\s*#\s*define\s+X265_BUILD\s+([0-9]+)\b", text, re.MULTILINE)
+        if match is None:
+            continue
+        installed_build = int(match.group(1))
+        installed_header = header
+        break
+
+    if installed_build is None:
+        builds = ", ".join(str(value) for value in required_builds)
+        raise RuntimeError(
+            f"OpenImageIO is using static FFmpeg from {prefix}, but {avcodec_lib} references "
+            f"x265 API build {builds} and no X265_BUILD value was found in {include_dir}. "
+            "Install matching x265 headers/libraries into the prefix, rebuild FFmpeg without x265, "
+            "or rerun OpenImageIO with --no-ffmpeg."
+        )
+
+    mismatched = [value for value in required_builds if value != installed_build]
+    if not mismatched:
+        return
+
+    wanted = ", ".join(str(value) for value in mismatched)
+    raise RuntimeError(
+        f"OpenImageIO is using static FFmpeg from {prefix}, but {avcodec_lib} references "
+        f"x265 API build {wanted} while {installed_header} defines X265_BUILD {installed_build}. "
+        "Rebuild/reinstall FFmpeg after rebuilding x265, install the matching x265 library, "
+        "or rerun OpenImageIO with --no-ffmpeg."
+    )
+
+
 def _cache_args(builder, ctx) -> list[str]:
     cfg = builder.config.global_cfg
     ffmpeg_requested = ffmpeg_enabled(builder)
@@ -537,6 +658,7 @@ def _cache_args(builder, ctx) -> list[str]:
         "EMBEDPLUGINS",
         "OIIO_BUILD_TOOLS",
         "OIIO_BUILD_TESTS",
+        "OIIO_PYTHON_BINDINGS_BACKEND",
         "OIIO_IV_EXTRA_IV_LIBRARIES",
         "OIIO_INTERNALIZE_FMT",
         "OIIO_USE_COMPILED_FMT",
@@ -568,6 +690,7 @@ def _cache_args(builder, ctx) -> list[str]:
         "EMBEDPLUGINS": "ON",
         "OIIO_BUILD_TOOLS": "ON",
         "OIIO_BUILD_TESTS": "OFF",
+        "OIIO_PYTHON_BINDINGS_BACKEND": "nanobind",
         "USE_PYTHON": "ON",
         "USE_JXL": "ON" if cfg.build_libjxl else "OFF",
         "USE_FREETYPE": "ON",
@@ -637,6 +760,7 @@ def _cache_args(builder, ctx) -> list[str]:
         "Imath",
         "pugixml",
         "pybind11",
+        "nanobind",
     )
     install_prefix_posix = ctx.install_prefix.as_posix()
     include_dir = ctx.install_prefix / "include"
@@ -727,6 +851,16 @@ def _cache_args(builder, ctx) -> list[str]:
     for fmt_dir in fmt_dir_candidates:
         if (fmt_dir / "fmt-config.cmake").exists() or (fmt_dir / "fmtConfig.cmake").exists():
             args.append(f"-Dfmt_DIR={fmt_dir.as_posix()}")
+            break
+
+    nanobind_dir_candidates = [
+        ctx.install_prefix / "nanobind" / "cmake",
+        lib_dir / "cmake" / "nanobind",
+        ctx.install_prefix / "share" / "cmake" / "nanobind",
+    ]
+    for nanobind_dir in nanobind_dir_candidates:
+        if (nanobind_dir / "nanobind-config.cmake").exists() or (nanobind_dir / "nanobindConfig.cmake").exists():
+            args.append(f"-Dnanobind_DIR={nanobind_dir.as_posix()}")
             break
 
     if builder.platform.os == "windows":
@@ -1062,6 +1196,7 @@ def _extra_static_libs(builder, prefix: Path, build_type: str) -> list[str]:
         add_windows_library(["aom"])
         add_windows_library(["de265", "libde265"])
         add_windows_library(["x265-static", "x265"])
+        add_windows_library(["x264", "libx264"])
         add_windows_library(["kvazaar", "libkvazaar"])
 
         # FFmpeg deps (if locally installed as .lib)
@@ -1070,6 +1205,17 @@ def _extra_static_libs(builder, prefix: Path, build_type: str) -> list[str]:
         add_windows_library(["swresample"])
         add_windows_library(["swscale"])
         add_windows_library(["avutil"])
+        add_windows_library(["x264", "libx264"])
+        add_windows_library(["x265-static", "x265"])
+        add_windows_library(["dav1d", "libdav1d"])
+        add_windows_library(["libmp3lame-static", "mp3lame-static", "libmp3lame", "mp3lame", "lame"])
+        add_windows_library(["opus", "libopus"])
+        add_windows_library(["vpx", "libvpx"])
+        add_windows_library(["vpl", "libvpl", "libmfx", "mfx"])
+        add_windows_library(["ssl", "libssl"])
+        add_windows_library(["crypto", "libcrypto"])
+        add_windows_library(["iconv", "libiconv"])
+        add_windows_library(["charset", "libcharset"])
 
         # minizip-ng may export PPMD when built with MZ_PPMD=ON.
         if minizip_requires_ppmd:
@@ -1087,8 +1233,23 @@ def _extra_static_libs(builder, prefix: Path, build_type: str) -> list[str]:
             "crypt32.lib",
             "ws2_32.lib",
             "secur32.lib",
+            "ole32.lib",
+            "oleaut32.lib",
+            "uuid.lib",
+            "user32.lib",
+            "gdi32.lib",
+            "shlwapi.lib",
             "mfuuid.lib",
             "strmiids.lib",
+            "mf.lib",
+            "mfplat.lib",
+            "mfreadwrite.lib",
+            "dxva2.lib",
+            "d3d11.lib",
+            "dxgi.lib",
+            "cfgmgr32.lib",
+            "setupapi.lib",
+            "version.lib",
         ):
             add_entry(syslib)
         # `ucrt(d).lib` are the import libraries for the UCRT DLL and should
@@ -1330,6 +1491,8 @@ def patch_source(builder, src_dir: Path) -> None:
     if not builder.dry_run:
         _patch_compiled_fmt_option(src_dir)
         _patch_msvc_python_module_link(src_dir)
+        _patch_nanobind_find_package_range_check(src_dir)
+        _patch_nanobind_msvc_debug_python(src_dir)
         if builder.platform.os == "windows":
             _patch_giflib_windows_macro_leak(src_dir)
         _patch_static_robinmap_config(src_dir)

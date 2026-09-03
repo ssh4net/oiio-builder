@@ -127,7 +127,7 @@ def load_repo_defaults(defaults_dir: Path) -> dict[str, RepoOptions]:
 
 
 def load_user_overrides(path: Path) -> dict[str, RepoOptions]:
-    """Load local overrides from build.user.toml (gitignored)."""
+    """Load per-repo overrides from the selected user TOML file."""
     if not path.exists():
         return {}
     data = tomllib.loads(path.read_text(encoding="utf-8"))
@@ -172,4 +172,3 @@ def render_cmake_options(options: CMakeOptions) -> list[str]:
     for key in sorted(options.cache.keys()):
         args.append(f"-D{key}={_format_cache_value(options.cache[key])}")
     return args
-
