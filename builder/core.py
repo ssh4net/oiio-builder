@@ -2289,6 +2289,7 @@ class Builder:
             return None
 
         extra_flags = ""
+        zstd_lib = None
         if self.platform.os == "windows":
             debug_postfix = str(self.config.global_cfg.windows.get("debug_postfix", "d"))
             libdir = prefix / "lib"
@@ -2309,6 +2310,10 @@ class Builder:
             deflate_lib = _pick_windows_lib(libdir, deflate_names, deflate_globs)
             openjph_lib = _pick_windows_lib(libdir, openjph_names, openjph_globs)
             imath_lib = _pick_windows_lib(libdir, imath_names, imath_globs)
+            zstd_suffix = debug_postfix if build_type == "Debug" else ""
+            zstd_lib = _pick_windows_lib(
+                libdir, [f"zstd_static{zstd_suffix}.lib", f"zstd{zstd_suffix}.lib"], []
+            )
             windows_libs: list[str] = []
             if deflate_lib:
                 windows_libs.append(deflate_lib.as_posix())
@@ -2316,6 +2321,8 @@ class Builder:
                 windows_libs.append(openjph_lib.as_posix())
             if imath_lib:
                 windows_libs.append(imath_lib.as_posix())
+            if zstd_lib:
+                windows_libs.append(f'"{zstd_lib.as_posix()}"')
             if windows_libs:
                 extra_flags = " " + " ".join(windows_libs)
         else:
@@ -2352,6 +2359,8 @@ class Builder:
                 cleaned = line
                 cleaned = re.sub(r"\blibdeflate\b(?:\s*[<>=]+\s*[\w\.\-]+)?", "", cleaned)
                 cleaned = re.sub(r"\bopenjph\b(?:\s*[<>=]+\s*[\w\.\-]+)?", "", cleaned)
+                if zstd_lib:
+                    cleaned = re.sub(r"\blibzstd\b(?:\s*[<>=]+\s*[\w\.\-]+)?", "", cleaned)
                 cleaned = re.sub(r"\s+", " ", cleaned).rstrip()
                 if cleaned.endswith(":"):
                     lines.append("Requires.private:")

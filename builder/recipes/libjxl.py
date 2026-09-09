@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-STAMP_REVISION = "8"
+STAMP_REVISION = "9"
 
 
 def enabled(builder, _repo) -> bool:
