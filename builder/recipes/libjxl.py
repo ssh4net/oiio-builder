@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-STAMP_REVISION = "9"
+STAMP_REVISION = "10"
 
 
 def enabled(builder, _repo) -> bool:
@@ -82,6 +82,7 @@ def cmake_args(builder, ctx) -> list[str]:
 
 
 def pre_build(builder, _repo, ctx, _env) -> None:
+    builder._ensure_openjph_windows_alias(ctx.install_prefix, ctx.build_type)
     builder._make_openexr_pc_override(ctx.install_prefix, ctx.build_type)
     if ctx.build_type == "Debug":
         builder._ensure_openjph_alias(ctx.install_prefix)

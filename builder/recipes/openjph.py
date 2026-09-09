@@ -5,7 +5,7 @@ from pathlib import Path
 from .policy import exr_enabled
 
 
-STAMP_REVISION = "1"
+STAMP_REVISION = "2"
 
 
 def enabled(builder, _repo) -> bool:

@@ -3925,7 +3925,11 @@ endif()
             return
 
         debug_postfix = str(self.config.global_cfg.windows.get("debug_postfix", "d"))
-        matches = sorted(libdir.glob("openjph*.lib"))
+        matches = sorted(
+            libdir.glob("openjph*.lib"),
+            key=lambda path: tuple(int(part) for part in re.findall(r"\d+", path.stem)),
+            reverse=True,
+        )
         if not matches:
             return
 
