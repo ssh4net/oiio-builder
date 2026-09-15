@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -37,6 +38,47 @@ def _builder(prefix: Path, *, static: bool) -> Builder:
 
 
 class PrefixContractTests(unittest.TestCase):
+    def test_legacy_contract_upgrade_preserves_compatibility_checks(self):
+        for change in ("none", "linkage", "definitions", "unknown-schema", "missing-definitions"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as tmp:
+                prefix = Path(tmp) / "prefix"
+                builder = _builder(prefix, static=True)
+                builder._ensure_prefix_contracts()
+                contract_path = prefix / ".oiio-builder" / "prefix-contract.json"
+                payload = json.loads(contract_path.read_text(encoding="utf-8"))
+                payload["schema"] = 1
+                del payload["license"]
+                if change == "unknown-schema":
+                    payload["schema"] = 99
+                elif change == "missing-definitions":
+                    payload["schema"] = 2
+                original = json.dumps(payload)
+                contract_path.write_text(original, encoding="utf-8")
+                lib_dir = prefix / "lib"
+                lib_dir.mkdir()
+                library = lib_dir / "libexample.a"
+                library.write_bytes(b"existing library")
+                if change == "linkage":
+                    builder.config.global_cfg.static_default = False
+                elif change == "definitions":
+                    builder.license_profile = SimpleNamespace(
+                        name=None, linkage=None,
+                        consumer_compile_definitions=("EIGEN_MPL2_ONLY",),
+                    )
+
+                if change == "none":
+                    self.assertEqual(builder.check_prefix_contract(prefix, ["Release"]).state, "ok")
+                    self.assertEqual(contract_path.read_text(encoding="utf-8"), original)
+                    builder._ensure_prefix_contracts()
+                    upgraded = json.loads(contract_path.read_text(encoding="utf-8"))
+                    self.assertEqual(upgraded["schema"], 2)
+                    self.assertEqual(upgraded["license"]["consumer_compile_definitions"], [])
+                else:
+                    with self.assertRaisesRegex(RuntimeError, "incompatible contract"):
+                        builder._ensure_prefix_contracts()
+                    self.assertEqual(contract_path.read_text(encoding="utf-8"), original)
+                self.assertEqual(library.read_bytes(), b"existing library")
+
     def test_populated_prefix_rejects_linkage_change_without_overwriting_contract(self):
         with tempfile.TemporaryDirectory() as tmp:
             prefix = Path(tmp) / "prefix"

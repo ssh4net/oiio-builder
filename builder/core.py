@@ -694,6 +694,16 @@ class Builder:
             return PrefixContractCheck(install_prefix, build_types, "invalid", ["contract is not a JSON object"], [], files)
 
         expected = self._prefix_contract_payload(install_prefix, build_types)
+        # Schema 1 predates consumer compile definitions; absence means none.
+        if current.get("schema") == 1:
+            current = dict(current)
+            current["schema"] = 2
+            legacy_license = current.get("license", {})
+            if isinstance(legacy_license, dict):
+                current["license"] = {
+                    "consumer_compile_definitions": [],
+                    **legacy_license,
+                }
         hard_fields = [
             (("schema",), "schema"),
             (("platform", "os"), "platform.os"),
