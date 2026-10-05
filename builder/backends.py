@@ -7,6 +7,7 @@ import shutil
 import sys
 
 from .recipes import registry as recipe_registry
+from .libtool import patch_archive_locks
 from .runner import banner, print_cmd, run
 from .tooling import normalize_override, resolve_nasm_executable
 
@@ -379,6 +380,7 @@ def _build_autotools(builder: Any, ctx: Any, env: dict[str, str]) -> None:
         dry_run=builder.dry_run,
         log_path=str(builder._repo_log_path(repo.name, ctx.build_type, "configure")),
     )
+    _patch_autotools_libtool(builder, ctx)
 
     build_cmd = _autotools_make_command(builder, [f"-j{builder._jobs()}"], env)
     print_cmd("build command", build_cmd)
@@ -401,6 +403,11 @@ def _build_autotools(builder: Any, ctx: Any, env: dict[str, str]) -> None:
         dry_run=builder.dry_run,
         log_path=str(builder._repo_log_path(repo.name, ctx.build_type, "install")),
     )
+
+
+def _patch_autotools_libtool(builder: Any, ctx: Any) -> None:
+    if patch_archive_locks(ctx.build_dir, dry_run=builder.dry_run):
+        print(f"{ctx.repo.name}: using directory-based libtool archive locks (network-share safe)")
 
 
 def _prepare_autotools_build_dir(builder: Any, ctx: Any) -> None:
@@ -597,6 +604,7 @@ def _autotools_install_only(builder: Any, ctx: Any, env: dict[str, str]) -> bool
         dry_run=builder.dry_run,
         log_path=str(builder._repo_log_path(ctx.repo.name, ctx.build_type, "configure")),
     )
+    _patch_autotools_libtool(builder, ctx)
 
     install_cmd = _autotools_make_command(builder, ["install"], install_env)
     print_cmd("install command", install_cmd)

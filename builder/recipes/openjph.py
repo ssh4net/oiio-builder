@@ -5,7 +5,7 @@ from pathlib import Path
 from .policy import exr_enabled
 
 
-STAMP_REVISION = "2"
+STAMP_REVISION = "3"
 
 
 def enabled(builder, _repo) -> bool:
@@ -27,6 +27,15 @@ def _patch_file(path: Path, *, needle: str, replacement: str, marker: str) -> No
 
 
 def patch_source(_builder, src_dir: Path) -> None:
+    # OpenJPH 0.32 added a required precision argument. Keep the previous
+    # approximation mode as the default for nine-argument clients like OpenEXR.
+    _patch_file(
+        src_dir / "src" / "core" / "openjph" / "ojph_params.h",
+        needle="bool precise_encoding_nlt);",
+        replacement="bool precise_encoding_nlt = false);",
+        marker="bool precise_encoding_nlt = false);",
+    )
+
     # clang-cl reports missing CPU features for SSSE3/SSE4.1 intrinsics unless
     # the corresponding -m* flag is set, while MSVC typically accepts these
     # intrinsics without additional /arch gating.

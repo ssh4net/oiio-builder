@@ -2,6 +2,13 @@
 
 This repo provides a cross-platform Python builder that mirrors the behavior of the existing Bash stack script. It clones/updates repos, builds static libraries (or system/dynamic where needed), and installs into per-config prefixes on macOS/Linux or a shared prefix on Windows.
 
+Autotools builds using libtool's archive-extraction locks (notably libsodium on
+macOS) use directory locks instead of hard links, so they also work on SMB/network
+shares without hard-link support. Parallel builds remain enabled. Locks are
+released on completion, failure, and handled interruption; an existing/stale lock
+or persistent filesystem error fails after two minutes instead of waiting forever.
+This does not make every dependency compatible with shares lacking symbolic links.
+
 ## Prerequisites
 
 Tools the builder expects to find (or be explicitly pointed at via config/env):

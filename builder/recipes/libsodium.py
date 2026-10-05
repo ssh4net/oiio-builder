@@ -8,7 +8,7 @@ from pathlib import Path
 from ..runner import banner, print_cmd, run
 
 
-STAMP_REVISION = "2"
+STAMP_REVISION = "3"
 
 
 def enabled(builder, _repo) -> bool:
