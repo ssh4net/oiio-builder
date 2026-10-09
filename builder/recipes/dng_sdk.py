@@ -1,12 +1,16 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
 from pathlib import Path
+import hashlib
 import os
+import re
 import shutil
 
+from ..tooling import normalize_override
 
-STAMP_REVISION = "14"
+
+STAMP_REVISION = "15"
 
 
 _LCMS2_TARGET_BRIDGE_BEGIN = "# OIIO_BUILDER_LCMS2_TARGET_BRIDGE_BEGIN"
@@ -94,83 +98,6 @@ def enabled(builder, _repo) -> bool:
     return bool(getattr(cfg, "build_dng_sdk", False))
 
 
-@dataclass(frozen=True)
-class _VendorStamp:
-    path: str
-    size: int
-    mtime: int
-
-
-def _read_vendor_stamp(path: Path) -> _VendorStamp | None:
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return None
-    if len(lines) < 3:
-        return None
-    try:
-        size = int(lines[1].strip())
-        mtime = int(lines[2].strip())
-    except ValueError:
-        return None
-    return _VendorStamp(path=lines[0].strip(), size=size, mtime=mtime)
-
-
-def _write_vendor_stamp(path: Path, archive: Path) -> None:
-    try:
-        st = archive.stat()
-    except OSError:
-        return
-    text = f"{archive}\n{st.st_size}\n{int(st.st_mtime)}\n"
-    try:
-        path.write_text(text, encoding="utf-8")
-    except OSError:
-        return
-
-
-def _resolve_dng_sdk_archive(builder) -> Path | None:
-    cfg = builder.config.global_cfg
-    external_dir = cfg.repo_root / "external"
-
-    override = (
-        cfg.env.get("DNGSDK_ARCHIVE")
-        or cfg.env.get("DNG_SDK_ARCHIVE")
-        or os.environ.get("DNGSDK_ARCHIVE")
-        or os.environ.get("DNG_SDK_ARCHIVE")
-    )
-    if override:
-        value = Path(os.path.expandvars(override)).expanduser()
-        if not value.is_absolute():
-            value = (cfg.repo_root / value).resolve()
-        return value
-
-    if not external_dir.is_dir():
-        return None
-
-    preferred = [
-        external_dir / "dng_sdk_1_7_1_0.zip",
-        external_dir / "dng_sdk_1_7_1_0.tar.gz",
-        external_dir / "dng_sdk_1_7_1_0.tgz",
-    ]
-    for candidate in preferred:
-        if candidate.exists():
-            return candidate
-
-    patterns = [
-        "dng_sdk*.zip",
-        "dng_sdk*.tar.gz",
-        "dng_sdk*.tgz",
-        "*dng*sdk*.zip",
-        "*DNG*SDK*.zip",
-    ]
-    matches: list[Path] = []
-    for pat in patterns:
-        matches.extend(sorted(external_dir.glob(pat)))
-    if matches:
-        return matches[0]
-    return None
-
-
 def _find_dng_sdk_dir(root: Path) -> Path | None:
     # Expect: dng_sdk/source/dng_host.h
     candidates = list(root.rglob("dng_host.h"))
@@ -211,76 +138,190 @@ def _find_xmp_dir(root: Path) -> Path | None:
     return fallback_toolkit
 
 
+_ARCHIVE_ENV_KEYS = ("DNGSDK_ARCHIVE", "DNG_SDK_ARCHIVE")
+_ARCHIVE_SUFFIXES = (".zip", ".tar.gz", ".tgz")
+# Numeric fields after "dng_sdk": dng_sdk_1_7_1_2724_20260908 -> 1_7_1_2724_20260908.
+_ARCHIVE_VERSION_RE = re.compile(r"dng[_-]?sdk[_-]?(\d+(?:[_.-]\d+)*)", re.IGNORECASE)
+# Kept inside the staged dng_sdk/ directory so it is replaced together with the sources.
+_STAGED_SOURCE_MARKER = ".oiio-builder-source"
+
+_sha256_cache: dict[tuple[str, int, int], str] = {}
+
+
+def _archive_suffix(name: str) -> str | None:
+    lower = name.lower()
+    return next((suffix for suffix in _ARCHIVE_SUFFIXES if lower.endswith(suffix)), None)
+
+
+def _archive_version(path: Path) -> tuple[int, ...]:
+    suffix = _archive_suffix(path.name) or ""
+    match = _ARCHIVE_VERSION_RE.search(path.name[: len(path.name) - len(suffix)])
+    if match is None:
+        return ()
+    return tuple(int(part) for part in re.split(r"[_.-]", match.group(1)))
+
+
+def archive_candidates(external_dir: Path) -> list[Path]:
+    """Return the DNG SDK archives in external_dir, highest version first.
+
+    Adobe archive names carry the version and, for newer releases, a build
+    number and date (dng_sdk_1_7_1_0.zip, dng_sdk_1_7_1_2724_20260908.zip).
+    The numeric fields are compared as integers; names without them sort last.
+    """
+    if not external_dir.is_dir():
+        return []
+    candidates: list[Path] = []
+    for path in external_dir.iterdir():
+        lower = path.name.lower()
+        if "dng" in lower and "sdk" in lower and _archive_suffix(path.name) and path.is_file():
+            candidates.append(path)
+    return sorted(candidates, key=lambda path: (_archive_version(path), path.name), reverse=True)
+
+
+def resolve_archive(env: Mapping[str, str], repo_root: Path) -> Path | None:
+    """Return DNGSDK_ARCHIVE (an archive or extracted directory) or the newest archive in external/."""
+    for key in _ARCHIVE_ENV_KEYS:
+        override = normalize_override(env.get(key))
+        if override:
+            value = Path(os.path.expandvars(override)).expanduser()
+            if not value.is_absolute():
+                value = (repo_root / value).resolve()
+            return value
+    candidates = archive_candidates(repo_root / "external")
+    return candidates[0] if candidates else None
+
+
+def _file_sha256(path: Path) -> str:
+    st = path.stat()
+    key = (str(path), st.st_size, st.st_mtime_ns)
+    digest = _sha256_cache.get(key)
+    if digest is None:
+        hasher = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 20), b""):
+                hasher.update(chunk)
+        digest = hasher.hexdigest()
+        _sha256_cache[key] = digest
+    return digest
+
+
+def _source_identity(source: Path) -> str:
+    # An archive is identified by its contents, so renaming or re-downloading
+    # the same archive keeps the staged sources and the build stamp. An
+    # extracted directory can only be identified by its path.
+    if source.is_dir():
+        return f"directory:{source.resolve()}"
+    return f"sha256:{_file_sha256(source)}"
+
+
+def _read_identity(path: Path) -> str | None:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    if not lines or not lines[0].strip():
+        return None
+    return lines[0].strip()
+
+
+def _write_identity(path: Path, identity: str, source: Path) -> None:
+    path.write_text(f"{identity}\n{source}\n", encoding="utf-8")
+
+
+def _selected_source(builder) -> Path | None:
+    return resolve_archive(builder._source_prep_env(), builder.config.global_cfg.repo_root)
+
+
+def _staged_sources_present(src_dir: Path) -> bool:
+    return (
+        (src_dir / "dng_sdk" / "source" / "dng_host.h").exists()
+        and (src_dir / "xmp" / "toolkit" / "public" / "include" / "XMP.hpp").exists()
+        and (src_dir / "xmp" / "toolkit" / "XMPCore" / "source" / "WXMPDocOps.cpp").exists()
+    )
+
+
+def stamp_payload(builder, _repo, ctx, payload: dict) -> None:
+    # The staged SDK sources are untracked in the DNG-CMake checkout, so its git
+    # HEAD does not change when a different SDK archive is selected.
+    source = _selected_source(builder)
+    if source is not None and source.exists():
+        payload["dng_sdk_source"] = _source_identity(source)
+    else:
+        payload["dng_sdk_source"] = _read_identity(ctx.src_dir / "dng_sdk" / _STAGED_SOURCE_MARKER)
+
+
+def _extract_archive(builder, archive: Path, identity: str) -> Path:
+    vendor_root = builder.config.global_cfg.build_root / "_vendor" / "dng-sdk"
+    extract_dir = vendor_root / "src"
+    stamp_path = vendor_root / ".stamp"
+    if _read_identity(stamp_path) != identity or not extract_dir.is_dir():
+        shutil.rmtree(extract_dir, ignore_errors=True)
+        extract_dir.mkdir(parents=True, exist_ok=True)
+        shutil.unpack_archive(str(archive), str(extract_dir))
+        _write_identity(stamp_path, identity, archive)
+    return extract_dir
+
+
+def _stage_sdk_sources(builder, src_dir: Path) -> None:
+    """Copy dng_sdk/ and xmp/ from the selected Adobe SDK into the DNG-CMake checkout.
+
+    The staged sources are replaced whenever the selected archive or directory
+    differs from the one recorded in dng_sdk/.oiio-builder-source.
+    """
+    have_sources = _staged_sources_present(src_dir)
+    source = _selected_source(builder)
+    if source is None:
+        if have_sources:
+            print("[note] dng-sdk: no SDK archive found; using the previously staged sources", flush=True)
+            return
+        raise RuntimeError(
+            "dng-sdk: missing Adobe DNG SDK source archive.\n"
+            "Place it under `external/` (e.g. `external/dng_sdk_1_7_1_2724_20260908.zip`) or set `DNGSDK_ARCHIVE`."
+        )
+    if not source.exists():
+        raise RuntimeError(f"dng-sdk: archive path does not exist: {source}")
+
+    marker = src_dir / "dng_sdk" / _STAGED_SOURCE_MARKER
+    identity = _source_identity(source)
+    if have_sources and _read_identity(marker) == identity:
+        return
+
+    print(f"[note] dng-sdk: staging Adobe DNG SDK sources from {source}", flush=True)
+    extracted_root = source if source.is_dir() else _extract_archive(builder, source, identity)
+    dng_sdk_dir = _find_dng_sdk_dir(extracted_root)
+    if not dng_sdk_dir:
+        raise RuntimeError(
+            "dng-sdk: could not locate `dng_sdk/source/dng_host.h` in the provided archive.\n"
+            "Ensure you downloaded the official Adobe DNG SDK and provided the correct archive path."
+        )
+    xmp_dir = _find_xmp_dir(extracted_root)
+    if not xmp_dir:
+        raise RuntimeError(
+            "dng-sdk: could not locate XMP SDK sources in the provided archive.\n"
+            "Expected a path like `xmp/toolkit/public/include/XMP.hpp` (or `xmp/public/include/XMP.hpp`).\n"
+            "The DNG-CMake project expects the XMP SDK sources from the Adobe DNG SDK archive."
+        )
+
+    dst_dng = src_dir / "dng_sdk"
+    dst_xmp = src_dir / "xmp"
+    for dst in (dst_dng, dst_xmp):
+        if dst.exists():
+            shutil.rmtree(dst)
+    shutil.copytree(dng_sdk_dir, dst_dng)
+    if xmp_dir.name == "xmp" and (xmp_dir / "toolkit").is_dir():
+        shutil.copytree(xmp_dir, dst_xmp)
+    else:
+        # DNG-CMake builds XMP from xmp/toolkit/.
+        shutil.copytree(xmp_dir, dst_xmp / "toolkit")
+    # Written last, so an interrupted copy is restaged on the next run.
+    _write_identity(marker, identity, source)
+
+
 def patch_source(builder, src_dir: Path) -> None:
     if builder.dry_run:
         return
 
-    dng_expected = src_dir / "dng_sdk" / "source" / "dng_host.h"
-    xmp_expected_header = src_dir / "xmp" / "toolkit" / "public" / "include" / "XMP.hpp"
-    xmp_expected_source = src_dir / "xmp" / "toolkit" / "XMPCore" / "source" / "WXMPDocOps.cpp"
-    have_sources = dng_expected.exists() and xmp_expected_header.exists() and xmp_expected_source.exists()
-
-    if not have_sources:
-        archive_or_dir = _resolve_dng_sdk_archive(builder)
-        if not archive_or_dir:
-            raise RuntimeError(
-                "dng-sdk: missing Adobe DNG SDK source archive.\n"
-                "Place it under `external/` (e.g. `external/dng_sdk_1_7_1_0.zip`) or set `DNGSDK_ARCHIVE`."
-            )
-        if not archive_or_dir.exists():
-            raise RuntimeError(f"dng-sdk: archive path does not exist: {archive_or_dir}")
-
-        vendor_root = builder.config.global_cfg.build_root / "_vendor" / "dng-sdk"
-        vendor_extract = vendor_root / "src"
-        stamp_path = vendor_root / ".stamp"
-        vendor_root.mkdir(parents=True, exist_ok=True)
-
-        extracted_root: Path
-        if archive_or_dir.is_dir():
-            extracted_root = archive_or_dir
-        else:
-            st = archive_or_dir.stat()
-            current = _VendorStamp(path=str(archive_or_dir), size=int(st.st_size), mtime=int(st.st_mtime))
-            previous = _read_vendor_stamp(stamp_path)
-            if previous != current:
-                shutil.rmtree(vendor_extract, ignore_errors=True)
-                vendor_extract.mkdir(parents=True, exist_ok=True)
-                shutil.unpack_archive(str(archive_or_dir), str(vendor_extract))
-                _write_vendor_stamp(stamp_path, archive_or_dir)
-            extracted_root = vendor_extract
-
-        dng_sdk_dir = _find_dng_sdk_dir(extracted_root)
-        if not dng_sdk_dir:
-            raise RuntimeError(
-                "dng-sdk: could not locate `dng_sdk/source/dng_host.h` in the provided archive.\n"
-                "Ensure you downloaded the official Adobe DNG SDK and provided the correct archive path."
-            )
-        xmp_dir = _find_xmp_dir(extracted_root)
-        if not xmp_dir:
-            raise RuntimeError(
-                "dng-sdk: could not locate XMP SDK sources in the provided archive.\n"
-                "Expected a path like `xmp/toolkit/public/include/XMP.hpp` (or `xmp/public/include/XMP.hpp`).\n"
-                "The DNG-CMake project expects the XMP SDK sources from the Adobe DNG SDK archive."
-            )
-
-        if not dng_expected.exists():
-            dst = src_dir / "dng_sdk"
-            shutil.rmtree(dst, ignore_errors=True)
-            shutil.copytree(dng_sdk_dir, dst)
-        dst_xmp = src_dir / "xmp"
-        dst_toolkit = dst_xmp / "toolkit"
-        need_xmp = not (xmp_expected_header.exists() and xmp_expected_source.exists())
-        if need_xmp:
-            shutil.rmtree(dst_xmp, ignore_errors=True)
-            dst_xmp.mkdir(parents=True, exist_ok=True)
-            if xmp_dir.name == "xmp":
-                if (xmp_dir / "toolkit").is_dir():
-                    shutil.copytree(xmp_dir, dst_xmp, dirs_exist_ok=True)
-                else:
-                    shutil.copytree(xmp_dir, dst_toolkit, dirs_exist_ok=True)
-            else:
-                # Fall back to a toolkit-like root.
-                shutil.copytree(xmp_dir, dst_toolkit, dirs_exist_ok=True)
+    _stage_sdk_sources(builder, src_dir)
 
     top_cmake = src_dir / "CMakeLists.txt"
     if top_cmake.exists():

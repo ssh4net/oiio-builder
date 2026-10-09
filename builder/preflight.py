@@ -12,6 +12,8 @@ from . import backends as build_backends
 from .config import Config, _expand_path
 from .core import Builder
 from .platform import PlatformInfo
+from .recipes import dng_sdk as dng_sdk_recipe
+from .recipes import sdl3 as sdl3_recipe
 from .recipes.policy import ffmpeg_enabled, windows_ffmpeg_native_build_enabled
 from .tooling import normalize_override as _normalize_override, resolve_executable_candidate, resolve_nasm_executable
 from .vcpkg_import import resolve_export_zip
@@ -48,41 +50,6 @@ def _find_any(candidates: list[str]) -> tuple[str | None, str]:
         if path:
             return path, name
     return None, ""
-
-
-def _resolve_dngsdk_archive_path(env: dict[str, str], repo_root: Path) -> Path | None:
-    override = _normalize_override(env.get("DNGSDK_ARCHIVE") or env.get("DNG_SDK_ARCHIVE"))
-    if override:
-        value = Path(os.path.expandvars(override)).expanduser()
-        if not value.is_absolute():
-            value = (repo_root / value).resolve()
-        return value
-
-    external_dir = repo_root / "external"
-    if not external_dir.is_dir():
-        return None
-
-    preferred = [
-        external_dir / "dng_sdk_1_7_1_0.zip",
-        external_dir / "dng_sdk_1_7_1_0.tar.gz",
-        external_dir / "dng_sdk_1_7_1_0.tgz",
-    ]
-    for candidate in preferred:
-        if candidate.exists():
-            return candidate
-
-    patterns = [
-        "dng_sdk*.zip",
-        "dng_sdk*.tar.gz",
-        "dng_sdk*.tgz",
-        "*dng*sdk*.zip",
-        "*DNG*SDK*.zip",
-    ]
-    for pattern in patterns:
-        matches = sorted(external_dir.glob(pattern))
-        if matches:
-            return matches[0]
-    return None
 
 
 def _read_os_release() -> dict[str, str]:
@@ -840,6 +807,43 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
             else:
                 lines.append("  wayland: disabled (NFD_WAYLAND=OFF)")
 
+    # SDL3 only warns when no window system is available, so check before building.
+    if (
+        platform.os == "linux"
+        and any(repo.name == "SDL3" for repo in builder.repos)
+        and sdl3_recipe.linux_window_system_required(builder)
+    ):
+        lines.append("SDL3 (Linux video drivers, at least one required):")
+        pkg_override = _normalize_override(env.get("PKG_CONFIG_EXECUTABLE") or env.get("PKG_CONFIG"))
+        pkg_candidates = [pkg_override] if pkg_override else ["pkg-config", "pkgconf"]
+        pkg_path, _ = _find_any(pkg_candidates)
+        if not pkg_path:
+            record_missing_prereq("SDL3 pkg-config executable")
+            lines.append("  pkg-config: missing (required to resolve the X11/Wayland development packages)")
+        else:
+            build_env = _build_env_for_pkg_config(builder, "Release")
+            drivers = {
+                "X11": ("x11", "xext"),
+                "Wayland": ("wayland-client", "wayland-egl", "wayland-cursor", "egl", "xkbcommon"),
+            }
+            available = 0
+            for driver, modules in drivers.items():
+                missing = [module for module in modules if not _pkg_config_check(pkg_path, module, build_env)[0]]
+                if driver == "Wayland" and _find_any(["wayland-scanner"])[0] is None:
+                    missing.append("wayland-scanner")
+                if missing:
+                    lines.append(f"  {driver}: missing {', '.join(missing)}")
+                else:
+                    available += 1
+                    lines.append(f"  {driver}: ok")
+            if not available:
+                record_missing_prereq("SDL3 X11 or Wayland development packages")
+                if _is_debian_like(_read_os_release()):
+                    lines.append(
+                        "  install hint (Debian/Ubuntu): sudo apt-get install libx11-dev libxext-dev "
+                        "libwayland-dev libxkbcommon-dev libegl-dev wayland-protocols"
+                    )
+
     if any(repo.name == "glslang" for repo in builder.repos):
         lines.append("Vulkan SDK:")
         sdk_root = _resolve_vulkan_sdk_root(env, config.global_cfg.repo_root)
@@ -910,17 +914,27 @@ def run_preflight(config: Config, platform: PlatformInfo, no_update: bool) -> in
     # Adobe DNG SDK (optional) - we do not vendor sources; users must provide the archive/dir.
     if getattr(config.global_cfg, "build_dng_sdk", False):
         lines.append("DNG SDK (optional prerequisites):")
-        dng_path = _resolve_dngsdk_archive_path(env, config.global_cfg.repo_root)
+        dng_path = dng_sdk_recipe.resolve_archive(env, config.global_cfg.repo_root)
         if not dng_path:
-            record_missing_asset("DNG SDK archive: external/dng_sdk_1_7_1_0.zip or DNGSDK_ARCHIVE")
+            record_missing_asset("DNG SDK archive: external/dng_sdk_*.zip or DNGSDK_ARCHIVE")
             lines.append("  archive: missing (required when build_dng_sdk=true)")
-            lines.append("  hint: place it under `external/` (e.g. `external/dng_sdk_1_7_1_0.zip`) or set `DNGSDK_ARCHIVE`.")
+            lines.append(
+                "  hint: place it under `external/` (e.g. `external/dng_sdk_1_7_1_2724_20260908.zip`) "
+                "or set `DNGSDK_ARCHIVE`."
+            )
         elif not dng_path.exists():
             record_missing_asset(f"DNG SDK archive: configured at {dng_path}")
             lines.append(f"  archive: missing (configured at {dng_path})")
         else:
             kind = "dir" if dng_path.is_dir() else "archive"
             lines.append(f"  archive: ok ({kind}: {dng_path})")
+            ignored = [
+                path.name
+                for path in dng_sdk_recipe.archive_candidates(config.global_cfg.repo_root / "external")
+                if path != dng_path
+            ]
+            if ignored:
+                lines.append(f"  ignored archives: {', '.join(ignored)} (set DNGSDK_ARCHIVE to choose one)")
 
     vcpkg_exports = {
         "libiconv": (

@@ -134,6 +134,8 @@ Key options:
 - `build_qt6`: build a minimal **static Qt6** stack into the prefix (for consumers like OpenImageIO `iv` and GPUpad).
 - `build_dng_sdk`: build Adobe DNG SDK + XMP (via `DNG-CMake`) into the prefix (optional; disabled by default).
 - `build_imgui`, `build_imgui_test_engine`: fetch optional Dear ImGui docking/test-engine sources (source-only repos; disabled by default).
+- `build_sdl3`: build/install optional SDL3 from the upstream `release-3.4.x` branch (disabled by default); see [SDL3](#sdl3-optional).
+  Consumers use `find_package(SDL3 CONFIG REQUIRED)` and link `SDL3::SDL3`.
 - `build_libvpx`, `build_opus`, `build_libyuv`: build optional media dependencies for downstream RustDesk/RustAdmin/FFmpeg experiments (disabled by default).
 - `build_nlohmann_json`: build/install the optional header-only nlohmann/json CMake package for local consumers (disabled by default).
   Consumers use `find_package(nlohmann_json CONFIG REQUIRED)` and link `nlohmann_json::nlohmann_json`.
@@ -519,6 +521,34 @@ Linux notes
 - The default Qt build uses XCB (`-qpa xcb`).
 - If you include `qtwayland` in `qt6_modules`, the builder switches to `-qpa xcb;wayland` and requires the relevant Wayland development packages plus `wayland-scanner` in `PATH`.
 
+### SDL3 (optional)
+
+Set `build_sdl3 = true` under `[global]` to build SDL3 from the upstream `release-3.4.x` branch. It
+has no dependencies on other repos in this stack. Only the linkage of the prefix is built (static
+prefixes get `libSDL3.a` / `SDL3-static.lib`; `lgpl-dynamic` gets the shared library), and the
+`SDL3_test` library, tests, and examples are disabled. The license is installed under
+`share/licenses/SDL3` (Windows: `licenses/SDL3`).
+
+```bash
+uv run build.py --build-types Debug,Release --only SDL3
+```
+
+```cmake
+find_package(SDL3 3.2 CONFIG REQUIRED)
+target_link_libraries(my_target PRIVATE SDL3::SDL3)
+```
+
+- Linux: SDL3 loads X11/Wayland, audio, and input libraries at runtime, but needs their development
+  headers at build time. Without them SDL3 only warns and builds a library that cannot open windows,
+  so preflight checks for the X11 (`x11`, `xext`) and Wayland (`wayland-client`, `wayland-egl`,
+  `wayland-cursor`, `egl`, `xkbcommon`, `wayland-scanner`) packages, and the build fails when neither
+  video driver was enabled. On Debian/Ubuntu: `sudo apt-get install libx11-dev libxext-dev libxcursor-dev
+  libxi-dev libxfixes-dev libxrandr-dev libxss-dev libxtst-dev libwayland-dev libxkbcommon-dev libegl-dev
+  wayland-protocols libpulse-dev libudev-dev libdbus-1-dev`. Setting `SDL_VIDEO=OFF` (or both `SDL_X11`
+  and `SDL_WAYLAND` to `OFF`) in `[[repo_overrides]]` skips the check.
+- Windows: the CMake package is installed under `<prefix>/lib/cmake/SDL3` instead of upstream's MSVC
+  default `<prefix>/cmake`.
+
 ### Adobe DNG SDK + XMP (optional)
 
 This enables LibRaw's optional Adobe DNG SDK integration (`USE_DNGSDK`) by building the SDK via `DNG-CMake` and linking it into `libraw`.
@@ -530,8 +560,16 @@ build_dng_sdk = true
 ```
 
 Provide the Adobe DNG SDK sources (the builder does not vendor them):
-- Default search: `external/dng_sdk_1_7_1_0.zip` (also `*.tar.gz` / extracted dir)
+- Default search: the newest `external/*dng*sdk*` archive (`.zip`, `.tar.gz`, or `.tgz`), for example
+  `external/dng_sdk_1_7_1_2724_20260908.zip`. The numbers in the name (version, build, date) are compared
+  numerically, so `dng_sdk_1_7_1_2724_20260908.zip` wins over `dng_sdk_1_7_1_0.zip`. Preflight lists the
+  archives it ignores.
 - Override: set `DNGSDK_ARCHIVE` to an archive path or extracted directory
+
+The SDK sources are staged into the DNG-CMake checkout (`dng_sdk/` and `xmp/`). The archive's SHA-256 is
+recorded there and in the `dng-sdk` build stamp, so switching to a different archive restages the sources
+and rebuilds `dng-sdk` and its dependents. Renaming the same archive does neither. An extracted directory
+is identified by its path only; use `--force --only dng-sdk` after editing its contents.
 
 Build a minimal set:
 ```bash

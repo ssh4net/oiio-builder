@@ -95,6 +95,7 @@ class GlobalConfig:
     build_qt6: bool = False
     build_imgui: bool = False
     build_imgui_test_engine: bool = False
+    build_sdl3: bool = False
     build_libvpx: bool = False
     build_opus: bool = False
     build_libyuv: bool = False
@@ -284,6 +285,7 @@ def load_config(
             "build_qt6",
             "build_imgui",
             "build_imgui_test_engine",
+            "build_sdl3",
             "build_libvpx",
             "build_opus",
             "build_libyuv",
@@ -478,6 +480,7 @@ def load_config(
         build_qt6=bool(global_data.get("build_qt6", False)),
         build_imgui=bool(global_data.get("build_imgui", False)),
         build_imgui_test_engine=bool(global_data.get("build_imgui_test_engine", False)),
+        build_sdl3=bool(global_data.get("build_sdl3", False)),
         build_libvpx=bool(global_data.get("build_libvpx", False)),
         build_opus=bool(global_data.get("build_opus", False)),
         build_libyuv=bool(global_data.get("build_libyuv", False)),

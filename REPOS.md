@@ -48,6 +48,7 @@ Repositories referenced by `build_MOS_stack_until_OIIO.sh` plus builder-only add
 | x265 | x265_git | https://bitbucket.org/multicoreware/x265_git.git |  |
 | kvazaar | kvazaar | https://github.com/ultravideo/kvazaar.git |  |
 | ffmpeg | ffmpeg | https://github.com/FFmpeg/FFmpeg.git |  |
+| SDL3 | SDL | https://github.com/libsdl-org/SDL.git | Optional; source-built from the moving `release-3.4.x` branch; disabled by default |
 | imgui | imgui | https://github.com/ocornut/imgui.git | Optional source-only checkout; uses `docking` branch |
 | imgui_test_engine | imgui_test_engine | https://github.com/ocornut/imgui_test_engine.git | Optional source-only checkout |
 | sqlite | sqlite | https://github.com/sqlite/sqlite.git | Source-built with JSON, FTS5, RTree, Geopoly, and zlib-backed ZIP support; no ICU/Tcl runtime dependency |

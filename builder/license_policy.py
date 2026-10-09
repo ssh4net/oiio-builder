@@ -107,6 +107,7 @@ LICENSE_RECORDS: dict[str, LicenseRecord] = {
     "SPIRV-Headers": LicenseRecord("MIT", "allow"),
     "SPIRV-Tools": LicenseRecord("Apache-2.0", "allow"),
     "glslang": LicenseRecord("BSD-3-Clause / Apache-2.0 components", "allow-with-constraint", "Retain all upstream notices."),
+    "SDL3": LicenseRecord("Zlib", "allow"),
     "imgui": LicenseRecord("MIT", "allow"),
     "imgui_test_engine": LicenseRecord("Dear ImGui Test Engine free/commercial terms", "caution", "Build/debug-only tooling; verify eligibility and do not treat it as a redistributable runtime dependency."),
     "OpenImageIO": LicenseRecord("Apache-2.0", "allow"),

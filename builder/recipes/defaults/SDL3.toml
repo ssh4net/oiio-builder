@@ -1,0 +1,5 @@
+[cmake.cache]
+SDL_TEST_LIBRARY = false
+SDL_TESTS = false
+SDL_EXAMPLES = false
+SDL_INSTALL_DOCS = false

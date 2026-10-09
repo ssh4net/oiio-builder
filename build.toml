@@ -70,6 +70,7 @@ preferred_repo_order = [
   "opus",
   "libyuv",
   "LibRaw",
+  "SDL3",
   "imgui",
   "imgui_test_engine",
 ]
@@ -110,6 +111,7 @@ build_oiio = true
 build_qt6 = false
 build_imgui = false
 build_imgui_test_engine = false
+build_sdl3 = false
 build_libvpx = false
 build_opus = false
 build_libyuv = false
@@ -691,6 +693,16 @@ ref = "vulkan-sdk-1.4.341"
 ref_type = "branch"
 build_system = "cmake"
 deps = ["SPIRV-Headers", "SPIRV-Tools"]
+
+[[repos]]
+name = "SDL3"
+dir = "SDL"
+dir_candidates = ["SDL", "SDL3"]
+url = "https://github.com/libsdl-org/SDL.git"
+ref = "release-3.4.x"
+ref_type = "branch"
+build_system = "cmake"
+optional = true
 
 [[repos]]
 name = "imgui"
