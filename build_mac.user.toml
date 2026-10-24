@@ -36,6 +36,9 @@ build_libyuv = true
 build_toml11 = true
 build_nlohmann_json = true
 build_libsodium = true
+build_fastgltf = true
+build_simdjson = true
+build_simdutf = true
 
 # CPython source override:
 # - default repo ref is branch "3.13" (see [[repos]] cpython below)

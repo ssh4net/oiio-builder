@@ -102,6 +102,9 @@ class GlobalConfig:
     build_nlohmann_json: bool = False
     build_toml11: bool = False
     build_libsodium: bool = False
+    build_fastgltf: bool = False
+    build_simdjson: bool = False
+    build_simdutf: bool = False
     qt6_modules: list[str] = field(default_factory=lambda: list(_DEFAULT_QT6_MODULES))
     build_dng_sdk: bool = False
     openimageio_patch_png_include: bool = True
@@ -292,6 +295,9 @@ def load_config(
             "build_nlohmann_json",
             "build_toml11",
             "build_libsodium",
+            "build_fastgltf",
+            "build_simdjson",
+            "build_simdutf",
             "qt6_modules",
             "build_dng_sdk",
             "openimageio_patch_png_include",
@@ -487,6 +493,9 @@ def load_config(
         build_nlohmann_json=bool(global_data.get("build_nlohmann_json", False)),
         build_toml11=bool(global_data.get("build_toml11", False)),
         build_libsodium=bool(global_data.get("build_libsodium", False)),
+        build_fastgltf=bool(global_data.get("build_fastgltf", False)),
+        build_simdjson=bool(global_data.get("build_simdjson", False)),
+        build_simdutf=bool(global_data.get("build_simdutf", False)),
         qt6_modules=qt6_modules,
         build_dng_sdk=bool(global_data.get("build_dng_sdk", False)),
         openimageio_patch_png_include=bool(global_data.get("openimageio_patch_png_include", True)),

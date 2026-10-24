@@ -52,6 +52,9 @@ preferred_repo_order = [
   "rapidfuzz-cpp",
   "nlohmann-json",
   "toml11",
+  "simdjson",
+  "simdutf",
+  "fastgltf",
   "eigen",
   "LBFGSpp",
   "imath",
@@ -118,6 +121,9 @@ build_libyuv = false
 build_nlohmann_json = false
 build_toml11 = false
 build_libsodium = false
+build_fastgltf = false
+build_simdjson = false
+build_simdutf = false
 # Default Qt stack for OIIO iv + Designer:
 # qt6_modules = ["qtbase", "qttools", "qtsvg"]
 # Example expanded stack:
@@ -558,6 +564,28 @@ ref = "main"
 ref_type = "branch"
 build_system = "cmake"
 optional = true
+
+[[repos]]
+name = "simdjson"
+dir = "simdjson"
+url = "https://github.com/simdjson/simdjson.git"
+build_system = "cmake"
+optional = true
+
+[[repos]]
+name = "simdutf"
+dir = "simdutf"
+url = "https://github.com/simdutf/simdutf.git"
+build_system = "cmake"
+optional = true
+
+[[repos]]
+name = "fastgltf"
+dir = "fastgltf"
+url = "https://github.com/spnda/fastgltf.git"
+build_system = "cmake"
+optional = true
+deps = ["simdjson", "simdutf"]
 
 [[repos]]
 name = "miniply"

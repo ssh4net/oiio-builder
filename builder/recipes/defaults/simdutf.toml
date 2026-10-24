@@ -1,0 +1,8 @@
+[cmake.cache]
+CMAKE_INSTALL_LIBDIR = "lib"
+BUILD_TESTING = false
+SIMDUTF_TESTS = false
+SIMDUTF_TOOLS = false
+SIMDUTF_BENCHMARKS = false
+SIMDUTF_FUZZERS = false
+SIMDUTF_ICONV = false

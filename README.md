@@ -140,6 +140,8 @@ Key options:
 - `build_nlohmann_json`: build/install the optional header-only nlohmann/json CMake package for local consumers (disabled by default).
   Consumers use `find_package(nlohmann_json CONFIG REQUIRED)` and link `nlohmann_json::nlohmann_json`.
 - `build_toml11`: build/install optional header-only toml11 CMake package for local consumers (disabled by default).
+- `build_fastgltf`: build/install the optional fastgltf C++20 glTF library; also enables the standalone simdjson and simdutf recipes (disabled by default).
+- `build_simdjson`, `build_simdutf`: build/install these optional packages independently of fastgltf (disabled by default).
 - `build_libsodium`: build/install optional libsodium from its moving `stable` branch (disabled by default).
   Consumers use `find_package(sodium CONFIG REQUIRED)` and link `sodium::sodium`.
 - `windows.generator`: choose one of `msvc`, `ninja-msvc`, `msvc-clang-cl`, `ninja-clang-cl`.
@@ -393,6 +395,38 @@ Example:
 ```bat
 vcpkg export libiconv:x64-windows-static --zip --output=vcpkg-export-libiconv
 ```
+
+### fastgltf, simdjson, and simdutf
+
+All three libraries have separate recipes, source checkouts, build stamps, and
+installed CMake packages. They are disabled in `build.toml`; enable them in the
+selected user config:
+
+```toml
+[global]
+build_fastgltf = true
+build_simdjson = true
+build_simdutf = true
+```
+
+Enabling fastgltf also enables its two dependency recipes even when their own
+toggles are false. `--only fastgltf` builds simdjson and simdutf first, then
+fastgltf against their packages in the same install prefix. Both of fastgltf's
+dependency download fallbacks are disabled. Tests, examples, benchmarks, tools,
+documentation, and C++ modules are disabled for these library builds; simdutf
+retains its full library feature set, including UTF conversion and base64.
+All three follow the prefix's static/shared, PIC, and MSVC runtime settings;
+Windows Debug libraries use the configured debug postfix.
+
+```bash
+uv run build.py --build-types Debug,Release --only fastgltf --update
+# Windows, using the explicit local override:
+uv run build.py --user-config build_win.user.toml --build-types Debug,Release --only fastgltf --update
+```
+
+Consumers can use `find_package(fastgltf CONFIG REQUIRED)` and link
+`fastgltf::fastgltf`; its installed config finds `simdjson::simdjson` and
+`simdutf::simdutf`. Both dependencies are also available to independent consumers.
 
 ### SQLite
 
