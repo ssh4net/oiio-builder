@@ -1,0 +1,98 @@
+[global]
+#src_root = "./developer"
+src_root = "W:/Git_Repos"
+build_root = "W:/Git_Repos/_build"
+
+#profile = "nongpl-static"
+# Prefix layout:
+# - suffix (legacy): Release=<install_prefix>, Debug=<install_prefix><debug_suffix>, ASAN=<install_prefix><asan_suffix>
+# - by-build-type: macOS/Linux => <install_prefix>/{Release,Debug,ASAN}
+#                  Windows => Debug+Release use <install_prefix>, ASAN uses asan_prefix (or derived fallback)
+prefix_layout = "by-build-type"
+#install_prefix = "./developer/install"
+install_prefix = "e:/DVS"
+#profile_prefix_base = "/Users/vlad/MO"
+
+# asan_prefix = "/Users/vlad/MO/Asan"
+# Write a managed contract bundle under each active prefix:
+#   <prefix>/.oiio-builder/prefix-contract.json
+#   <prefix>/.oiio-builder/prefix-init-cache.cmake
+#   <prefix>/.oiio-builder/prefix-contract.cmake
+#   <prefix>/.oiio-builder/prefix-presets.json
+write_prefix_contract = true
+# Legacy fallback root if install_prefix is unset:
+# prefix_base = "./developer/install"
+# Build types can be narrowed via --build-types Debug,Release
+# build_types = ["Debug", "Release", "ASAN"]
+build_types = ["Debug", "Release"]
+
+build_qt6 = false
+build_dng_sdk = true
+build_imgui = true
+build_imgui_test_engine = true
+build_libvpx = true
+build_opus = true
+build_libyuv = true
+build_fastgltf = true
+build_simdjson = true
+build_simdutf = true
+build_toml11 = true
+build_nlohmann_json = true
+build_libsodium = true
+
+# CPython source override:
+# - default repo ref is branch "3.13" (see [[repos]] cpython below)
+# - set cpython_ref/cpython_ref_type to build a different branch/tag/commit
+# cpython_ref = "3.13"
+# cpython_ref_type = "branch"
+
+# Repo-specific switches (match shell script defaults)
+openjpeg_build_codec = ""
+ocio_build_apps = "OFF"
+libjxl_enable_tools = "ON"
+libraw_enable_examples = "ON"
+libraw_enable_openmp = "ON"
+xz_use_autotools = false
+lcms2_use_autotools = false
+no_update = true
+
+# Optional toolchain overrides
+# cc = "clang"
+# cxx = "clang++"
+# ld = "ld.lld"
+# ar = "llvm-ar"
+# ranlib = "llvm-ranlib"
+
+# Extra env vars passed to all build commands
+[global.env]
+# Example: OpenMP_ROOT = "/opt/homebrew/opt/libomp"
+
+[windows]
+# generator: msvc, ninja-msvc, msvc-clang-cl, ninja-clang-cl
+# ninja-clang-cl prefers Visual Studio's bundled clang-cl; use absolute
+# [global].cc/[global].cxx paths to force a standalone LLVM install.
+# generator = "ninja-clang-cl"
+# Visual Studio generator override (e.g. for VS 2026 with CMake 4.2+):
+# vs_generator = "Visual Studio 18 2026"
+# clang-cl (x86_64): extra compiler flags to apply globally when using a clang-cl generator.
+# - `clangcl_extra_flags` overrides the baseline (default if unset: "-msse4.1")
+# - `clangcl_extra_flags_append` appends extra flags (default: "")
+# Example: enable AVX2 + required sub-features:
+# clangcl_extra_flags_append = "-mavx2 -mbmi -mbmi2 -mlzcnt"
+# Prefixes are configured globally via [global].install_prefix / [global].asan_prefix.
+# debug_postfix = "d"
+build_ffmpeg = false  # default OFF on Windows; when ON, MSYS2 shells source-build FFmpeg, otherwise prebuilt FFmpeg in the prefix is expected
+# use_ffmpeg_from_prefix: when build_ffmpeg=false on standard Windows, let consumers
+# like OpenImageIO auto-use FFmpeg already installed in install_prefix (default: true)
+# use_ffmpeg_from_prefix = true
+# msvc_runtime: static|dynamic (default: static => /MT, /MTd)
+# msvc_runtime = "static"
+# python_wrappers: auto|on|off (default: auto)
+#   auto -> ON only when msvc_runtime=dynamic
+#   on   -> force ON for OpenColorIO/OpenEXR wrappers
+#   off  -> force OFF for OpenColorIO/OpenEXR wrappers
+# python_wrappers = "auto"
+# cpython_fetch_externals: true|false (default: true)
+#   true  -> pass `-e` and allow CPython to fetch/build its own externals
+#   false -> pass `-E` (no CPython external fetch/build)
+# cpython_fetch_externals = true

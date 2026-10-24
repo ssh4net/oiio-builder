@@ -26,19 +26,17 @@ write_prefix_contract = true
 # build_types = ["Debug", "Release", "ASAN"]
 build_types = ["Debug", "Release"]
 
-build_qt6 = false
 build_dng_sdk = true
+openimageio_patch_png_include = true
 build_imgui = true
 build_imgui_test_engine = true
 build_libvpx = true
 build_opus = true
 build_libyuv = true
-build_toml11 = true
-build_nlohmann_json = true
-build_libsodium = true
 build_fastgltf = true
 build_simdjson = true
 build_simdutf = true
+build_sdl3 = true
 
 # CPython source override:
 # - default repo ref is branch "3.13" (see [[repos]] cpython below)
