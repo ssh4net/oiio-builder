@@ -2,7 +2,8 @@ __pycache__
 external/*.zip
 oiio_error*
 AGENTS.md
-build.user.toml
+# Machine-local build overrides
+build*.user.toml
 /developer
 .DS_Store
 /.tmp_ffmpeg_pic_x86asm_off

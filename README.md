@@ -173,6 +173,8 @@ environment adjustment, pre-build shims, post-install fixes, and stamp payload a
 
 Local overrides are read from `build.user.toml` (gitignored) and merged on top of `build.toml`
 (CLI flags still win). You can override `[global]`, `[windows]`, and per-repo CMake cache settings.
+Files matching `build*.user.toml`, including `build_mac.user.toml` and `build_win.user.toml`,
+are machine-local, gitignored, and must not be committed. Keep shared defaults in `build.toml`.
 Use `--user-config path/to/user.toml` to select a different override file; an explicit user config replaces
 the default `build.user.toml`. Use `--no-user-config` to load only `build.toml`. Relative paths inside the
 selected user config keep the same semantics as `build.user.toml`: they resolve against the directory that
