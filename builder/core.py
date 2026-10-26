@@ -21,6 +21,7 @@ from .recipes import registry as recipe_registry
 from .repo_options import CMakeOptions, load_repo_defaults, load_user_overrides, render_cmake_options
 from .runner import banner, print_cmd, run, set_output_lock
 from .stamps import compute_stamp, read_stamp, write_stamp
+from .source_paths import discover_source_paths, is_source_registry_only_share, source_registry_files
 from .tooling import (
     normalize_override as _normalize_override,
     resolve_executable_candidate as _resolve_executable_candidate,
@@ -665,6 +666,8 @@ class Builder:
         try:
             for child in install_prefix.iterdir():
                 if child.name == ".oiio-builder":
+                    continue
+                if child.name == "share" and is_source_registry_only_share(child):
                     continue
                 return True
         except OSError:
@@ -4369,6 +4372,19 @@ endif()
         print("Repo update-only completed.")
         return 0
 
+    def _write_source_registry(self) -> int:
+        sources = discover_source_paths(self.config, self.repo_paths)
+        files = source_registry_files(sources)
+        for install_prefix, _build_types in self._unique_prefix_items():
+            for relative_path, content in files.items():
+                self._write_managed_text_file(install_prefix / relative_path, content, label="source registry")
+        return len(sources)
+
+    def register_sources(self) -> int:
+        count = self._write_source_registry()
+        print(f"Source registry: {count} existing source directories in the active prefixes.")
+        return 0
+
     def prepare_only(self) -> int:
         deps_map = {repo.name: repo.deps for repo in self.repos}
         order = topo_sort(
@@ -4379,6 +4395,7 @@ endif()
         repos_by_name = {repo.name: repo for repo in self.repos}
         self._ensure_prefix_contracts()
         self._sync_repos(order, repos_by_name)
+        self._write_source_registry()
 
         for repo_name in order:
             repo = repos_by_name[repo_name]
@@ -4407,6 +4424,7 @@ endif()
         self._ensure_prefix_contracts()
         # Resolve paths and clone/update repos only after the prefix contract is accepted.
         self._sync_repos(order, repos_by_name)
+        self._write_source_registry()
 
         if self.parallel_build_types and self.platform.os in {"macos", "linux"} and len(build_types) > 1:
             self._run_parallel_build_types(build_types, order, repos_by_name, report)

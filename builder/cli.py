@@ -115,11 +115,22 @@ def main() -> int:
     parser.add_argument("--list-repos", action="store_true", help="List configured repos")
     parser.add_argument("--print-prefixes", action="store_true", help="Print install prefixes and exit")
     parser.add_argument(
+        "--register-sources",
+        action="store_true",
+        help="Write CMake discovery metadata for existing source directories, without git operations or builds",
+    )
+    parser.add_argument(
         "--profile",
         help="License/linkage profile. Supported: nongpl-static, lgpl-dynamic",
     )
 
     args = parser.parse_args()
+    if args.register_sources and any((
+        args.update, args.update_only, args.prepare_only, args.apply_prefix_contract,
+        args.preflight, args.list_repos, args.print_prefixes, args.only, args.skip,
+        args.force, args.force_all, args.reinstall, args.reinstall_all, args.parallel_build_types,
+    )):
+        parser.error("--register-sources cannot be combined with build, update, or other reporting operations")
     if args.force_update:
         extra_args = [arg for arg in sys.argv[1:] if arg != "--force-update"]
         if extra_args:
@@ -200,6 +211,9 @@ def main() -> int:
             if value:
                 print(f"{key}: {value}")
         return 0
+
+    if args.register_sources:
+        return builder.register_sources()
 
     if args.update_only:
         return builder.update_only()

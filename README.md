@@ -242,6 +242,66 @@ a matching contract is treated as an error. Build and prepare operations also
 refuse to overwrite a populated prefix when its existing ABI or license contract
 does not match the requested configuration.
 
+## Source Checkout Discovery
+
+The prefix also exposes the actual local source directories through
+`find_package(OIIOBuilderSources CONFIG REQUIRED)`. This is useful for projects
+that compile ImGui/test-engine sources themselves or need a header-only
+library's checkout. The package records host-local paths such as
+`W:/Git_Repos/imgui`; it does not copy sources, compile libraries, add targets,
+or select backends and compile definitions.
+
+Normal builds and `--prepare-only` refresh the registry after repository sync.
+To register existing sources without Git operations, builds, source-prep hooks,
+or ABI-contract changes:
+
+```bat
+uv run build.py --user-config build_win.user.toml --register-sources
+```
+
+`--build-types` and `--profile` select the active prefixes as usual. The registry
+scans every configured source directory, including existing optional checkouts,
+independently of build toggles and `--only` selection. Missing directories are
+omitted; directories that disappear later cause a clear lookup error. Refresh
+after changing source roots or moving checkouts. `--dry-run` prints the metadata
+writes without creating files. `--update-only` remains a Git-only operation.
+
+Configure a consumer with the prefix, for example
+`cmake -S . -B build -DCMAKE_PREFIX_PATH=E:/DVS`, then map source locations to
+the variables that consumer expects:
+
+```cmake
+find_package(OIIOBuilderSources CONFIG REQUIRED
+             COMPONENTS imgui imgui_test_engine toml11)
+oiio_builder_source_dir(imgui IMGUI_DIR)
+oiio_builder_source_dir(imgui_test_engine IMGUI_TEST_ENGINE_DIR)
+oiio_builder_source_dir(toml11 TOML11_SOURCE_DIR)
+# Compile chosen sources or add_subdirectory() using these paths as needed.
+```
+
+Repository names are the exact, case-sensitive names from `build.toml`.
+`OIIOBuilderSources_AVAILABLE_REPOSITORIES` lists the currently available names;
+`OIIOBuilderSources_SOURCE_DIR_<name>` holds each registered repo root. Required
+components validate the named directories; `OPTIONAL_COMPONENTS` may be absent.
+Checks cover directory existence; consumers still check required headers and
+source-version compatibility.
+This package is separate from upstream installed packages such as
+`find_package(toml11 CONFIG REQUIRED)`.
+
+For projects using FetchContent, set the matching content-name override before
+their `FetchContent_MakeAvailable()` call, for example:
+
+```cmake
+oiio_builder_source_dir(imgui FETCHCONTENT_SOURCE_DIR_IMGUI)
+```
+
+`CMAKE_PREFIX_PATH` alone does not set arbitrary project variables. Consumers
+must load this package and map the paths explicitly, or use a project-specific
+initial-cache file that does so. The generated package is at
+`<prefix>/share/cmake/OIIOBuilderSources/OIIOBuilderSourcesConfig.cmake`; the
+matching manifest is `<prefix>/.oiio-builder/source-paths.json`. These files
+describe source locations, independently of the prefix's ABI contract.
+
 ## Common Commands
 
 ```bash
