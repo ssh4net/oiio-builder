@@ -398,6 +398,26 @@ Example:
 vcpkg export libiconv:x64-windows-static --zip --output=vcpkg-export-libiconv
 ```
 
+### OpenEXR and installed OpenJPH
+
+OpenEXR always uses an installed OpenJPH CONFIG package, located through the
+configured install prefix and standard CMake package search paths. Discovery
+does not request a fixed OpenJPH minor version: it accepts the installed
+version when it meets OpenEXR's upstream
+numeric minimum. Missing, too-old, or malformed packages fail configuration;
+the recipe does not fall back to pkg-config or embed a vendored OpenJPH copy.
+`OPENEXR_FORCE_INTERNAL_OPENJPH=ON` is unsupported and fails explicitly.
+
+The exported OpenEXR CMake package records the OpenJPH version actually used for
+the build. This preserves OpenJPH's own binary compatibility checks for CMake
+consumers; pkg-config metadata records that version as a minimum requirement.
+After upgrading OpenJPH, rebuild OpenEXR and its consumers rather
+than mixing libraries from different minor-version builds. Accepting a newer
+version for discovery does not guarantee API compatibility: incompatible API
+changes still fail during compilation. This is a permanent dependency policy,
+not a per-release workaround. Unrecognized upstream discovery layouts stop
+source patching rather than silently re-enabling the bundled fallback.
+
 ### fastgltf, simdjson, and simdutf
 
 All three libraries have separate recipes, source checkouts, build stamps, and
