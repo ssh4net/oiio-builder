@@ -10,7 +10,7 @@ from ..license_policy import LGPL_DYNAMIC
 from ..tooling import resolve_openmp_root
 
 
-STAMP_REVISION = "20"
+STAMP_REVISION = "21"
 
 
 def enabled(builder, _repo) -> bool:
@@ -359,6 +359,47 @@ def _patch_giflib_windows_macro_leak(src_dir: Path) -> None:
 #endif
 """
     gifinput.write_text(text[: include.end()] + block + text[include.end() :], encoding="utf-8")
+
+
+def _patch_rawinput_windows_strerror(src_dir: Path) -> None:
+    # TEMPORARY: remove once upstream libraw_errmsg handles Windows errno text.
+    rawinput = src_dir / "src" / "raw.imageio" / "rawinput.cpp"
+    if not rawinput.exists():
+        return
+
+    with rawinput.open(encoding="utf-8", newline="") as source:
+        text = source.read()
+    newline = "\r\n" if "\r\n" in text else "\n"
+    marker = "// OIIO_BUILDER_TEMPORARY_RAW_STRERROR_BEGIN"
+    if marker in text:
+        return
+
+    # Match only the unguarded sequence; leave upstream replacements/guards alone.
+    old = """\
+        char buf[maxbuf]    = { 0 };
+        if (strerror_r(ret, buf, maxbuf) == 0)
+            msg = std::string(buf);
+""".replace("\n", newline)
+    if old not in text:
+        if re.search(r"\bstrerror_r\s*\(", text) and not re.search(r"\bstrerror_s\s*\(", text):
+            raise RuntimeError(
+                f"OpenImageIO temporary Windows strerror patch no longer matches upstream source: {rawinput}"
+            )
+        return
+    new = """\
+        char buf[maxbuf]    = { 0 };
+// OIIO_BUILDER_TEMPORARY_RAW_STRERROR_BEGIN
+// TEMPORARY: remove when upstream libraw_errmsg supports Windows strerror_s.
+#ifdef _WIN32
+        if (strerror_s(buf, maxbuf, ret) == 0)
+#else
+        if (strerror_r(ret, buf, maxbuf) == 0)
+#endif
+            msg = std::string(buf);
+// OIIO_BUILDER_TEMPORARY_RAW_STRERROR_END
+""".replace("\n", newline)
+    with rawinput.open("w", encoding="utf-8", newline="") as source:
+        source.write(text.replace(old, new, 1))
 
 
 def _patch_static_robinmap_config(src_dir: Path) -> None:
@@ -1578,6 +1619,7 @@ def patch_source(builder, src_dir: Path) -> None:
         _patch_nanobind_msvc_debug_python(src_dir)
         if builder.platform.os == "windows":
             _patch_giflib_windows_macro_leak(src_dir)
+            _patch_rawinput_windows_strerror(src_dir)
         _patch_static_robinmap_config(src_dir)
 
     cfg = builder.config.global_cfg
