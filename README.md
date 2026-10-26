@@ -142,6 +142,7 @@ Key options:
 - `build_toml11`: build/install optional header-only toml11 CMake package for local consumers (disabled by default).
 - `build_fastgltf`: build/install the optional fastgltf C++20 glTF library; also enables the standalone simdjson and simdutf recipes (disabled by default).
 - `build_simdjson`, `build_simdutf`: build/install these optional packages independently of fastgltf (disabled by default).
+- `build_geogram`, `build_geometry_central`: build/install optional geometry libraries (disabled by default).
 - `build_libsodium`: build/install optional libsodium from its moving `stable` branch (disabled by default).
   Consumers use `find_package(sodium CONFIG REQUIRED)` and link `sodium::sodium`.
 - `windows.generator`: choose one of `msvc`, `ninja-msvc`, `msvc-clang-cl`, `ninja-clang-cl`.
@@ -449,6 +450,49 @@ uv run build.py --user-config build_win.user.toml --build-types Debug,Release --
 Consumers can use `find_package(fastgltf CONFIG REQUIRED)` and link
 `fastgltf::fastgltf`; its installed config finds `simdjson::simdjson` and
 `simdutf::simdutf`. Both dependencies are also available to independent consumers.
+
+### Geogram and Geometry Central
+
+Enable the optional library recipes in your local user config:
+
+```toml
+[global]
+build_geogram = true
+build_geometry_central = true
+```
+
+Geogram builds its core and graphics libraries, but not programs/examples/tests.
+The defaults retain the inspected checkouts' Lua, legacy numerics, HLBFGS,
+TetGen, and Triangle features, with TBB's thread-manager option disabled.
+GLFW comes from the separate builder recipe. Linux still needs an installed
+TBB CONFIG package for upstream's parallel-STL link dependency, even when
+`GEOGRAM_WITH_TBB=OFF`. Graphics also needs the platform OpenGL/X11 development
+packages. Both license profiles disable TetGen and Triangle; the unprofiled
+defaults retain their license restrictions and require a separate review.
+
+Geometry Central uses the separate Eigen recipe and cannot fall back to an
+Eigen download. SuiteSparse is disabled, matching both existing local caches.
+The recipe installs its public dependency headers and a relocatable CMake
+package. Missing Git submodules are initialized on the first build; populated
+submodules and existing source/build trees are not reset by that initialization.
+
+Both follow the active prefix's static/shared, PIC, MSVC runtime and Debug
+postfix settings. Geogram's legacy platform selector is mapped to those settings.
+Consume the installed targets with:
+
+```cmake
+find_package(Geogram CONFIG REQUIRED)
+target_link_libraries(app PRIVATE Geogram::geogram Geogram::geogram_gfx)
+find_package(geometry-central CONFIG REQUIRED)
+target_link_libraries(app PRIVATE geometry-central::geometry-central)
+```
+
+```bat
+uv run build.py --user-config build_win.user.toml --only geogram,geometry-central --build-types Debug,Release --no-update
+```
+
+Sources use the selected config's `src_root` (`geogram/` and `geometry-central/`);
+the existing `E:/GH` clones are not hard-coded into tracked configuration.
 
 ### SQLite
 

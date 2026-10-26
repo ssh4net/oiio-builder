@@ -89,6 +89,8 @@ LICENSE_RECORDS: dict[str, LicenseRecord] = {
     "nlohmann-json": LicenseRecord("MIT", "allow"),
     "toml11": LicenseRecord("MIT", "allow"),
     "fastgltf": LicenseRecord("MIT", "allow"),
+    "geometry-central": LicenseRecord("MIT", "allow"),
+    "geogram": LicenseRecord("BSD-3-Clause core", "allow-with-constraint", "License profiles disable the optional AGPL/non-commercial TetGen and restricted Triangle code."),
     "simdjson": LicenseRecord("Apache-2.0 OR MIT", "allow"),
     "simdutf": LicenseRecord("Apache-2.0 OR MIT", "allow"),
     "miniply": LicenseRecord("MIT", "allow"),
@@ -321,6 +323,11 @@ def rejected_reason(profile: LicenseProfile | None, repo_name: str) -> str | Non
 def profile_cmake_args(profile: LicenseProfile | None, repo_name: str) -> list[str]:
     if profile is None:
         return []
+    if repo_name == "geogram":
+        args = ["-DGEOGRAM_WITH_TETGEN=OFF", "-DGEOGRAM_WITH_TRIANGLE=OFF"]
+        if profile.name == LGPL_DYNAMIC:
+            args.extend(["-DBUILD_SHARED_LIBS=ON", "-DPKG_CONFIG_USE_STATIC_LIBS=OFF"])
+        return args
     if profile.name == NONGPL_STATIC and repo_name == "xz":
         return [
             "-DXZ_NLS=OFF",

@@ -1,0 +1,5 @@
+[cmake.cache]
+CMAKE_INSTALL_LIBDIR = "lib"
+SUITESPARSE = false
+GC_ALWAYS_DOWNLOAD_EIGEN = false
+GC_EIGEN_LOCATION = ""

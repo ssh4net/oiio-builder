@@ -124,6 +124,8 @@ build_libsodium = false
 build_fastgltf = false
 build_simdjson = false
 build_simdutf = false
+build_geogram = false
+build_geometry_central = false
 # Default Qt stack for OIIO iv + Designer:
 # qt6_modules = ["qtbase", "qttools", "qtsvg"]
 # Example expanded stack:
@@ -509,6 +511,22 @@ url = "https://gitlab.com/libeigen/eigen.git"
 ref = "3.4"
 ref_type = "branch"
 build_system = "cmake"
+
+[[repos]]
+name = "geogram"
+dir = "geogram"
+url = "https://github.com/BrunoLevy/geogram.git"
+build_system = "cmake"
+optional = true
+deps = ["glfw"]
+
+[[repos]]
+name = "geometry-central"
+dir = "geometry-central"
+url = "https://github.com/nmwsharp/geometry-central.git"
+build_system = "cmake"
+optional = true
+deps = ["eigen"]
 
 [[repos]]
 name = "LBFGSpp"

@@ -9,7 +9,7 @@ STAMP_REVISION = "1"
 
 
 def enabled(builder, _repo) -> bool:
-    return imageio_enabled(builder)
+    return imageio_enabled(builder) or bool(getattr(builder.config.global_cfg, "build_geometry_central", False))
 
 
 def post_install(builder, install_prefix: Path, _build_type: str) -> None:
