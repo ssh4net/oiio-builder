@@ -651,6 +651,9 @@ WSL/Linux requirements are `build-essential`, Perl, Make, and NASM on x86-64.
 A WSL run produces Linux libraries; it cannot produce the MSVC DLL/import-lib
 package. OpenSSL recommends an ext4 source/build tree rather than `/mnt/*` for
 speed and to avoid NTFS/WSL permission or line-ending failures.
+The POSIX recipe uses regular copies for the build-tree `util/opensslwrap.sh`
+and `apps/openssl.cnf` helpers, so those targets also work on CIFS shares without
+symlink support.
 
 ### libsodium (optional)
 

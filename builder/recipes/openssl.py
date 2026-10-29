@@ -9,7 +9,7 @@ from ..runner import banner, print_cmd, run
 from ..tooling import normalize_override, resolve_executable_candidate, resolve_nasm_executable
 
 
-STAMP_REVISION = "4"
+STAMP_REVISION = "5"
 
 _WINDOWS_CONFIGURE_FLAG_ENV = (
     "CL",
@@ -223,6 +223,23 @@ def _build_environment(builder, ctx, env: dict[str, str]) -> dict[str, str]:
     return build_env
 
 
+def _patch_posix_helper_rules(builder, ctx) -> None:
+    if builder.platform.os == "windows" or builder.dry_run:
+        return
+    makefile = ctx.build_dir / "Makefile"
+    original = makefile.read_text(encoding="utf-8")
+    updated = original
+    for directory in ("util", "apps"):
+        # OpenSSL creates build-tree copies of opensslwrap.sh and openssl.cnf
+        # through symlinks. They are ordinary helper files, so copy them on
+        # POSIX too; CIFS build directories may not support symlinks.
+        link = f'ln -sf "../$(SRCDIR)/{directory}/`basename "$@"`" "$(BLDDIR)/{directory}";'
+        copy = f'cp -f "$(SRCDIR)/{directory}/`basename "$@"`" "$@";'
+        updated = updated.replace(link, copy)
+    if updated != original:
+        makefile.write_text(updated, encoding="utf-8")
+
+
 def _run_source_build(builder, ctx, env: dict[str, str]) -> None:
     configure = ctx.src_dir / "Configure"
     if not builder.dry_run and not configure.exists():
@@ -244,6 +261,7 @@ def _run_source_build(builder, ctx, env: dict[str, str]) -> None:
         dry_run=builder.dry_run,
         log_path=str(builder._repo_log_path(ctx.repo.name, ctx.build_type, "configure")),
     )
+    _patch_posix_helper_rules(builder, ctx)
 
     build_cmd = [make]
     if builder.platform.os == "windows":

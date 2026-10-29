@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import stat
+import os
+import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -95,6 +98,66 @@ class OpenSSLRecipeTests(unittest.TestCase):
         self.assertIn("linux-x86_64", command)
         self.assertIn("shared", command)
         self.assertNotIn("VC-WIN64A", command)
+
+    @unittest.skipUnless(os.name != "nt" and (shutil.which("gmake") or shutil.which("make")),
+                         "POSIX make is needed to verify helper copies")
+    def test_posix_helpers_build_without_symlink_support(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ctx = _context(root, "Debug")
+            builder = _builder(root, os_name="linux", static=True, dry_run=False)
+            ctx.build_dir.mkdir()
+            source_files = {"util/opensslwrap.sh": "#!/bin/sh\nexit 0\n", "apps/openssl.cnf": "# test config\n"}
+            for name, content in source_files.items():
+                source = ctx.src_dir / name
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_text(content, encoding="utf-8")
+                source.chmod(0o755 if name.endswith(".sh") else 0o644)
+            makefile = ctx.build_dir / "Makefile"
+            text = "SRCDIR = ../src\nBLDDIR = .\nlink-utils: $(BLDDIR)/util/opensslwrap.sh $(BLDDIR)/apps/openssl.cnf\n"
+            for name in source_files:
+                directory = name.split("/")[0]
+                text += (
+                    f"$(BLDDIR)/{name}: Makefile\n"
+                    '\t@if [ "$(SRCDIR)" != "$(BLDDIR)" ]; then \\\n'
+                    f'\t    mkdir -p "$(BLDDIR)/{directory}"; \\\n'
+                    f'\t    ln -sf "../$(SRCDIR)/{directory}/`basename "$@"`" "$(BLDDIR)/{directory}"; \\\n'
+                    '\tfi\n'
+                )
+            makefile.write_text(text, encoding="utf-8")
+            tools = root / "tools"
+            tools.mkdir()
+            link = tools / "ln"
+            link.write_text("#!/bin/sh\necho 'symlinks unavailable' >&2\nexit 1\n", encoding="utf-8")
+            link.chmod(0o755)
+            env = {**os.environ, "PATH": str(tools) + os.pathsep + os.environ["PATH"]}
+            command = [shutil.which("gmake") or shutil.which("make"), "link-utils"]
+            before = subprocess.run(command, cwd=ctx.build_dir, env=env, capture_output=True, text=True)
+            self.assertNotEqual(0, before.returncode)
+            self.assertIn("symlinks unavailable", before.stderr)
+
+            openssl._patch_posix_helper_rules(builder, ctx)
+            patched = makefile.read_bytes()
+            openssl._patch_posix_helper_rules(builder, ctx)
+            self.assertEqual(patched, makefile.read_bytes())
+            after = subprocess.run(command, cwd=ctx.build_dir, env=env, capture_output=True, text=True)
+            self.assertEqual(0, after.returncode, after.stdout + after.stderr)
+            for name, content in source_files.items():
+                destination = ctx.build_dir / name
+                self.assertFalse(destination.is_symlink())
+                self.assertEqual(content, destination.read_text())
+                self.assertEqual(content, (ctx.src_dir / name).read_text())
+            self.assertTrue(os.access(ctx.build_dir / "util/opensslwrap.sh", os.X_OK))
+
+    def test_helper_rule_patch_skips_windows_and_dry_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ctx = _context(root, "Debug")
+            # Neither skipped case needs a generated Makefile or creates files.
+            for os_name, dry_run in (("windows", False), ("linux", True)):
+                builder = _builder(root, os_name=os_name, static=True, dry_run=dry_run)
+                openssl._patch_posix_helper_rules(builder, ctx)
+            self.assertFalse(ctx.build_dir.exists())
 
     def test_debug_variant_file_sets_d_suffix(self):
         with tempfile.TemporaryDirectory() as tmp:
