@@ -67,7 +67,10 @@ def main() -> int:
     parser.add_argument(
         "--force-update",
         action="store_true",
-        help="Interactively discard local source changes and refresh existing Git checkouts; must be used alone",
+        help=(
+            "Interactively discard local source changes and refresh existing Git checkouts; "
+            "may be combined only with --config, --user-config, or --no-user-config"
+        ),
     )
     parser.add_argument(
         "--prepare-only",
@@ -132,9 +135,17 @@ def main() -> int:
     )):
         parser.error("--register-sources cannot be combined with build, update, or other reporting operations")
     if args.force_update:
-        extra_args = [arg for arg in sys.argv[1:] if arg != "--force-update"]
+        config_options = {"force_update", "config", "user_config", "no_user_config"}
+        extra_args = [
+            f"--{name.replace('_', '-')}"
+            for name, value in vars(args).items()
+            if name not in config_options and value != parser.get_default(name)
+        ]
         if extra_args:
-            parser.error("--force-update must be used alone; it cannot be combined with other options")
+            parser.error(
+                "--force-update may be combined only with --config, --user-config, or --no-user-config; "
+                f"not with {', '.join(extra_args)}"
+            )
 
     config_path = Path(args.config).expanduser().resolve()
     user_config_path = Path(args.user_config).expanduser().resolve() if args.user_config else None

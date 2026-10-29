@@ -315,8 +315,9 @@ uv run build.py --list-repos
 uv run build.py --update-only
 
 # Destructively reset and refresh every existing configured source checkout.
-# This command must be used alone and requires typing FORCE-UPDATE.
+# Only config-selection options may accompany it; requires typing FORCE-UPDATE.
 uv run build.py --force-update
+uv run build.py --force-update --user-config build_ub_ngpl.user.toml
 
 # Clone/fetch/checkout repos and run source-prep hooks only
 uv run build.py --prepare-only
@@ -748,7 +749,7 @@ PERL_EXECUTABLE = "C:\\Strawberry\\perl\\bin\\perl.exe"
 ## Troubleshooting
 
 - **Rebuild not triggered after local edits**: stamps track dependency fingerprints and applied per-repo option layers, but not uncommitted working tree changes. Use `--force --only <repo>` for targeted rebuilds or `--force-all` for a clean run.
-- **A source checkout blocks `--update`**: normal updates intentionally preserve tracked changes and local commits. Run `uv run build.py --force-update` by itself, review its warning, and type `FORCE-UPDATE` to restore every existing configured checkout. It discards tracked changes/local commits and ordinary untracked files, but leaves ignored files and does not clone missing sources. A path that Git cannot remove is reported as an incomplete checkout while the remaining refreshes continue.
+- **A source checkout blocks `--update`**: normal updates intentionally preserve tracked changes and local commits. Run `uv run build.py --force-update`, optionally with `--config`, `--user-config`, or `--no-user-config`, review its warning, and type `FORCE-UPDATE` to restore every existing configured checkout. Config selection chooses the source tree; force-update refreshes all existing configured checkouts rather than applying build/profile selections. It discards tracked changes/local commits and ordinary untracked files, but leaves ignored files and does not clone missing sources. A path that Git cannot remove is reported as an incomplete checkout while the remaining refreshes continue.
 - **uv cache permission issues**: set `UV_CACHE_DIR` to a writable directory (e.g. `UV_CACHE_DIR=/tmp/uv-cache`).
 - **nativefiledialog-extended (Linux) missing/broken GTK or Wayland deps**: the builder configures `nativefiledialog-extended` with the GTK3 backend (`NFD_PORTAL=OFF`) and upstream Wayland support (`NFD_WAYLAND=ON`). On Ubuntu/Debian install with `sudo apt-get install pkg-config libgtk-3-dev libwayland-dev wayland-protocols`, then verify `pkg-config --modversion gtk+-3.0 wayland-client wayland-protocols`. To use the portal backend instead, override `NFD_PORTAL=ON`; to avoid Wayland protocol generation, override `NFD_WAYLAND=OFF`.
 - **Linux link error `ld.lld: error: unable to find library -lvdpau`**: install `libvdpau-dev` (`sudo apt-get install libvdpau-dev`). This library is used by FFmpeg VDPAU hardware-acceleration support and may be pulled transitively when statically linking OpenImageIO with FFmpeg enabled.
