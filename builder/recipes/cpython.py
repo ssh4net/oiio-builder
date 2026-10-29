@@ -9,7 +9,7 @@ from .policy import cpython_requested
 from ..runner import banner, print_cmd, run
 
 
-STAMP_REVISION = "6"
+STAMP_REVISION = "7"
 
 _OPENSSL4_REMOVED_METHOD_DEFINES = (
     "-DOPENSSL_NO_SSL3",
@@ -124,6 +124,25 @@ def _apply_openssl_compat_flags(builder, env: dict[str, str], install_prefix: Pa
     )
 
 
+def _copy_posix_shared_modules(builder, build_dir: Path) -> None:
+    if builder.platform.os == "windows" or builder.dry_run:
+        return
+    makefile = build_dir / "Makefile"
+    if not makefile.is_file():
+        return
+    original = makefile.read_text(encoding="utf-8")
+    # The build/lib.* staging directory is another import location for the
+    # extensions in Modules/. Regular copies work on CIFS without symlinks.
+    # Remove old staging links first so cp cannot follow them back to Modules/.
+    updated = original.replace(
+        '$(LN) -sf ../../$$mod $$target/`basename $$mod`;',
+        'test -n "$$target" && rm -f "$$target/`basename "$$mod"`" && '
+        'cp -f "$$mod" "$$target/`basename "$$mod"`" || exit 1;',
+    )
+    if updated != original:
+        makefile.write_text(updated, encoding="utf-8")
+
+
 def _build_posix(builder, ctx, env: dict[str, str]) -> None:
     build_dir = ctx.build_dir
     src_dir = ctx.src_dir
@@ -193,6 +212,7 @@ def _build_posix(builder, ctx, env: dict[str, str]) -> None:
     )
     if builder.platform.os == "macos":
         _force_macos_build_python_suffix(builder, build_dir)
+    _copy_posix_shared_modules(builder, build_dir)
 
     build_cmd = ["make", f"-j{builder._jobs()}"]
     print_cmd("build command", build_cmd)
