@@ -716,6 +716,7 @@ target_link_libraries(my_target PRIVATE SDL3::SDL3)
 ### Adobe DNG SDK + XMP (optional)
 
 This enables LibRaw's optional Adobe DNG SDK integration (`USE_DNGSDK`) by building the SDK via `DNG-CMake` and linking it into `libraw`.
+The recipe recognizes native C-sample and DNG SDK support in newer LibRaw-cmake checkouts and retains source-patch fallbacks for older checkouts.
 
 Enable it (recommended: in `build.user.toml`):
 ```toml

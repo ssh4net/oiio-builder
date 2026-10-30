@@ -6,7 +6,7 @@ from .policy import imageio_enabled
 from ..tooling import resolve_openmp_root
 
 
-STAMP_REVISION = "10"
+STAMP_REVISION = "11"
 
 
 def enabled(builder, _repo) -> bool:
@@ -196,12 +196,18 @@ def _windows_lcms_args(builder, ctx) -> list[str]:
     ]
 
 
-def patch_source(_builder, src_dir: Path) -> None:
+def patch_source(builder, src_dir: Path) -> None:
+    if getattr(builder, "dry_run", False):
+        return
     cmake_lists = src_dir / "CMakeLists.txt"
     if not cmake_lists.exists():
         return
 
-    original_text = cmake_lists.read_text(encoding="utf-8", errors="replace")
+    original_bytes = cmake_lists.read_bytes()
+    newline = "\r\n" if b"\r\n" in original_bytes else "\n"
+    original_text = original_bytes.decode("utf-8", errors="replace").replace("\r\n", "\n")
+    def save(text: str) -> None:
+        cmake_lists.write_bytes(text.replace("\n", newline).encode("utf-8"))
     lines = original_text.splitlines()
     changed = False
 
@@ -213,7 +219,8 @@ def patch_source(_builder, src_dir: Path) -> None:
         stripped = line.strip()
         if not stripped.startswith("project(") or "libraw" not in stripped:
             continue
-        if "LANGUAGES CXX" in line and "LANGUAGES C CXX" not in line:
+        if ("LANGUAGES CXX" in line and "LANGUAGES C CXX" not in line
+                and "enable_language(C)" not in original_text):
             lines[i] = line.replace("LANGUAGES CXX", "LANGUAGES C CXX")
             changed = True
         break
@@ -257,6 +264,15 @@ include_directories(${CMAKE_CURRENT_BINARY_DIR}/
             text = text.replace(needle, replacement, 1)
     patched_text_changed = text != original_text
 
+    # Newer LibRaw-cmake checkouts provide this optional integration natively.
+    # Keep the fallback below for older checkouts without duplicating native
+    # options/links or imposing a C compiler on library-only native builds.
+    if ("OIIO_BUILDER_DNGSDK_BEGIN" not in text
+            and "find_package(dng_sdk CONFIG REQUIRED)" in text and "dng_sdk::dng_sdk" in text):
+        if patched_text_changed:
+            save(text)
+        return
+
     option_block = """\
 # OIIO_BUILDER_DNGSDK_BEGIN
 option(ENABLE_DNGSDK "Build library with Adobe DNG SDK support (USE_DNGSDK)" OFF)
@@ -270,7 +286,7 @@ if(ENABLE_DNGSDK)
     message(STATUS "Check for Adobe DNG SDK availability...")
 
     if(DNGSDK_ROOT)
-        list(PREPEND CMAKE_PREFIX_PATH "${DNGSDK_ROOT}")
+        list(INSERT CMAKE_PREFIX_PATH 0 "${DNGSDK_ROOT}")
     endif()
 
     # Prefer the CMake package produced by DNG-CMake (required for static builds
@@ -312,9 +328,9 @@ endif()
                 lines[begin : end + 1] = replacement
                 blocks_changed = True
         if blocks_changed:
-            cmake_lists.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            save("\n".join(lines) + "\n")
         elif patched_text_changed:
-            cmake_lists.write_text(text, encoding="utf-8")
+            save(text)
         return
 
     lines = text.splitlines()
@@ -338,4 +354,4 @@ endif()
     if not inserted_apply:
         return
 
-    cmake_lists.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    save("\n".join(lines) + "\n")

@@ -23,6 +23,57 @@ def _args(root: Path, platform: str, mode: str = "Debug") -> list[str]:
 
 
 class LibrawRecipeTests(unittest.TestCase):
+    def test_native_integration_is_not_repatched_or_forced_to_enable_c(self):
+        text = '''project(libraw LANGUAGES CXX)
+option(ENABLE_EXAMPLES "Build samples" OFF)
+if(ENABLE_EXAMPLES)
+    enable_language(C)
+endif()
+option(ENABLE_DNGSDK "SDK" OFF)
+if(ENABLE_DNGSDK)
+    find_package(dng_sdk CONFIG REQUIRED)
+    target_link_libraries(raw PUBLIC dng_sdk::dng_sdk)
+endif()
+'''
+        for newline in ("\n", "\r\n"):
+            with self.subTest(newline=newline), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                path = root / "CMakeLists.txt"
+                original = text.replace("\n", newline).encode()
+                path.write_bytes(original)
+                libraw.patch_source(SimpleNamespace(dry_run=False), root)
+                self.assertEqual(original, path.read_bytes())
+
+    def test_legacy_patch_remains_idempotent_preserves_crlf_and_obeys_dry_run(self):
+        text = '''project(libraw LANGUAGES CXX)
+option(LIBRAW_INSTALL "Install" ON)
+include_directories(${CMAKE_CURRENT_BINARY_DIR}/
+                    ${LIBRAW_PATH}/
+                   )
+target_include_directories(raw
+        PUBLIC includes)
+target_include_directories(raw_r
+        PUBLIC includes)
+# -- Files to install
+'''
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "CMakeLists.txt"
+            before = text.replace("\n", "\r\n").encode()
+            path.write_bytes(before)
+            libraw.patch_source(SimpleNamespace(dry_run=True), root)
+            self.assertEqual(before, path.read_bytes())
+            libraw.patch_source(SimpleNamespace(dry_run=False), root)
+            patched = path.read_bytes()
+            libraw.patch_source(SimpleNamespace(dry_run=False), root)
+            self.assertEqual(patched, path.read_bytes())
+            self.assertNotIn(b"\n", patched.replace(b"\r\n", b""))
+            self.assertIn(b"LANGUAGES C CXX", patched)
+            self.assertIn(b"include_directories(BEFORE", patched)
+            self.assertIn(b"OIIO_BUILDER_DNGSDK_BEGIN", patched)
+            self.assertIn(b"list(INSERT CMAKE_PREFIX_PATH 0", patched)
+            self.assertNotIn(b"list(PREPEND", patched)
+
     def test_regeneration_policy_is_scoped_to_linux_and_preserves_feature_options(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
