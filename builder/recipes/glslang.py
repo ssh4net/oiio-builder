@@ -12,7 +12,7 @@ from ..git_ops import git_head
 from ..runner import banner, print_cmd
 from .policy import imageio_enabled
 
-STAMP_REVISION = "3"
+STAMP_REVISION = "4"
 
 
 def enabled(builder, _repo) -> bool:
@@ -144,7 +144,39 @@ def _copy_repo_tree(src: Path, dst: Path) -> None:
     )
 
 
+def _patch_legacy_alias(src_dir: Path) -> None:
+    cmake_lists = src_dir / "StandAlone" / "CMakeLists.txt"
+    if not cmake_lists.is_file():
+        return
+    original = cmake_lists.read_bytes().decode("utf-8")
+    newline = "\r\n" if "\r\n" in original else "\n"
+    text = original.replace("\r\n", "\n")
+    # Upstream already copies this executable alias on Windows. Use copies on
+    # POSIX too, where a build or install directory can be on a CIFS share.
+    updated = text.replace("set(link_method create_symlink)", "set(link_method copy_if_different)")
+    remove_build_alias = '    COMMAND "${CMAKE_COMMAND}" -E remove -f "${legacy_glslang_name}"'
+    if remove_build_alias not in updated:
+        command = '    COMMAND "${CMAKE_COMMAND}" -E "${link_method}"'
+        updated = updated.replace(command, remove_build_alias + "\n" + command, 1)
+
+    # Remove legacy links first, so copying cannot follow them back to glslang.
+    remove_installed_alias = (
+        r'        file(REMOVE \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/${legacy_glslang_name}\")'
+    )
+    if remove_installed_alias not in updated:
+        updated = updated.replace("        execute_process(\n", remove_installed_alias + "\n        execute_process(\n", 1)
+    working_directory = r'            WORKING_DIRECTORY \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}\"'
+    updated = updated.replace(
+        working_directory + "\n        )",
+        working_directory + "\n            COMMAND_ERROR_IS_FATAL ANY\n        )",
+    )
+    if updated != text:
+        cmake_lists.write_bytes(updated.replace("\n", newline).encode("utf-8"))
+
+
 def patch_source(builder, src_dir: Path) -> None:
+    if not builder.dry_run:
+        _patch_legacy_alias(src_dir)
     if not _enable_opt(builder):
         return
 
