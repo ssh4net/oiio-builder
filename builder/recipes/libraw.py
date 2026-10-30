@@ -6,7 +6,7 @@ from .policy import imageio_enabled
 from ..tooling import resolve_openmp_root
 
 
-STAMP_REVISION = "9"
+STAMP_REVISION = "10"
 
 
 def enabled(builder, _repo) -> bool:
@@ -27,6 +27,10 @@ def cmake_args(builder, ctx) -> list[str]:
         "-DENABLE_X3FTOOLS=ON",
         "-DENABLE_6BY9RPI=ON",
     ]
+    if builder.platform.os == "linux":
+        # The builder configures before every rebuild. Ninja's glob-check
+        # timestamps can otherwise keep regenerating CMake on a CIFS tree.
+        args.append("-DCMAKE_SUPPRESS_REGENERATION=ON")
 
     omp_env = dict(cfg.env)
     if builder.platform.os == "windows":
