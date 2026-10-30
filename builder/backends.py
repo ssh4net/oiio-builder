@@ -3,8 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 import os
+import re
 import shutil
+import subprocess
 import sys
+import tempfile
 
 from .recipes import registry as recipe_registry
 from .libtool import patch_archive_locks
@@ -320,6 +323,55 @@ def cmake_common_args(builder: Any, repo: Any, ctx: Any) -> list[str]:
     return args
 
 
+def _transient_lld_output_failure(log_path: Path) -> bool:
+    try:
+        lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return False
+    write_error = re.compile(
+        r"ld\.lld(?:-\d+(?:\.\d+)*)?: error: failed to write output .+: Resource temporarily unavailable"
+    )
+    driver_error = re.compile(
+        r"clang(?:\+\+)?(?:-\d+(?:\.\d+)*)?: error: linker command failed with exit code \d+"
+        r" \(use -v to see invocation\)"
+    )
+    writes = 0
+    for line in lines:
+        line = line.strip()
+        if write_error.fullmatch(line):
+            writes += 1
+        elif ("error:" in line.lower() or line.startswith("CMake Error")) and not driver_error.fullmatch(line):
+            return False
+    failed_steps = sum(line.startswith("FAILED: ") for line in lines)
+    return writes > 0 and (failed_steps == 0 or failed_steps == writes)
+
+
+def _run_cmake_build(builder: Any, ctx: Any, env: dict[str, str], command: list[str]) -> None:
+    log_path = Path(builder._repo_log_path(ctx.repo.name, ctx.build_type, "build"))
+    try:
+        run(command, env=env, dry_run=builder.dry_run, log_path=str(log_path))
+    except subprocess.CalledProcessError as first_error:
+        if builder.dry_run or not _transient_lld_output_failure(log_path):
+            raise
+        saved_log: str | None = None
+        try:
+            descriptor, saved_log = tempfile.mkstemp(
+                prefix=f"{log_path.stem}.first-attempt.", suffix=log_path.suffix, dir=log_path.parent,
+            )
+            os.close(descriptor)
+            shutil.copy2(log_path, saved_log)
+        except OSError:
+            if saved_log is not None:
+                try:
+                    Path(saved_log).unlink(missing_ok=True)
+                except OSError:
+                    pass
+            raise first_error
+        print(f"[retry] Temporary LLD output-write failure; retrying build once. First log: {saved_log}", flush=True)
+        # Resume the existing graph: do not reconfigure or discard compiled objects.
+        run(command, env=env, dry_run=False, log_path=str(log_path))
+
+
 def _build_cmake(builder: Any, ctx: Any, env: dict[str, str]) -> None:
     repo = ctx.repo
     build_dir = ctx.build_dir
@@ -347,7 +399,7 @@ def _build_cmake(builder: Any, ctx: Any, env: dict[str, str]) -> None:
     build_cmd = ["cmake", "--build", str(build_dir), "--config", ctx.build_type, "--parallel", str(builder._jobs())]
     print_cmd("build command", build_cmd)
     banner(f"{repo.name} ({ctx.build_type}) - building")
-    run(build_cmd, env=env, dry_run=builder.dry_run, log_path=str(builder._repo_log_path(repo.name, ctx.build_type, "build")))
+    _run_cmake_build(builder, ctx, env, build_cmd)
 
     install_cmd = ["cmake", "--install", str(build_dir), "--config", ctx.build_type]
     print_cmd("install command", install_cmd)
