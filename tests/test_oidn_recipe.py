@@ -47,6 +47,7 @@ class OidnRecipeTests(unittest.TestCase):
             self.assertEqual(cache["OIDN_DEVICE_CUDA"], os_name != "macos")
             self.assertEqual(cache["OIDN_DEVICE_METAL"], os_name == "macos")
             self.assertTrue(cache["OIDN_FILTER_RTLIGHTMAP"])
+            self.assertTrue(cache["OIDN_APPS"])
             self.assertEqual(cache["OIDN_DEVICE_CUDA_API"], "RuntimeStatic")
         for static in (True, False):
             builder = SimpleNamespace(config=SimpleNamespace(global_cfg=SimpleNamespace(static_default=static)),

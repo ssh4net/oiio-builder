@@ -487,9 +487,10 @@ The `oidn` recipe uses upstream tag `v2.5.1`. Enable it with
 `build_oidn = true` under `[global]` in the selected user config. The default
 devices are CUDA on Linux/Windows, Metal on Apple Silicon macOS, and CPU on Intel
 macOS. SYCL and HIP are disabled; both RT and RTLightmap weights are included.
-Example and test apps are disabled by default. CPU builds (including Intel Macs)
-require an externally installed ISPC 1.30+ and TBB. Devices and filters can be
-changed through the usual repo overrides.
+The apps are enabled by default: `oidnDenoise`, `oidnBenchmark`, and `oidnTest`
+(with `.exe` on Windows). CPU builds (including Intel Macs) require an externally
+installed ISPC 1.30+ and TBB. Devices and filters can be changed through the usual
+repo overrides.
 
 CUDA builds require CUDA Toolkit 12.8+ and CMake 3.18+ (3.23.2+ with the Visual
 Studio generator). Metal requires CMake 3.21+ and Xcode 15+. Python 3 and Git LFS
@@ -525,15 +526,6 @@ uv run build.py --user-config build_win.user.toml --only oidn --build-types Debu
 
 The Linux command assumes a dedicated user config with `build_oidn=true`,
 `use_libcxx=false`, and separate local build/install paths.
-
-For a build with the device test/benchmark apps enabled, add:
-
-```toml
-[[repo_overrides]]
-name = "oidn"
-[repo_overrides.cmake.cache]
-OIDN_APPS = true
-```
 
 Consumers use `find_package(OpenImageDenoise 2.5 CONFIG REQUIRED)` and link
 `OpenImageDenoise`. The exported target carries the static core, CUDA backend,
