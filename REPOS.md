@@ -30,6 +30,7 @@ Repositories referenced by `build_MOS_stack_until_OIIO.sh` plus builder-only add
 | toml11 | toml11 | https://github.com/ToruNiina/toml11.git | Optional header-only TOML CMake package for local consumers |
 | simdjson | simdjson | https://github.com/simdjson/simdjson.git | Optional standalone JSON library; also enabled by fastgltf |
 | simdutf | simdutf | https://github.com/simdutf/simdutf.git | Optional standalone Unicode/base64 library; also enabled by fastgltf |
+| oidn | oidn | https://github.com/RenderKit/oidn.git | Optional Intel Open Image Denoise v2.5.1; CUDA on Linux/Windows, Metal on macOS; guarded static CUDA patch with RuntimeStatic |
 | fastgltf | fastgltf | https://github.com/spnda/fastgltf.git | Optional C++20 glTF library; uses the separately installed simdjson and simdutf packages with downloads disabled |
 | miniply | miniply | https://github.com/ssh4net/miniply.git | Small C++ library; builder disables CLI tools |
 | OpenMeta | OpenMeta | https://github.com/ssh4net/OpenMeta.git | Builds library + Python wheel; can use optional `dng_sdk` package and `rapidfuzz-cpp` |

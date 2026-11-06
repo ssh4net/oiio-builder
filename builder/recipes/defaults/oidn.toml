@@ -1,0 +1,22 @@
+[cmake.cache]
+CMAKE_INSTALL_LIBDIR = "lib"
+OIDN_DEVICE_CPU = false
+OIDN_DEVICE_SYCL = false
+OIDN_DEVICE_HIP = false
+OIDN_DEVICE_CUDA = false
+OIDN_DEVICE_METAL = false
+OIDN_DEVICE_CUDA_API = "RuntimeStatic"
+OIDN_FILTER_RT = true
+OIDN_FILTER_RTLIGHTMAP = true
+OIDN_APPS = false
+OIDN_APPS_OPENIMAGEIO = false
+OIDN_INSTALL_DEPENDENCIES = false
+
+[platform.linux.cmake.cache]
+OIDN_DEVICE_CUDA = true
+
+[platform.windows.cmake.cache]
+OIDN_DEVICE_CUDA = true
+
+[platform.macos.cmake.cache]
+OIDN_DEVICE_METAL = true

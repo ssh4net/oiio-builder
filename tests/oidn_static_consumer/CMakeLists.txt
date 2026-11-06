@@ -1,0 +1,15 @@
+cmake_minimum_required(VERSION 3.18)
+project(oidn_static_consumer LANGUAGES CXX)
+
+find_package(OpenImageDenoise 2.5 CONFIG REQUIRED)
+get_target_property(oidn_type OpenImageDenoise TYPE)
+get_target_property(cuda_type OpenImageDenoise_device_cuda TYPE)
+if(NOT oidn_type STREQUAL "STATIC_LIBRARY" OR NOT cuda_type STREQUAL "STATIC_LIBRARY")
+  message(FATAL_ERROR "This consumer requires the static OIDN CUDA package")
+endif()
+
+add_executable(oidn_static_consumer main.cpp)
+target_compile_features(oidn_static_consumer PRIVATE cxx_std_17)
+target_link_libraries(oidn_static_consumer PRIVATE OpenImageDenoise CUDA::cudart_static)
+enable_testing()
+add_test(NAME oidn_static_cuda COMMAND oidn_static_consumer)

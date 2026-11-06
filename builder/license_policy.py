@@ -88,6 +88,7 @@ LICENSE_RECORDS: dict[str, LicenseRecord] = {
     "rapidfuzz-cpp": LicenseRecord("MIT", "allow"),
     "nlohmann-json": LicenseRecord("MIT", "allow"),
     "toml11": LicenseRecord("MIT", "allow"),
+    "oidn": LicenseRecord("Apache-2.0 AND BSD-3-Clause AND LicenseRef-Intel-OIDN-Binary AND LicenseRef-NVIDIA-CUDA", "allow-with-constraint", "Retain OIDN/weights, CUTLASS and CUDA notices. Upstream installs its BINARY-LICENSE for RuntimeStatic builds; retain it and the CUDA Toolkit terms."),
     "fastgltf": LicenseRecord("MIT", "allow"),
     "geometry-central": LicenseRecord("MIT", "allow"),
     "geogram": LicenseRecord("BSD-3-Clause core", "allow-with-constraint", "License profiles disable the optional AGPL/non-commercial TetGen and restricted Triangle code."),

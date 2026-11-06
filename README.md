@@ -141,6 +141,7 @@ Key options:
   Consumers use `find_package(nlohmann_json CONFIG REQUIRED)` and link `nlohmann_json::nlohmann_json`.
 - `build_toml11`: build/install optional header-only toml11 CMake package for local consumers (disabled by default).
 - `build_fastgltf`: build/install the optional fastgltf C++20 glTF library; also enables the standalone simdjson and simdutf recipes (disabled by default).
+- `build_oidn`: build/install optional Intel Open Image Denoise 2.5.1; see [OIDN](#open-image-denoise-optional). Disabled in `build.toml`, enabled in the supplied machine-local user configs.
 - `build_simdjson`, `build_simdutf`: build/install these optional packages independently of fastgltf (disabled by default).
 - `build_geogram`, `build_geometry_central`: build/install optional geometry libraries (disabled by default).
 - `build_libsodium`: build/install optional libsodium from its moving `stable` branch (disabled by default).
@@ -479,6 +480,65 @@ version for discovery does not guarantee API compatibility: incompatible API
 changes still fail during compilation. This is a permanent dependency policy,
 not a per-release workaround. Unrecognized upstream discovery layouts stop
 source patching rather than silently re-enabling the bundled fallback.
+
+### Open Image Denoise (optional)
+
+The `oidn` recipe uses upstream tag `v2.5.1`. Enable it with
+`build_oidn = true` under `[global]` in the selected user config. The default
+devices are CUDA on Linux/Windows, Metal on Apple Silicon macOS, and CPU on Intel
+macOS. SYCL and HIP are disabled; both RT and RTLightmap weights are included.
+Example and test apps are disabled by default. CPU builds (including Intel Macs)
+require an externally installed ISPC 1.30+ and TBB. Devices and filters can be
+changed through the usual repo overrides.
+
+CUDA builds require CUDA Toolkit 12.8+ and CMake 3.18+ (3.23.2+ with the Visual
+Studio generator). Metal requires CMake 3.21+ and Xcode 15+. Python 3 and Git LFS
+are needed for source preparation. The recipe initializes only missing required
+submodules (`weights` and, for CUDA, `external/cutlass`), preserves populated
+checkouts, and stops with a recovery command if weights are still LFS pointers.
+For Linux builds from a network source tree, put `build_root` on a local disk.
+On x86_64, NVCC rejects libc++. The existing `build_ub_ngpl.user.toml` retains
+`use_libcxx=true`; its CUDA OIDN build therefore stops with a diagnostic. Use a
+separate build root and install prefix with `use_libcxx=false` for this recipe;
+do not change the ABI of an already populated libc++ prefix.
+
+The recipe maps `static_default` to `OIDN_STATIC_LIB` and applies a guarded,
+idempotent source patch for static CUDA. That path builds the CUDA backend in the
+main CMake project, registers it directly, and exports static libraries and
+their dependencies. It uses `OIDN_DEVICE_CUDA_API=RuntimeStatic`, avoiding the
+Driver backend's private CUDA runtime replacement in applications that already
+use CUDA. The installed package still requires the CUDA Toolkit for linking and
+the system NVIDIA driver at runtime. Retain the upstream and CUDA notices when
+redistributing. SYCL/HIP cannot be combined with this static CUDA path.
+
+The original shared CUDA path remains available when `static_default=false`.
+`OIDN_BUILDER_STATIC_CUDA=OFF` restores upstream hybrid behavior even when
+`OIDN_STATIC_LIB=ON`; use a separate prefix for that combination. All these
+options can be set through normal `[[repo_overrides]]` entries. Source layout
+changes that do not match the 2.5.1 patch stop preparation before any patch files
+are written. `--dry-run` does not apply source patches or fetch submodules.
+
+```bash
+uv run build.py --user-config oidn-libstdcxx.user.toml --only oidn --build-types Release --no-update
+uv run build.py --user-config build_win.user.toml --only oidn --build-types Debug,Release --no-update
+```
+
+The Linux command assumes a dedicated user config with `build_oidn=true`,
+`use_libcxx=false`, and separate local build/install paths.
+
+For a build with the device test/benchmark apps enabled, add:
+
+```toml
+[[repo_overrides]]
+name = "oidn"
+[repo_overrides.cmake.cache]
+OIDN_APPS = true
+```
+
+Consumers use `find_package(OpenImageDenoise 2.5 CONFIG REQUIRED)` and link
+`OpenImageDenoise`. The exported target carries the static core, CUDA backend,
+and CUDA runtime dependencies; consumers do not need to enable the CUDA language
+just to call the OIDN API.
 
 ### fastgltf, simdjson, and simdutf
 

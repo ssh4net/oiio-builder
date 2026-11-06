@@ -121,6 +121,7 @@ build_libyuv = false
 build_nlohmann_json = false
 build_toml11 = false
 build_libsodium = false
+build_oidn = false
 build_fastgltf = false
 build_simdjson = false
 build_simdutf = false
@@ -594,6 +595,15 @@ optional = true
 name = "simdutf"
 dir = "simdutf"
 url = "https://github.com/simdutf/simdutf.git"
+build_system = "cmake"
+optional = true
+
+[[repos]]
+name = "oidn"
+dir = "oidn"
+url = "https://github.com/RenderKit/oidn.git"
+ref = "v2.5.1"
+ref_type = "tag"
 build_system = "cmake"
 optional = true
 
