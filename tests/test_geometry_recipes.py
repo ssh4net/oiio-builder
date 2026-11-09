@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -145,6 +147,52 @@ class GeometryRecipeTests(unittest.TestCase):
                 before = {path: path.read_bytes() for path in paths}
                 recipe.patch_source(SimpleNamespace(dry_run=True), root)
                 self.assertEqual(before, {path: path.read_bytes() for path in paths})
+
+    @unittest.skipUnless(shutil.which("cmake") and shutil.which("c++"), "CMake and C++ compiler are needed")
+    def test_geogram_without_tbb_builds_and_exports_a_usable_package(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source"
+            (source / "cmake").mkdir(parents=True)
+            (source / "cmake/geogram.cmake").write_text("# Static versus dynamic builds\n")
+            (source / "CMakeLists.txt").write_text(
+                "cmake_minimum_required(VERSION 3.16)\nproject(Geogram VERSION 1.10.2 LANGUAGES CXX)\n"
+                "set(VORPALINE_INCLUDE_SUBPATH geogram1)\nset(GEOGRAM_WITH_GRAPHICS OFF)\nset(LINUX TRUE)\n"
+                "if(GEOGRAM_WITH_TBB AND NOT TARGET TBB::tbb)\nendif()\n"
+                "add_library(geogram STATIC core.cpp)\ntarget_link_libraries(geogram tbb)\n"
+            )
+            (source / "core.cpp").write_text(
+                "#ifndef GEO_NO_PARALLEL_STL\n#error TBB-free build must disable parallel STL\n#endif\n"
+                "int geogram_fixture() { return 0; }\n"
+            )
+            geogram.patch_source(SimpleNamespace(dry_run=False), source)
+            prefix = root / "prefix"
+
+            def run(*command):
+                result = subprocess.run(command, capture_output=True, text=True)
+                self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+
+            run("cmake", "-S", str(source), "-B", str(root / "build"),
+                f"-DCMAKE_INSTALL_PREFIX={prefix}", "-DGEOGRAM_WITH_TBB=OFF",
+                "-DCMAKE_DISABLE_FIND_PACKAGE_TBB=TRUE")
+            run("cmake", "--build", str(root / "build"))
+            run("cmake", "--install", str(root / "build"))
+            consumer = root / "consumer"
+            consumer.mkdir()
+            (consumer / "CMakeLists.txt").write_text(
+                "cmake_minimum_required(VERSION 3.16)\nproject(consumer LANGUAGES CXX)\n"
+                "find_package(Geogram CONFIG REQUIRED)\nadd_executable(consumer main.cpp)\n"
+                "target_link_libraries(consumer PRIVATE Geogram::geogram)\n"
+            )
+            (consumer / "main.cpp").write_text(
+                "#ifndef GEO_NO_PARALLEL_STL\n#error TBB-free definition must reach consumers\n#endif\n"
+                "int geogram_fixture();\nint main() { return geogram_fixture(); }\n"
+            )
+            # The install interface points at the public header directory.
+            (prefix / "include/geogram1").mkdir(parents=True)
+            run("cmake", "-S", str(consumer), "-B", str(root / "consumer-build"),
+                f"-DCMAKE_PREFIX_PATH={prefix}", "-DCMAKE_DISABLE_FIND_PACKAGE_TBB=TRUE")
+            run("cmake", "--build", str(root / "consumer-build"))
 
     def test_submodule_initialization_only_targets_missing_checkouts(self):
         with tempfile.TemporaryDirectory() as tmp:

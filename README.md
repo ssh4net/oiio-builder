@@ -493,9 +493,11 @@ changed through the usual repo overrides.
 
 CUDA builds require CUDA Toolkit 12.8+ and CMake 3.18+ (3.23.2+ with the Visual
 Studio generator). Metal requires CMake 3.21+ and Xcode 15+. Python 3 and Git LFS
-are needed for source preparation. The recipe initializes only missing required
-submodules (`weights` and, for CUDA, `external/cutlass`), preserves populated
-checkouts, and stops with a recovery command if weights are still LFS pointers.
+are needed for source preparation. The recipe checks Git LFS before fetching
+missing weights and reports a clear error if unavailable. It initializes only
+missing required submodules (`weights` and, for CUDA, `external/cutlass`),
+preserves populated checkouts, and stops with a recovery command if weights
+are still LFS pointers.
 For Linux builds from a network source tree, put `build_root` on a local disk.
 On x86_64, NVCC rejects libc++. The existing `build_ub_ngpl.user.toml` retains
 `use_libcxx=true`; its CUDA OIDN build therefore stops with a diagnostic. Use a
@@ -585,9 +587,12 @@ build_geometry_central = true
 Geogram builds its core and graphics libraries, but not programs/examples/tests.
 The defaults retain the inspected checkouts' Lua, legacy numerics, HLBFGS,
 TetGen, and Triangle features, with TBB's thread-manager option disabled.
-GLFW comes from the separate builder recipe. Linux still needs an installed
-TBB CONFIG package for upstream's parallel-STL link dependency, even when
-`GEOGRAM_WITH_TBB=OFF`. Graphics also needs the platform OpenGL/X11 development
+GLFW comes from the separate builder recipe. On Linux, with `GEOGRAM_WITH_TBB=OFF`, the
+recipe also disables TBB-backed parallel STL and removes upstream's unconditional
+Linux TBB link, so neither Geogram nor its consumers require TBB. Geogram's native
+thread manager and `GEO::parallel_for()` remain enabled. Explicitly
+enabling `GEOGRAM_WITH_TBB` requires an external TBB CONFIG package.
+Graphics also needs the platform OpenGL/X11 development
 packages. Both license profiles disable TetGen and Triangle; the unprofiled
 defaults retain their license restrictions and require a separate review.
 

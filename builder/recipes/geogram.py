@@ -4,7 +4,7 @@ from pathlib import Path
 
 from ._geometry_support import initialize_missing_submodules, patch_cmake_block
 
-STAMP_REVISION = "1"
+STAMP_REVISION = "3"
 
 
 def enabled(builder, _repo) -> bool:
@@ -41,7 +41,7 @@ def patch_source(builder, src_dir: Path) -> None:
                       "  find_package(OpenGL REQUIRED)\n"
                       "  if(UNIX AND NOT APPLE AND NOT EMSCRIPTEN)\n"
                       "    find_package(X11 REQUIRED)\n  endif()\nendif()\n"
-                      "if((UNIX AND NOT APPLE AND NOT GEOGRAM_WITH_EMSCRIPTEN) OR GEOGRAM_WITH_TBB)\n"
+                      "if(GEOGRAM_WITH_TBB)\n"
                       "  find_package(TBB CONFIG REQUIRED)\nendif()",
                       before="if(GEOGRAM_WITH_TBB AND NOT TARGET TBB::tbb)")
     block = (Path(__file__).parent / "cmake" / "geogram-install.cmake").read_text(encoding="utf-8")
