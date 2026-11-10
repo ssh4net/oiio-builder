@@ -481,6 +481,28 @@ changes still fail during compilation. This is a permanent dependency policy,
 not a per-release workaround. Unrecognized upstream discovery layouts stop
 source patching rather than silently re-enabling the bundled fallback.
 
+### OpenMeta DNG SDK adapter
+
+OpenMeta defaults to `OPENMETA_WITH_DNG_SDK_ADAPTER=OFF`, independently of
+`build_dng_sdk`. Building the SDK for another library does not enable OpenMeta's
+adapter. OpenMeta then compiles with `OPENMETA_HAS_DNG_SDK=0` and exports no DNG
+SDK link dependency. `OPENMETA_HAS_DNG_SDK` is an internal compile definition;
+configure the adapter through `OPENMETA_WITH_DNG_SDK_ADAPTER` instead.
+
+To opt in for a specific prefix, enable `build_dng_sdk` and add this to its
+selected user config:
+
+```toml
+[[repo_overrides]]
+name = "OpenMeta"
+[repo_overrides.cmake.cache]
+OPENMETA_WITH_DNG_SDK_ADAPTER = true
+```
+
+Rebuild OpenMeta in each existing prefix to apply the new default and regenerate
+its installed CMake package. Rebuild static consumers that previously linked the
+SDK adapter as well; changing the recipe does not alter installed binaries.
+
 ### Open Image Denoise (optional)
 
 The `oidn` recipe uses upstream tag `v2.5.1`. Enable it with

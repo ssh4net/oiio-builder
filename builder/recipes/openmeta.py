@@ -1,10 +1,6 @@
 from __future__ import annotations
 
 
-def _dng_sdk_requested(builder) -> bool:
-    return any(repo.name == "dng-sdk" for repo in builder.repos)
-
-
 def cmake_args(builder, ctx) -> list[str]:
     cfg = builder.config.global_cfg
 
@@ -42,6 +38,5 @@ def cmake_args(builder, ctx) -> list[str]:
         f"-DOPENMETA_BUILD_SHARED={'ON' if build_shared else 'OFF'}",
         f"-DOPENMETA_BUILD_PYTHON={'ON' if build_python else 'OFF'}",
         f"-DOPENMETA_BUILD_WHEEL={'ON' if build_wheel else 'OFF'}",
-        f"-DOPENMETA_WITH_DNG_SDK_ADAPTER={'ON' if _dng_sdk_requested(builder) else 'OFF'}",
         f"-DOPENMETA_USE_LIBCXX={'ON' if use_libcxx else 'OFF'}",
     ]
