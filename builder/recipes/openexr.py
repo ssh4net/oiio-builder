@@ -5,7 +5,7 @@ from pathlib import Path
 
 from .policy import exr_enabled
 
-STAMP_REVISION = "7"
+STAMP_REVISION = "8"
 
 
 def enabled(builder, _repo) -> bool:
@@ -100,6 +100,15 @@ def _patch_system_openjph(src_dir: Path) -> None:
                 raise RuntimeError(f"OpenEXR system OpenJPH patch no longer matches upstream source: {setup}")
             return  # Older OpenEXR without an OpenJPH dependency.
         minimum = re.search(r"find_package\s*\(\s*openjph\s+([0-9]+(?:\.[0-9]+)*)\b", block.group())
+        if minimum is None and re.search(
+            r"find_package\s*\(\s*openjph\s+\$\{OPENEXR_MINIMUM_OPENJPH_VERSION\}(?=\s|\))",
+            block.group(),
+        ):
+            # Newer OpenEXR shares its minimum between CMake and pkg-config discovery.
+            minimum = re.search(
+                r'^\s*set\s*\(\s*OPENEXR_MINIMUM_OPENJPH_VERSION\s+"?([0-9]+(?:\.[0-9]+)*)"?\s*\)',
+                block.group(), re.MULTILINE,
+            )
         if minimum is None:
             raise RuntimeError(f"Cannot determine OpenEXR's OpenJPH requirement: {setup}")
     minimum_version = minimum.group(1)

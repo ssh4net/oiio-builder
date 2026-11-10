@@ -53,6 +53,15 @@ endif()
 # unrelated dependency after
 """
 
+_OPENJPH_VARIABLE_SETUP = _OPENJPH_SETUP.replace(
+    'set(OPENEXR_USE_INTERNAL_OPENJPH 0 CACHE INTERNAL "Bundled OpenJPH")',
+    'set(OPENEXR_MINIMUM_OPENJPH_VERSION 0.32.0)\n'
+    'set(OPENEXR_USE_INTERNAL_OPENJPH 0 CACHE INTERNAL "Bundled OpenJPH")',
+).replace(
+    "find_package(openjph 0.32.0 CONFIG QUIET)",
+    "find_package(openjph ${OPENEXR_MINIMUM_OPENJPH_VERSION} CONFIG QUIET)",
+)
+
 _ISOLATED_FIND_SETTINGS = """\
 set(CMAKE_FIND_USE_CMAKE_SYSTEM_PATH FALSE)
 set(CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH FALSE)
@@ -121,6 +130,39 @@ class OpenEXRRecipeTests(unittest.TestCase):
             self.assertEqual(1, setup.read_text(encoding="utf-8").count("find_package(openjph CONFIG REQUIRED)"))
             self.assertNotIn('@MINIMUM_VERSION@', setup.read_text(encoding="utf-8"))
 
+    def test_variable_minimum_is_preserved_and_patch_is_idempotent(self):
+        for newline in ("\n", "\r\n"):
+            for value in ("0.32.0", '"0.40.0"'):
+                with self.subTest(newline=newline, value=value), tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    contents = _OPENJPH_VARIABLE_SETUP.replace(
+                        "set(OPENEXR_MINIMUM_OPENJPH_VERSION 0.32.0)",
+                        f"set(OPENEXR_MINIMUM_OPENJPH_VERSION {value})",
+                    )
+                    setup, config = self._source(root, contents, newline)
+                    openexr._patch_system_openjph(root)
+                    before = setup.read_bytes(), config.read_bytes()
+                    minimum = value.strip('"')
+                    self.assertIn(f'set(_oiio_openjph_min_version "{minimum}")'.encode(), before[0])
+                    self.assertNotIn(b"OPENEXR_MINIMUM_OPENJPH_VERSION", before[0])
+                    if newline == "\r\n":
+                        self.assertNotIn(b"\n", before[0].replace(b"\r\n", b""))
+                    openexr._patch_system_openjph(root)
+                    self.assertEqual(before, (setup.read_bytes(), config.read_bytes()))
+
+    def test_unresolved_variable_minimum_is_rejected_without_writing(self):
+        for value in ("${UNKNOWN_MINIMUM}", "", '"0.40.0-dev"'):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                setup, config = self._source(root, _OPENJPH_VARIABLE_SETUP.replace(
+                    "set(OPENEXR_MINIMUM_OPENJPH_VERSION 0.32.0)",
+                    f"set(OPENEXR_MINIMUM_OPENJPH_VERSION {value})",
+                ))
+                before = setup.read_bytes(), config.read_bytes()
+                with self.assertRaisesRegex(RuntimeError, "Cannot determine OpenEXR's OpenJPH requirement"):
+                    openexr._patch_system_openjph(root)
+                self.assertEqual(before, (setup.read_bytes(), config.read_bytes()))
+
     def test_missing_or_legacy_setup_is_a_noop(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -188,8 +230,9 @@ class OpenEXRRecipeTests(unittest.TestCase):
 
     def _configure_probe(self, root: Path, version: str | None, *, minimum: str = "0.32.0",
                          target: bool = True, report_version: bool = True, force_internal: bool = False,
-                         reported_version: str | None = None):
-        setup, config = self._source(root, _OPENJPH_SETUP.replace("0.32.0", minimum))
+                         reported_version: str | None = None, variable_minimum: bool = False):
+        contents = _OPENJPH_VARIABLE_SETUP if variable_minimum else _OPENJPH_SETUP
+        setup, config = self._source(root, contents.replace("0.32.0", minimum))
         openexr._patch_system_openjph(root)
         package = root / "package"
         package.mkdir()
@@ -250,10 +293,12 @@ class OpenEXRRecipeTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("cmake"), "CMake is required for package discovery checks")
     def test_minimum_tracks_upstream_not_a_builder_allowlist(self):
-        for version, success in (("0.39.0", False), ("0.42.1", True)):
-            with self.subTest(version=version), tempfile.TemporaryDirectory() as tmp:
-                result, _ = self._configure_probe(Path(tmp), version, minimum="0.40.0")
-                self.assertEqual(success, result.returncode == 0, result.stdout + result.stderr)
+        for variable_minimum in (False, True):
+            for version, success in (("0.39.0", False), ("0.42.1", True)):
+                with self.subTest(version=version, variable=variable_minimum), tempfile.TemporaryDirectory() as tmp:
+                    result, _ = self._configure_probe(Path(tmp), version, minimum="0.40.0",
+                                                      variable_minimum=variable_minimum)
+                    self.assertEqual(success, result.returncode == 0, result.stdout + result.stderr)
 
     @unittest.skipUnless(shutil.which("cmake"), "CMake is required for package discovery checks")
     def test_exports_keep_package_abi_checks_for_the_selected_build_version(self):

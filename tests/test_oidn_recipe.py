@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from subprocess import CalledProcessError
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -133,6 +134,21 @@ class OidnRecipeTests(unittest.TestCase):
             oidn.pre_build(builder, repo, SimpleNamespace(src_dir=root), {})
             run.assert_not_called()
 
+    def test_missing_git_lfs_is_reported_before_fetching_empty_or_partial_weights(self):
+        for partial in (False, True):
+            with self.subTest(partial=partial), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                if partial:
+                    (root / "weights").mkdir()
+                    (root / "weights/README.md").write_text("partial checkout")
+                builder = SimpleNamespace(dry_run=False,
+                    _repo_cmake_defaults_args=Mock(return_value=["-DOIDN_FILTER_RT=ON"]),
+                    _repo_cmake_user_override_args=Mock(return_value=[]))
+                with patch.object(oidn, "run", side_effect=CalledProcessError(1, ["git", "lfs", "version"])) as run:
+                    with self.assertRaisesRegex(RuntimeError, "Install git-lfs"):
+                        oidn.pre_build(builder, SimpleNamespace(cmake_args=[]), SimpleNamespace(src_dir=root), {})
+                run.assert_called_once_with(["git", "lfs", "version"], env={}, dry_run=False)
+
     def test_dry_run_only_reports_missing_required_submodules(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(oidn, "run") as run:
             root = Path(tmp)
@@ -140,8 +156,10 @@ class OidnRecipeTests(unittest.TestCase):
                 _repo_cmake_defaults_args=Mock(return_value=["-DOIDN_FILTER_RT=ON"]),
                 _repo_cmake_user_override_args=Mock(return_value=[]))
             oidn.pre_build(builder, SimpleNamespace(cmake_args=[]), SimpleNamespace(src_dir=root), {})
-            run.assert_called_once_with(["git", "-C", str(root), "submodule", "update", "--init", "--", "weights"],
-                                        env={}, dry_run=True)
+            self.assertEqual(["git", "lfs", "version"], run.call_args_list[0].args[0])
+            self.assertEqual(2, run.call_count)
+            run.assert_called_with(["git", "-C", str(root), "submodule", "update", "--init", "--", "weights"],
+                                   env={}, dry_run=True)
             self.assertEqual(list(root.iterdir()), [])
 
 

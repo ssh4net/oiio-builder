@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from subprocess import CalledProcessError
 
 from ..runner import run
 
@@ -169,6 +170,14 @@ def pre_build(builder, repo, ctx, env: dict[str, str]) -> None:
         required.append(("external/cutlass", "include/cutlass/cutlass.h"))
     for relative, sentinel in required:
         directory = ctx.src_dir / relative
+        if relative == "weights" and not (directory / sentinel).is_file():
+            try:
+                run(["git", "lfs", "version"], env=env, dry_run=builder.dry_run)
+            except CalledProcessError as error:
+                raise RuntimeError(
+                    "OIDN weights require Git LFS. Install git-lfs, run git lfs install, "
+                    "then retry the build."
+                ) from error
         if not directory.is_dir() or not any(p.name != ".git" for p in directory.iterdir()):
             run(["git", "-C", str(ctx.src_dir), "submodule", "update", "--init", "--", relative],
                 env=env, dry_run=builder.dry_run)
