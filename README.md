@@ -907,6 +907,7 @@ PERL_EXECUTABLE = "C:\\Strawberry\\perl\\bin\\perl.exe"
 - **SQLite's POSIX generator reports an invalid Tcl command containing the amalgamation header**: the source checkout was converted to CRLF. The POSIX recipe normalizes the makefiles and generator scripts it executes before building. Set `core.autocrlf=false` for the builder's WSL/macOS/Linux source store to avoid repeated line-ending churn on future updates.
 - **libpng POSIX build fails with `options.awk: bad line ... com`**: the libpng generator inputs were converted to CRLF. The POSIX recipe normalizes libpng's CMake/awk generator inputs before configure/build. Set `core.autocrlf=false` for WSL/macOS/Linux source checkouts to avoid repeated line-ending churn.
 - **ASAN failures on Windows**: prefer clang-cl and ensure the MSVC AddressSanitizer component is installed.
+- **xz ASAN configure fails with a Landlock sandboxing error on Linux**: the xz recipe passes `-DXZ_SANDBOX=no` for Linux ASAN builds because Landlock is incompatible with sanitizers. XZ performs this check even when its command-line tools are disabled. Retry with `uv run build.py --user-config build_ub_ngpl.user.toml --build-types ASAN --only xz --force --no-update`.
 - **PyOpenColorIO / PyOpenEXR link errors on Windows**: set `windows.msvc_runtime = "dynamic"` and `windows.python_wrappers = "on"` for wrapper builds.
 - **Preflight only**: run `uv run build.py` (no args) to see tool/repo readiness without building.
 
