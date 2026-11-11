@@ -4354,6 +4354,8 @@ endif()
             repo = repos_by_name[repo_name]
             repo_dir = self._resolve_repo_dir(repo)
             self.repo_paths[repo.name] = repo_dir
+            if recipe_registry.sync_source(repo.name, self, repo, repo_dir):
+                continue
             if self._maybe_skip_missing(repo, repo_dir):
                 continue
             if recipe_registry.skip_update(repo.name, self, repo):

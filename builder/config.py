@@ -102,6 +102,7 @@ class GlobalConfig:
     build_nlohmann_json: bool = False
     build_toml11: bool = False
     build_libsodium: bool = False
+    build_libfuzzer: bool = False
     build_oidn: bool = False
     build_fastgltf: bool = False
     build_simdjson: bool = False
@@ -298,6 +299,7 @@ def load_config(
             "build_nlohmann_json",
             "build_toml11",
             "build_libsodium",
+            "build_libfuzzer",
             "build_oidn",
             "build_fastgltf",
             "build_simdjson",
@@ -499,6 +501,7 @@ def load_config(
         build_nlohmann_json=bool(global_data.get("build_nlohmann_json", False)),
         build_toml11=bool(global_data.get("build_toml11", False)),
         build_libsodium=bool(global_data.get("build_libsodium", False)),
+        build_libfuzzer=bool(global_data.get("build_libfuzzer", False)),
         build_oidn=bool(global_data.get("build_oidn", False)),
         build_fastgltf=bool(global_data.get("build_fastgltf", False)),
         build_simdjson=bool(global_data.get("build_simdjson", False)),

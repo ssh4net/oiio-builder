@@ -141,6 +141,7 @@ Key options:
   Consumers use `find_package(nlohmann_json CONFIG REQUIRED)` and link `nlohmann_json::nlohmann_json`.
 - `build_toml11`: build/install optional header-only toml11 CMake package for local consumers (disabled by default).
 - `build_fastgltf`: build/install the optional fastgltf C++20 glTF library; also enables the standalone simdjson and simdutf recipes (disabled by default).
+- `build_libfuzzer`: build/install optional LLVM 20.1.8 libFuzzer with the configured C++ runtime; see [libFuzzer](#libfuzzer-optional). Disabled by default.
 - `build_oidn`: build/install optional Intel Open Image Denoise 2.5.1; see [OIDN](#open-image-denoise-optional). Disabled in `build.toml`, enabled in the supplied machine-local user configs.
 - `build_simdjson`, `build_simdutf`: build/install these optional packages independently of fastgltf (disabled by default).
 - `build_geogram`, `build_geometry_central`: build/install optional geometry libraries (disabled by default).
@@ -502,6 +503,54 @@ OPENMETA_WITH_DNG_SDK_ADAPTER = true
 Rebuild OpenMeta in each existing prefix to apply the new default and regenerate
 its installed CMake package. Rebuild static consumers that previously linked the
 SDK adapter as well; changing the recipe does not alter installed binaries.
+
+### libFuzzer (optional)
+
+Set `[global].build_libfuzzer = true` in the selected user config. The three local
+macOS, Windows, and WSL user configs enable it; the shared default stays off.
+The recipe downloads only the official `compiler-rt-20.1.8.src.tar.xz` archive,
+checks its pinned SHA256, and builds unmodified `lib/fuzzer` sources through a
+builder-owned CMake wrapper. No LLVM checkout or GoogleTest dependency is needed.
+The installed license is `Apache-2.0 WITH LLVM-exception`.
+
+```bash
+uv run build.py --user-config build_ub_ngpl.user.toml --only libfuzzer --build-types Debug,Release
+# Windows, from the configured native build environment:
+uv run build.py --user-config build_win.user.toml --only libfuzzer --build-types Debug,Release
+# macOS:
+uv run build.py --user-config build_mac.user.toml --only libfuzzer --build-types Debug,Release
+```
+
+Linux respects `use_libcxx`; macOS uses the configured Apple toolchain; Windows
+uses the configured MSVC-compatible toolchain and CRT. Runtime archives are always
+static. Consumers need Clang coverage instrumentation; MSVC can build the runtime
+archive but does not provide that instrumentation. Prefer Clang 20 consumers for
+this pinned runtime. `LibFuzzer_CXX_STDLIB` records the package ABI; libc++ packages
+export the required `-stdlib=libc++` flags and reject non-Clang C++ consumers.
+
+```cmake
+find_package(LibFuzzer 20 CONFIG REQUIRED)
+add_executable(fuzz_parser fuzz_parser.cpp)
+target_link_libraries(fuzz_parser PRIVATE LibFuzzer::Fuzzer)
+# Clang driver syntax on Linux/macOS; instrument the code under test too.
+target_compile_options(fuzz_parser PRIVATE -fsanitize=fuzzer-no-link,address,undefined)
+target_link_options(fuzz_parser PRIVATE -fsanitize=address,undefined)
+```
+
+Do not add `-fsanitize=fuzzer` at link time: that selects Clang's bundled runtime
+instead of this package and can reintroduce a different C++ ABI. The package
+provides `LibFuzzer::FuzzerNoMain` for callers that supply `main` and invoke
+`LLVMFuzzerRunDriver`. Linux also exports `LibFuzzer::Interceptors` separately;
+normal ASan fuzzers do not need it. Headers install under `include/fuzzer` and the
+license under `share/licenses/libfuzzer`.
+
+For offline builds, set `LIBFUZZER_SOURCE_ARCHIVE` in the environment or
+`[global.env]` to the downloaded archive; the same SHA256 check applies. Extracted
+sources live in the configured `libfuzzer` directory with an identity marker.
+Existing unmanaged directories are preserved and rejected. `--update` reuses the
+pinned source; changing its version requires updating the recipe and checksum.
+Source and wrapper edits invalidate build stamps. No system Clang runtime is
+replaced, and no production target acquires a dependency on this testing runtime.
 
 ### Open Image Denoise (optional)
 

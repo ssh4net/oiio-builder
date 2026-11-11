@@ -121,6 +121,7 @@ build_libyuv = false
 build_nlohmann_json = false
 build_toml11 = false
 build_libsodium = false
+build_libfuzzer = false
 build_oidn = false
 build_fastgltf = false
 build_simdjson = false
@@ -596,6 +597,17 @@ name = "simdutf"
 dir = "simdutf"
 url = "https://github.com/simdutf/simdutf.git"
 build_system = "cmake"
+optional = true
+
+# Pinned release archive, acquired by the libfuzzer recipe (not Git).
+[[repos]]
+name = "libfuzzer"
+dir = "libfuzzer"
+url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-20.1.8/compiler-rt-20.1.8.src.tar.xz"
+ref = "20.1.8"
+ref_type = "tag"
+build_system = "cmake"
+source_subdir = ".oiio-builder-cmake"
 optional = true
 
 [[repos]]

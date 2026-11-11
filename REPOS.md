@@ -35,6 +35,7 @@ Repositories referenced by `build_MOS_stack_until_OIIO.sh` plus builder-only add
 | miniply | miniply | https://github.com/ssh4net/miniply.git | Small C++ library; builder disables CLI tools |
 | OpenMeta | OpenMeta | https://github.com/ssh4net/OpenMeta.git | Builds library + Python wheel; can use optional `dng_sdk` package and `rapidfuzz-cpp` |
 | openjph | openjph | https://github.com/ssh4net/OpenJPH.git |  |
+| libfuzzer | libfuzzer | https://github.com/llvm/llvm-project/releases/tag/llvmorg-20.1.8 | Optional compiler-rt archive with pinned SHA256; static runtime with configured C++ ABI; no full LLVM clone |
 | googletest | googletest | https://github.com/google/googletest.git |  |
 | libjxl | libjxl | https://github.com/libjxl/libjxl.git |  |
 | libultrahdr | libultrahdr | https://github.com/google/libultrahdr.git |  |

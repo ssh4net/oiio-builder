@@ -44,6 +44,7 @@ LICENSE_RECORDS: dict[str, LicenseRecord] = {
     "Qt6": LicenseRecord("LGPL-3.0-or-later OR GPL-3.0-only OR commercial", "lgpl", "The LGPL-3.0-or-later option is selected only for a shared Qt build; GPL-only modules and tools remain outside the profile."),
     "xz": LicenseRecord("0BSD for liblzma", "allow-with-constraint", "Only liblzma is installed; GPL command-line tools and scripts are disabled."),
     "libdeflate": LicenseRecord("MIT", "allow"),
+    "libfuzzer": LicenseRecord("Apache-2.0 WITH LLVM-exception", "allow"),
     "zstd": LicenseRecord("BSD-3-Clause OR GPL-2.0-only", "allow-with-constraint", "The BSD-3-Clause option is selected."),
     "libiconv": LicenseRecord("LGPL-2.1-or-later", "lgpl"),
     "libxml2": LicenseRecord("MIT", "allow"),

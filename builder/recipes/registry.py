@@ -34,6 +34,7 @@ from . import (
     lcms2,
     lbfgspp,
     libdeflate,
+    libfuzzer,
     libiconv,
     libjpeg_turbo,
     libxml2,
@@ -117,6 +118,7 @@ _RECIPES: dict[str, ModuleType] = {
     "LBFGSpp": lbfgspp,
     "lcms2": lcms2,
     "libdeflate": libdeflate,
+    "libfuzzer": libfuzzer,
     "libiconv": libiconv,
     "libjpeg-turbo": libjpeg_turbo,
     "libxml2": libxml2,
@@ -269,6 +271,13 @@ def missing_source_skip(repo_name: str, builder: Any, repo: Any, path: Path) -> 
         return None
     result = func(builder, repo, path)
     return None if result is None else bool(result)
+
+
+def sync_source(repo_name: str, builder: Any, repo: Any, path: Path) -> bool:
+    """Return true when a recipe has handled acquisition of non-Git sources."""
+    recipe = _RECIPES.get(repo_name)
+    func = getattr(recipe, "sync_source", None)
+    return bool(func(builder, repo, path)) if callable(func) else False
 
 
 def skip_update(repo_name: str, builder: Any, repo: Any) -> bool:
