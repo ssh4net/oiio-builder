@@ -113,6 +113,50 @@ class CPythonRecipeTests(unittest.TestCase):
                 self.assertEqual(["make", "-j2"], run.call_args_list[1].args[0])
                 self.assertEqual(["make", "install"], run.call_args_list[2].args[0])
 
+    def test_asan_build_env_preserves_user_options_and_runtime_defaults(self):
+        cases = (
+            ({}, {}, "detect_leaks=0"),
+            ({"ASAN_OPTIONS": "halt_on_error=1"}, {}, "halt_on_error=1:detect_leaks=0"),
+            ({}, {"ASAN_OPTIONS": "verbosity=1"}, "verbosity=1:detect_leaks=0"),
+            ({}, {"ASAN_OPTIONS": "detect_leaks=1"}, "detect_leaks=1"),
+            ({"ASAN_OPTIONS": "halt_on_error=1:detect_leaks=1"}, {}, "halt_on_error=1:detect_leaks=1"),
+            ({"ASAN_OPTIONS": "detect_leaks=0"}, {"ASAN_OPTIONS": "detect_leaks=1"}, "detect_leaks=0"),
+        )
+        for platform in ("linux", "macos"):
+            for mode in ("Debug", "Release", "ASAN"):
+                for env, parent_env, expected in cases:
+                    with self.subTest(platform=platform, mode=mode, env=env, parent=parent_env):
+                        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, parent_env, clear=True):
+                            root = Path(tmp)
+                            source = root / "source"
+                            source.mkdir()
+                            (source / "configure").touch()
+                            ctx = SimpleNamespace(src_dir=source, build_dir=root / "build",
+                                                  install_prefix=root / "prefix", build_type=mode,
+                                                  repo=SimpleNamespace(name="cpython"))
+                            builder = SimpleNamespace(platform=SimpleNamespace(os=platform),
+                                                      dry_run=True, toolchain={},
+                                                      _normalize_posix_shell_scripts=lambda *args: None,
+                                                      _non_cmake_flags=lambda *args: ("", "", ""),
+                                                      _repo_log_path=lambda *args: root / "log", _jobs=lambda: 2)
+                            calls = []
+
+                            def capture(command, **kwargs):
+                                calls.append((command, dict(kwargs["env"])))
+
+                            original_env = dict(env)
+                            with patch.object(cpython, "run", side_effect=capture):
+                                cpython.build(builder, ctx, env)
+                            self.assertEqual(3, len(calls))
+                            self.assertEqual(mode == "ASAN", "--with-address-sanitizer" in calls[0][0])
+                            self.assertEqual(original_env.get("ASAN_OPTIONS"), calls[0][1].get("ASAN_OPTIONS"))
+                            for _, command_env in calls[1:]:
+                                actual = command_env.get("ASAN_OPTIONS", os.environ.get("ASAN_OPTIONS"))
+                                wanted = expected if mode == "ASAN" else env.get("ASAN_OPTIONS", parent_env.get("ASAN_OPTIONS"))
+                                self.assertEqual(wanted, actual)
+                            self.assertEqual(original_env, env)
+                            self.assertEqual(parent_env.get("ASAN_OPTIONS"), os.environ.get("ASAN_OPTIONS"))
+
 
 if __name__ == "__main__":
     unittest.main()

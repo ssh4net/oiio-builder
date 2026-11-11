@@ -9,7 +9,7 @@ from .policy import cpython_requested
 from ..runner import banner, print_cmd, run
 
 
-STAMP_REVISION = "7"
+STAMP_REVISION = "8"
 
 _OPENSSL4_REMOVED_METHOD_DEFINES = (
     "-DOPENSSL_NO_SSL3",
@@ -201,6 +201,10 @@ def _build_posix(builder, ctx, env: dict[str, str]) -> None:
         "--enable-shared",
         "--without-ensurepip",
     ]
+    if ctx.build_type == "ASAN":
+        # CPython links bootstrap tools without CFLAGS. Its native ASAN
+        # option also supplies the runtime link flag and allocator settings.
+        configure_cmd.append("--with-address-sanitizer")
     print_cmd("configure command", configure_cmd)
     banner(f"{ctx.repo.name} ({ctx.build_type}) - configure")
     run(
@@ -213,6 +217,13 @@ def _build_posix(builder, ctx, env: dict[str, str]) -> None:
     if builder.platform.os == "macos":
         _force_macos_build_python_suffix(builder, build_dir)
     _copy_posix_shared_modules(builder, build_dir)
+
+    if ctx.build_type == "ASAN":
+        # Match CPython's sanitizer CI for build-time interpreter processes.
+        # Keep ASAN active and respect an explicit user leak-check setting.
+        asan_options = py_env.get("ASAN_OPTIONS", os.environ.get("ASAN_OPTIONS", ""))
+        if not re.search(r"(?:^|[:\s])detect_leaks=", asan_options):
+            py_env["ASAN_OPTIONS"] = ":".join(filter(None, (asan_options, "detect_leaks=0")))
 
     build_cmd = ["make", f"-j{builder._jobs()}"]
     print_cmd("build command", build_cmd)
