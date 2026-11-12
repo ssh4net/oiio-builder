@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
+from builder.core import Builder
 from builder.recipes import openexr
 
 
@@ -72,6 +75,38 @@ set(CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH FALSE)
 
 
 class OpenEXRRecipeTests(unittest.TestCase):
+    def test_asan_python_probe_env_preserves_user_options_and_runtime_defaults(self):
+        cases = (
+            ({}, {}, "detect_leaks=0"),
+            ({"ASAN_OPTIONS": "halt_on_error=1"}, {}, "halt_on_error=1:detect_leaks=0"),
+            ({}, {"ASAN_OPTIONS": "verbosity=1"}, "verbosity=1:detect_leaks=0"),
+            ({}, {"ASAN_OPTIONS": "detect_leaks=1"}, "detect_leaks=1"),
+            ({"ASAN_OPTIONS": "halt_on_error=1 detect_leaks=1"}, {}, "halt_on_error=1 detect_leaks=1"),
+            ({"ASAN_OPTIONS": "detect_leaks=0"}, {"ASAN_OPTIONS": "detect_leaks=1"}, "detect_leaks=0"),
+        )
+        for platform in ("linux", "macos", "windows"):
+            for mode in ("Debug", "Release", "ASAN"):
+                for env, parent, expected in cases:
+                    with self.subTest(platform=platform, mode=mode, env=env, parent=parent):
+                        with patch.dict(os.environ, parent, clear=True):
+                            builder = object.__new__(Builder)
+                            builder.platform = SimpleNamespace(os=platform)
+                            base_env = {"UNCHANGED": "value", **env}
+                            builder._env_for_build = lambda *_: dict(base_env)
+                            repo = SimpleNamespace(name="openexr")
+                            result = builder._env_for_repo_build(repo, mode, Path("prefix"))
+                            wanted = (expected if platform != "windows" and mode == "ASAN"
+                                      else env.get("ASAN_OPTIONS", parent.get("ASAN_OPTIONS")))
+                            self.assertEqual(wanted, result.get("ASAN_OPTIONS", os.environ.get("ASAN_OPTIONS")))
+                            self.assertEqual("value", result["UNCHANGED"])
+                            self.assertEqual({"UNCHANGED": "value", **env}, base_env)
+                            self.assertEqual(parent.get("ASAN_OPTIONS"), os.environ.get("ASAN_OPTIONS"))
+                            if platform != "windows":
+                                self.assertIn("-DOPENEXR_BUILD_PYTHON=ON", openexr.cmake_args(builder, None))
+                            # The setting must not leak into unrelated recipes.
+                            other = builder._env_for_repo_build(SimpleNamespace(name="asan-probe"), mode, Path("prefix"))
+                            self.assertEqual(base_env, other)
+
     def _source(self, root: Path, contents: str = _OPENJPH_SETUP, newline: str = "\n") -> tuple[Path, Path]:
         cmake = root / "cmake"
         cmake.mkdir()

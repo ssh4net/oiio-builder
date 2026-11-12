@@ -1,15 +1,27 @@
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
 from .policy import exr_enabled
 
-STAMP_REVISION = "8"
+STAMP_REVISION = "9"
 
 
 def enabled(builder, _repo) -> bool:
     return exr_enabled(builder)
+
+
+def build_env(builder, _repo, build_type: str, _prefix: Path, env: dict[str, str]) -> None:
+    if builder.platform.os not in {"linux", "macos"} or build_type != "ASAN":
+        return
+    # CMake runs the ASAN Python interpreter to discover its development files.
+    # As in CPython's build, default off shutdown leak checks for these build
+    # subprocesses while keeping address checks and explicit user options.
+    asan_options = env.get("ASAN_OPTIONS", os.environ.get("ASAN_OPTIONS", ""))
+    if not re.search(r"(?:^|[:\s])detect_leaks=", asan_options):
+        env["ASAN_OPTIONS"] = ":".join(filter(None, (asan_options, "detect_leaks=0")))
 
 
 def cmake_args(builder, _ctx) -> list[str]:
