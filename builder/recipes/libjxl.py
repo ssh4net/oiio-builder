@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
-STAMP_REVISION = "10"
+STAMP_REVISION = "11"
 
 
 def enabled(builder, _repo) -> bool:
@@ -15,7 +16,9 @@ def cmake_args(builder, ctx) -> list[str]:
     enable_openexr = "ON" if cfg.build_exr_stack else "OFF"
     args = [
         "-DBUILD_TESTING=OFF",
-        "-DJPEGXL_STATIC=ON",
+        # JPEGXL_STATIC adds -static to executables on Linux, which ASAN
+        # does not support. BUILD_SHARED_LIBS still controls the archives.
+        f"-DJPEGXL_STATIC={'OFF' if builder.platform.os == 'linux' and ctx.build_type == 'ASAN' else 'ON'}",
         f"-DJPEGXL_ENABLE_TOOLS={cfg.libjxl_enable_tools}",
         f"-DJPEGXL_ENABLE_OPENEXR={enable_openexr}",
         "-DJPEGXL_ENABLE_BENCHMARK=OFF",
@@ -34,6 +37,17 @@ def cmake_args(builder, ctx) -> list[str]:
         "-DJPEGXL_FORCE_SYSTEM_GTEST=ON",
         "-DJPEGXL_BUNDLE_LIBPNG=OFF",
     ]
+    if builder.platform.os == "linux" and ctx.build_type == "ASAN":
+        args += [
+            "-DBUILD_SHARED_LIBS=OFF",
+            "-DJPEGXL_ENABLE_FUZZERS=OFF",
+            "-DJPEGXL_ENABLE_TCMALLOC=OFF",
+            # SIMD-heavy ASAN translation units are expensive. One shared
+            # Ninja pool bounds compile and link work even with --parallel 32.
+            "-DCMAKE_JOB_POOLS=libjxl_asan=2",
+            "-DCMAKE_JOB_POOL_COMPILE=libjxl_asan",
+            "-DCMAKE_JOB_POOL_LINK=libjxl_asan",
+        ]
     if builder.platform.os == "windows":
         debug_postfix = str(cfg.windows.get("debug_postfix", "d"))
         lib_dir = (ctx.install_prefix / "lib").resolve()
@@ -95,7 +109,34 @@ def _uses_msvc(builder) -> bool:
     )
 
 
+def _patch_asan_openexr_rtti(src_dir: Path) -> None:
+    path = src_dir / "lib" / "jxl_extras.cmake"
+    if not path.exists():
+        return
+    original = path.read_bytes()
+    newline = "\r\n" if b"\r\n" in original else "\n"
+    text = original.decode("utf-8").replace("\r\n", "\n")
+    block = '''      # OIIO_BUILDER_ASAN_OPENEXR_RTTI
+      # Match OpenEXR exception typeinfo; Clang ASAN gives incompatible COMDATs
+      # when this adapter inherits libjxl's global -fno-rtti.
+      if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_BUILD_TYPE STREQUAL "ASAN"
+         AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        string(APPEND _exr_flags " -frtti")
+      endif()
+'''
+    if block in text:
+        return
+    anchor = "      set_source_files_properties(extras/dec/exr.cc extras/enc/exr.cc\n"
+    if "# OIIO_BUILDER_ASAN_OPENEXR_RTTI" in text or text.count(anchor) != 1:
+        raise RuntimeError(f"libjxl ASAN OpenEXR RTTI patch no longer matches {path}")
+    text = text.replace(anchor, block + anchor, 1)
+    path.write_bytes(text.replace("\n", newline).encode("utf-8"))
+
+
 def patch_source(builder, src_dir) -> None:
+    if builder.dry_run:
+        return
+    _patch_asan_openexr_rtti(src_dir)
     # MSVC 14.44 rejects the standards-valid local constexpr reference in this
     # captureless lambda (C3493). Clang-cl and other compilers accept it, so
     # leave their libjxl sources unchanged.
