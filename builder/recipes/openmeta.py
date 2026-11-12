@@ -1,5 +1,22 @@
 from __future__ import annotations
 
+import os
+import re
+from pathlib import Path
+
+STAMP_REVISION = "1"
+
+
+def build_env(builder, _repo, build_type: str, _prefix: Path, env: dict[str, str]) -> None:
+    if builder.platform.os not in {"linux", "macos"} or build_type != "ASAN":
+        return
+    # Python discovery and wheel generation run the ASAN prefix interpreter.
+    # Match CPython's build-time leak policy while retaining address checks,
+    # other sanitizer options, and explicit user choices for leak detection.
+    asan_options = env.get("ASAN_OPTIONS", os.environ.get("ASAN_OPTIONS", ""))
+    if not re.search(r"(?:^|[:\s])detect_leaks=", asan_options):
+        env["ASAN_OPTIONS"] = ":".join(filter(None, (asan_options, "detect_leaks=0")))
+
 
 def cmake_args(builder, ctx) -> list[str]:
     cfg = builder.config.global_cfg
