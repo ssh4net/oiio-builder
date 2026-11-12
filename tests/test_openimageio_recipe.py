@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from contextlib import ExitStack
@@ -8,6 +9,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from builder.recipes import openimageio
+from builder.core import Builder
+from builder.platform import PlatformInfo
 
 
 _LEGACY_NANOBIND_LOOKUP = """\
@@ -55,6 +58,37 @@ _RAW_ERRNO_LOOKUP = """\
 
 
 class OpenImageIORecipeTests(unittest.TestCase):
+    def test_asan_uses_upstream_sanitizer_policy_only_on_posix(self):
+        for platform in ("linux", "macos", "windows"):
+            for mode in ("Debug", "Release", "ASAN"):
+                with self.subTest(platform=platform, mode=mode):
+                    builder = SimpleNamespace(platform=SimpleNamespace(os=platform))
+                    with patch.object(openimageio, "_cache_args", return_value=["-DUSE_PYTHON=ON", "-DBUILD_SHARED_LIBS=OFF"]):
+                        args = openimageio.cmake_args(builder, SimpleNamespace(build_type=mode))
+                    self.assertIn("-DUSE_PYTHON=ON", args)
+                    self.assertIn("-DBUILD_SHARED_LIBS=OFF", args)
+                    self.assertEqual("-DSANITIZE=address" in args, platform != "windows" and mode == "ASAN")
+
+    def test_asan_python_env_preserves_explicit_options_and_other_recipes(self):
+        cases = (({}, {}, "detect_leaks=0"),
+                 ({}, {"ASAN_OPTIONS": "halt_on_error=1"}, "halt_on_error=1:detect_leaks=0"),
+                 ({}, {"ASAN_OPTIONS": "detect_leaks=1"}, "detect_leaks=1"),
+                 ({"ASAN_OPTIONS": "halt_on_error=1 detect_leaks=1"}, {}, "halt_on_error=1 detect_leaks=1"),
+                 ({"ASAN_OPTIONS": "detect_leaks=0"}, {"ASAN_OPTIONS": "detect_leaks=1"}, "detect_leaks=0"))
+        for platform in ("linux", "macos", "windows"):
+            for mode in ("Debug", "Release", "ASAN"):
+                for env, parent, expected in cases:
+                    with self.subTest(platform=platform, mode=mode, env=env, parent=parent):
+                        with patch.dict(os.environ, parent, clear=True):
+                            builder = object.__new__(Builder)
+                            builder.platform = PlatformInfo(os=platform, arch="x86_64")
+                            builder._env_for_build = lambda *_: dict(env)
+                            actual = builder._env_for_repo_build(SimpleNamespace(name="OpenImageIO"), mode, Path("prefix"))
+                            wanted = expected if platform != "windows" and mode == "ASAN" else env.get("ASAN_OPTIONS", parent.get("ASAN_OPTIONS"))
+                            self.assertEqual(wanted, actual.get("ASAN_OPTIONS", os.environ.get("ASAN_OPTIONS")))
+                            self.assertEqual(parent.get("ASAN_OPTIONS"), os.environ.get("ASAN_OPTIONS"))
+                            self.assertEqual(env, builder._env_for_repo_build(SimpleNamespace(name="other"), mode, Path("prefix")))
+
     def _externalpackages_file(self, root: Path, contents: str) -> Path:
         cmake_file = root / "src" / "cmake" / "externalpackages.cmake"
         cmake_file.parent.mkdir(parents=True)

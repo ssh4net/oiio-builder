@@ -12,7 +12,7 @@ from ..git_ops import git_head
 from ..runner import banner, print_cmd
 from .policy import imageio_enabled
 
-STAMP_REVISION = "4"
+STAMP_REVISION = "5"
 
 
 def enabled(builder, _repo) -> bool:
@@ -174,6 +174,43 @@ def _patch_legacy_alias(src_dir: Path) -> None:
         cmake_lists.write_bytes(updated.replace("\n", newline).encode("utf-8"))
 
 
+def _patch_spirv_tools_static_asan(src_dir: Path) -> None:
+    tools_dir = src_dir / "External" / "spirv-tools"
+    condition = ('CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_BUILD_TYPE STREQUAL "ASAN" '
+                 'AND SPIRV_TOOLS_BUILD_STATIC AND NOT BUILD_SHARED_LIBS')
+    marker = "# OIIO_BUILDER_SPIRV_STATIC_ASAN"
+    anchor = 'if("${CMAKE_SYSTEM_NAME}" STREQUAL "Linux")\n'
+    shared_pc = "      ${CMAKE_CURRENT_BINARY_DIR}/SPIRV-Tools-shared.pc\n"
+    pkg_install = "    DESTINATION\n      ${CMAKE_INSTALL_LIBDIR}/pkgconfig)"
+    changes = (
+        (tools_dir / "source" / "CMakeLists.txt", anchor,
+         f"{marker}\nif({condition})\n"
+         '  # The optimizer and tools use the static alias. Avoid the redundant\n'
+         '  # ASAN DSO, which cannot satisfy glslang\'s --no-undefined policy.\n'
+         '  set_target_properties(${SPIRV_TOOLS}-shared PROPERTIES EXCLUDE_FROM_ALL TRUE)\n'
+         '  list(REMOVE_ITEM SPIRV_TOOLS_TARGETS ${SPIRV_TOOLS}-shared)\n'
+         f"endif()\n\n{anchor}"),
+        (tools_dir / "CMakeLists.txt", shared_pc + pkg_install,
+         pkg_install + f"\n  {marker}\n  if(NOT ({condition}))\n"
+         '    install(FILES ${CMAKE_CURRENT_BINARY_DIR}/SPIRV-Tools-shared.pc\n'
+         '            DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)\n  endif()'),
+    )
+    pending = []
+    for path, needle, replacement in changes:
+        if not path.is_file():
+            continue
+        original = path.read_bytes().decode("utf-8")
+        newline = "\r\n" if "\r\n" in original else "\n"
+        text = original.replace("\r\n", "\n")
+        if marker in text:
+            continue
+        if text.count(needle) != 1:
+            raise RuntimeError(f"glslang: cannot locate SPIRV-Tools static ASAN patch anchor in {path}")
+        pending.append((path, text.replace(needle, replacement).replace("\n", newline)))
+    for path, text in pending:
+        path.write_bytes(text.encode("utf-8"))
+
+
 def patch_source(builder, src_dir: Path) -> None:
     if not builder.dry_run:
         _patch_legacy_alias(src_dir)
@@ -208,6 +245,8 @@ def patch_source(builder, src_dir: Path) -> None:
         "spirv_headers_head": spirv_headers_head or "",
     }
     if all(stamp.get(key, "") == value for key, value in expected.items()):
+        if not builder.dry_run:
+            _patch_spirv_tools_static_asan(src_dir)
         return
 
     spirv_tools_dst = src_dir / "External" / "spirv-tools"
@@ -225,6 +264,7 @@ def patch_source(builder, src_dir: Path) -> None:
     _copy_repo_tree(spirv_tools_src, spirv_tools_dst)
     spirv_headers_dst.parent.mkdir(parents=True, exist_ok=True)
     _copy_repo_tree(spirv_headers_src, spirv_headers_dst)
+    _patch_spirv_tools_static_asan(src_dir)
 
     stamp_path.parent.mkdir(parents=True, exist_ok=True)
     stamp_path.write_text(json.dumps(expected, indent=2, sort_keys=True) + "\n", encoding="utf-8")

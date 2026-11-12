@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -55,7 +56,90 @@ def _builder(root: Path, *, opt: bool = False, dry_run: bool = False):
     )
 
 
+def _spirv_fixture(root: Path, newline: str = "\n") -> Path:
+    tools = root / "External/spirv-tools"
+    (tools / "source").mkdir(parents=True)
+    (tools / "CMakeLists.txt").write_bytes(('''cmake_minimum_required(VERSION 3.22)
+project(spirv_fixture C)
+include(GNUInstallDirs)
+set(SPIRV_TOOLS SPIRV-Tools)
+set(SPIRV_TOOLS_BUILD_STATIC ON)
+add_subdirectory(source)
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/SPIRV-Tools.pc "static")
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/SPIRV-Tools-shared.pc "shared")
+install(
+    FILES
+      ${CMAKE_CURRENT_BINARY_DIR}/SPIRV-Tools.pc
+      ${CMAKE_CURRENT_BINARY_DIR}/SPIRV-Tools-shared.pc
+    DESTINATION
+      ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
+''').replace("\n", newline).encode())
+    (tools / "source/CMakeLists.txt").write_bytes(('''add_library(${SPIRV_TOOLS}-static STATIC core.c)
+add_library(${SPIRV_TOOLS}-shared SHARED core.c)
+set_target_properties(${SPIRV_TOOLS}-shared PROPERTIES OUTPUT_NAME recipe_test_spirv_shared)
+if(BUILD_SHARED_LIBS)
+  add_library(${SPIRV_TOOLS} ALIAS ${SPIRV_TOOLS}-shared)
+else()
+  add_library(${SPIRV_TOOLS} ALIAS ${SPIRV_TOOLS}-static)
+endif()
+set(SPIRV_TOOLS_TARGETS ${SPIRV_TOOLS}-static ${SPIRV_TOOLS}-shared)
+if("${CMAKE_SYSTEM_NAME}" STREQUAL "Linux")
+  # Unrelated source text.
+endif()
+add_executable(spirv-tool main.c)
+target_link_libraries(spirv-tool PRIVATE ${SPIRV_TOOLS})
+install(TARGETS ${SPIRV_TOOLS_TARGETS} EXPORT SpirvTargets)
+install(EXPORT SpirvTargets DESTINATION lib/cmake)
+''').replace("\n", newline).encode())
+    (tools / "source/core.c").write_text("int core(void) { return 42; }\n")
+    (tools / "source/main.c").write_text("int core(void); int main(void) { return core() != 42; }\n")
+    return tools
+
+
 class GlslangRecipeTests(unittest.TestCase):
+    def test_spirv_patch_preserves_text_is_idempotent_and_rejects_drift(self):
+        for newline in ("\n", "\r\n"):
+            with self.subTest(newline=newline), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                tools = _spirv_fixture(root, newline)
+                paths = [tools / "CMakeLists.txt", tools / "source/CMakeLists.txt"]
+                glslang._patch_spirv_tools_static_asan(root)
+                first = [path.read_bytes() for path in paths]
+                glslang._patch_spirv_tools_static_asan(root)
+                self.assertEqual(first, [path.read_bytes() for path in paths])
+                self.assertIn(b"# Unrelated source text.", first[1])
+                if newline == "\r\n":
+                    for content in first:
+                        self.assertNotIn(b"\n", content.replace(b"\r\n", b""))
+                paths[1].write_text("# changed upstream structure\n")
+                with self.assertRaisesRegex(RuntimeError, "patch anchor"):
+                    glslang._patch_spirv_tools_static_asan(root)
+
+    @unittest.skipUnless(os.name != "nt" and shutil.which("cmake") and shutil.which("cc") and shutil.which("ninja"),
+                         "POSIX CMake, Ninja and C compiler are needed")
+    def test_spirv_build_install_export_and_tool_preserve_configuration_scope(self):
+        for mode, shared in (("ASAN", False), ("Release", False), ("ASAN", True)):
+            with self.subTest(mode=mode, shared=shared), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                tools = _spirv_fixture(root)
+                glslang._patch_spirv_tools_static_asan(root)
+                build, prefix = root / "build", root / "prefix"
+                def run(command):
+                    result = subprocess.run(command, capture_output=True, text=True)
+                    self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+                run(["cmake", "-S", str(tools), "-B", str(build), "-G", "Ninja",
+                     f"-DCMAKE_BUILD_TYPE={mode}", f"-DBUILD_SHARED_LIBS={'ON' if shared else 'OFF'}",
+                     "-DCMAKE_INSTALL_LIBDIR=lib", f"-DCMAKE_INSTALL_PREFIX={prefix}"])
+                run(["cmake", "--build", str(build), "--parallel", "2"])
+                run([str(build / "source/spirv-tool")])
+                run(["cmake", "--install", str(build)])
+                excluded = mode == "ASAN" and not shared and sys.platform.startswith("linux")
+                self.assertTrue((prefix / "lib/libSPIRV-Tools-static.a").is_file())
+                self.assertEqual(not excluded, (prefix / "lib/pkgconfig/SPIRV-Tools-shared.pc").exists())
+                exported = (prefix / "lib/cmake/SpirvTargets.cmake").read_text()
+                self.assertEqual(not excluded, "add_library(SPIRV-Tools-shared" in exported)
+                self.assertEqual(not excluded, any((build / "source").glob("librecipe_test_spirv_shared.*")))
+
     def test_alias_patch_runs_without_opt_and_preserves_line_endings_and_user_text(self):
         for newline in ("\n", "\r\n"):
             with self.subTest(newline=newline), tempfile.TemporaryDirectory() as tmp:
@@ -87,6 +171,7 @@ class GlslangRecipeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             path = _fixture(root)
+            tools = _spirv_fixture(root)
             builder = _builder(root, opt=True)
             builder.repo_paths = {"SPIRV-Tools": root, "SPIRV-Headers": root}
             stamp = {"enable_opt": "1", "glslang_head": "head", "spirv_tools_head": "head",
@@ -97,6 +182,7 @@ class GlslangRecipeTests(unittest.TestCase):
                 glslang.patch_source(builder, root)
             copy.assert_not_called()
             self.assertNotIn("create_symlink", path.read_text())
+            self.assertIn("OIIO_BUILDER_SPIRV_STATIC_ASAN", (tools / "source/CMakeLists.txt").read_text())
 
     @unittest.skipUnless(os.name != "nt" and shutil.which("cmake") and shutil.which("cc") and shutil.which("ninja"),
                          "POSIX CMake, Ninja and C compiler are needed for executable alias checks")

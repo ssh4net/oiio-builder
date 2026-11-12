@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import os
+import re
 from pathlib import Path
 
 from .policy import ocio_enabled
 
 
-STAMP_REVISION = "2"
+STAMP_REVISION = "3"
 
 _PYTHON_SUFFIX_FIX_BEGIN = "# OIIO_BUILDER_PYTHON_SUFFIX_FIX_BEGIN"
 _PYTHON_SUFFIX_FIX_END = "# OIIO_BUILDER_PYTHON_SUFFIX_FIX_END"
@@ -13,6 +15,16 @@ _PYTHON_SUFFIX_FIX_END = "# OIIO_BUILDER_PYTHON_SUFFIX_FIX_END"
 
 def enabled(builder, _repo) -> bool:
     return ocio_enabled(builder)
+
+
+def build_env(builder, _repo, build_type: str, _prefix: Path, env: dict[str, str]) -> None:
+    if builder.platform.os not in {"linux", "macos"} or build_type != "ASAN":
+        return
+    # Python discovery runs the instrumented prefix interpreter. Match CPython's
+    # build-time leak policy without changing address checks or runtime defaults.
+    asan_options = env.get("ASAN_OPTIONS", os.environ.get("ASAN_OPTIONS", ""))
+    if not re.search(r"(?:^|[:\s])detect_leaks=", asan_options):
+        env["ASAN_OPTIONS"] = ":".join(filter(None, (asan_options, "detect_leaks=0")))
 
 
 def cmake_args(builder, ctx) -> list[str]:
@@ -43,6 +55,10 @@ def cmake_args(builder, ctx) -> list[str]:
         "-DOCIO_BUILD_JAVA=OFF",
         "-DOCIO_BUILD_DOCS=OFF",
     ]
+    if builder.platform.os in {"linux", "macos"} and ctx.build_type == "ASAN":
+        # OCIO validates even single-config builds against this list. Keep the
+        # ASAN configuration/export name and the builder's sanitizer flags.
+        args.append("-DCMAKE_CONFIGURATION_TYPES=Debug;Release;MinSizeRel;RelWithDebInfo;ASAN")
     if builder.platform.os == "windows":
         debug_postfix = str(cfg.windows.get("debug_postfix", "d"))
         pystring_include_dir = ctx.install_prefix / "include" / "pystring"

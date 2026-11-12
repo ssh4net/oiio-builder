@@ -10,12 +10,22 @@ from ..license_policy import LGPL_DYNAMIC
 from ..tooling import resolve_openmp_root
 
 
-STAMP_REVISION = "21"
+STAMP_REVISION = "22"
 
 
 def enabled(builder, _repo) -> bool:
     cfg = builder.config.global_cfg
     return imageio_enabled(builder) and bool(cfg.build_oiio)
+
+
+def build_env(builder, _repo, build_type: str, _prefix: Path, env: dict[str, str]) -> None:
+    if builder.platform.os not in {"linux", "macos"} or build_type != "ASAN":
+        return
+    # Prefix Python is instrumented too. Match CPython's build-time leak policy
+    # for discovery without changing address checks or installed runtime defaults.
+    asan_options = env.get("ASAN_OPTIONS", os.environ.get("ASAN_OPTIONS", ""))
+    if not re.search(r"(?:^|[:\s])detect_leaks=", asan_options):
+        env["ASAN_OPTIONS"] = ":".join(filter(None, (asan_options, "detect_leaks=0")))
 
 
 def _patch_compiled_fmt_option(src_dir: Path) -> None:
@@ -438,7 +448,12 @@ def _patch_static_robinmap_config(src_dir: Path) -> None:
 
 
 def cmake_args(builder, ctx) -> list[str]:
-    return _cache_args(builder, ctx)
+    args = _cache_args(builder, ctx)
+    if builder.platform.os in {"linux", "macos"} and ctx.build_type == "ASAN":
+        # Let upstream recognize the external instrumentation, including its
+        # sanitizer-specific hardening policy and debug information.
+        args.append("-DSANITIZE=address")
+    return args
 
 
 def pre_build(builder, _repo, ctx, _env) -> None:
