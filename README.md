@@ -159,6 +159,7 @@ Key options:
 - `windows.cpython_fetch_externals`: `true` (default) uses `-e` (CPython fetch/builds externals); `false` passes `-E`.
 - `sqlite` is source-built on every platform. Windows uses upstream `Makefile.msc` with `nmake`; macOS/Linux use upstream `Makefile.linux-generic` with GNU Make.
 - On Windows, optional `libvpx` is imported from a vcpkg export zip (`external/vcpkg-export-libvpx.zip`) instead of source/autotools build.
+- On Linux/macOS, `libvpx` is built from its source checkout with `configure` and `make`.
 - `windows.clangcl_extra_flags`: clang-cl x86_64 baseline extra flags (default if unset: `-msse4.1`).
 - `windows.clangcl_extra_flags_append`: extra clang-cl x86_64 flags appended to the baseline (default: empty).
 - `windows.env`: tool overrides for Windows (e.g. `PKG_CONFIG_EXECUTABLE`, `DOXYGEN_EXECUTABLE`).
@@ -910,6 +911,7 @@ PERL_EXECUTABLE = "C:\\Strawberry\\perl\\bin\\perl.exe"
 - **xz ASAN configure fails with a Landlock sandboxing error on Linux**: the xz recipe passes `-DXZ_SANDBOX=no` for Linux ASAN builds because Landlock is incompatible with sanitizers. XZ performs this check even when its command-line tools are disabled. Retry with `uv run build.py --user-config build_ub_ngpl.user.toml --build-types ASAN --only xz --force --no-update`.
 - **CPython ASAN link fails with undefined `__asan_*` symbols**: POSIX ASAN builds use CPython's `--with-address-sanitizer` configure option so bootstrap tools and the interpreter link the sanitizer runtime. For build/install subprocesses, the recipe defaults `ASAN_OPTIONS` to `detect_leaks=0`, matching CPython's sanitizer CI; it preserves other options and explicit `detect_leaks` settings. This does not change the installed interpreter's runtime defaults. Retry with `uv run build.py --user-config build_ub_ngpl.user.toml --build-types ASAN --only cpython --force --no-update`.
 - **pybind11 Ninja build reports `build.ninja` still dirty after 100 tries**: the Linux recipe disables automatic CMake regeneration to avoid glob-check loops on shared filesystems. The builder still configures before every rebuild; manual build-tree changes require an explicit configure. Retry with `uv run build.py --user-config build_ub_ngpl.user.toml --build-types ASAN --only pybind11 --force --no-update`.
+- **libvpx ASAN configure reports `Toolchain is unable to link executables` with undefined `__asan_*` symbols in `config.log`**: non-CMake POSIX ASAN builds pass `-fsanitize=address` to both compilation and linking. Affected ASAN stamps include the linker flags. Retry with `uv run build.py --user-config build_ub_ngpl.user.toml --build-types ASAN --only libvpx --force --no-update`.
 - **PyOpenColorIO / PyOpenEXR link errors on Windows**: set `windows.msvc_runtime = "dynamic"` and `windows.python_wrappers = "on"` for wrapper builds.
 - **Preflight only**: run `uv run build.py` (no args) to see tool/repo readiness without building.
 

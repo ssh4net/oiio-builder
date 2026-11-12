@@ -2101,6 +2101,9 @@ class Builder:
             cflags += sysroot_flag
             cxxflags += sysroot_flag
         ldflags = sysroot_flag
+        if build_type == "ASAN":
+            # Some configure scripts link compiled objects without CFLAGS.
+            ldflags += " -fsanitize=address"
         if self.platform.os in {"macos", "linux"} and cfg.use_libcxx:
             ldflags += " -stdlib=libc++"
         return cflags, cxxflags, ldflags
@@ -4104,6 +4107,13 @@ endif()
             if effective.cache or effective.args:
                 payload["cmake_cache_toml"] = effective.cache
                 payload["cmake_args_toml"] = effective.args
+        if (
+            ctx.build_type == "ASAN"
+            and self.platform.os in {"linux", "macos"}
+            and repo.build_system in {"autotools", "cpython", "ffmpeg", "openssl"}
+        ):
+            # Track ASAN runtime linkage without invalidating unaffected modes.
+            payload["non_cmake_ldflags"] = self._non_cmake_flags(ctx.build_type)[2]
         recipe_revision = recipe_registry.stamp_revision(repo.name)
         if recipe_revision is not None:
             payload["builder_patch_rev"] = recipe_revision
