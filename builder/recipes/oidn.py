@@ -1,15 +1,27 @@
 from __future__ import annotations
 
+import os
+import re
 from pathlib import Path
 from subprocess import CalledProcessError
 
 from ..runner import run
 
-STAMP_REVISION = "1"
+STAMP_REVISION = "2"
 
 
 def enabled(builder, _repo) -> bool:
     return bool(builder.config.global_cfg.build_oidn)
+
+
+def build_env(builder, _repo, build_type: str, _prefix: Path, env: dict[str, str]) -> None:
+    if builder.platform.os not in {"linux", "macos"} or build_type != "ASAN":
+        return
+    # OIDN queries Python at configure time and runs it to embed model weights.
+    # Match CPython's build-time leak policy without changing runtime defaults.
+    asan_options = env.get("ASAN_OPTIONS", os.environ.get("ASAN_OPTIONS", ""))
+    if not re.search(r"(?:^|[:\s])detect_leaks=", asan_options):
+        env["ASAN_OPTIONS"] = ":".join(filter(None, (asan_options, "detect_leaks=0")))
 
 
 def cmake_args(builder, _ctx) -> list[str]:

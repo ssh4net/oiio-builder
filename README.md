@@ -142,7 +142,7 @@ Key options:
 - `build_toml11`: build/install optional header-only toml11 CMake package for local consumers (disabled by default).
 - `build_fastgltf`: build/install the optional fastgltf C++20 glTF library; also enables the standalone simdjson and simdutf recipes (disabled by default).
 - `build_libfuzzer`: build/install optional LLVM 20.1.8 libFuzzer with the configured C++ runtime; see [libFuzzer](#libfuzzer-optional). Disabled by default.
-- `build_oidn`: build/install optional Intel Open Image Denoise 2.5.1; see [OIDN](#open-image-denoise-optional). Disabled in `build.toml`, enabled in the supplied machine-local user configs.
+- `build_oidn`: build/install optional Intel Open Image Denoise 2.5.1; see [OIDN](#open-image-denoise-optional). Disabled in `build.toml`; enable it in a compatible machine-local user config.
 - `build_simdjson`, `build_simdutf`: build/install these optional packages independently of fastgltf (disabled by default).
 - `build_geogram`, `build_geometry_central`: build/install optional geometry libraries (disabled by default).
 - `build_libsodium`: build/install optional libsodium from its moving `stable` branch (disabled by default).
@@ -572,10 +572,20 @@ missing required submodules (`weights` and, for CUDA, `external/cutlass`),
 preserves populated checkouts, and stops with a recovery command if weights
 are still LFS pointers.
 For Linux builds from a network source tree, put `build_root` on a local disk.
-On x86_64, NVCC rejects libc++. The existing `build_ub_ngpl.user.toml` retains
-`use_libcxx=true`; its CUDA OIDN build therefore stops with a diagnostic. Use a
-separate build root and install prefix with `use_libcxx=false` for this recipe;
-do not change the ABI of an already populated libc++ prefix.
+For a Clang 20/libc++ stack on x86_64, set `build_oidn=false` in the selected
+user config: NVCC rejects that toolchain combination. To build OIDN with this
+toolchain, create a separate stack configuration with `use_libcxx=false` and
+its own build root and install prefix. Keep the existing libc++ prefix's ABI.
+[NVIDIA documents libc++ support starting with CUDA 13.4 and Clang/libc++ 22+](https://docs.nvidia.com/cuda/cuda-installation-guide-linux/index.html#host-compiler-support-policy).
+That newer toolchain path is not validated here; this recipe's existing static
+CUDA guard still rejects the libc++ path.
+
+For POSIX ASAN builds, the recipe defaults `ASAN_OPTIONS` to `detect_leaks=0`
+for configure/build/install subprocesses so ASAN Python can be queried and
+generate model sources. Other options and explicit `detect_leaks` settings are
+preserved, and installed runtime defaults are unchanged. This resolves Python
+discovery failures caused by shutdown leak reports; it does not resolve the
+CUDA/compiler compatibility restriction above.
 
 The recipe maps `static_default` to `OIDN_STATIC_LIB` and applies a guarded,
 idempotent source patch for static CUDA. That path builds the CUDA backend in the

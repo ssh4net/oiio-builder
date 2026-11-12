@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,7 +19,35 @@ ROOT = Path(__file__).parents[1]
 
 
 class OidnRecipeTests(unittest.TestCase):
-    def test_disabled_by_default_and_enabled_in_user_configs(self):
+    def test_asan_python_env_preserves_options_and_is_scoped_to_oidn(self):
+        cases = (
+            ({}, {}, "detect_leaks=0"),
+            ({"ASAN_OPTIONS": "halt_on_error=1"}, {}, "halt_on_error=1:detect_leaks=0"),
+            ({}, {"ASAN_OPTIONS": "verbosity=1"}, "verbosity=1:detect_leaks=0"),
+            ({}, {"ASAN_OPTIONS": "detect_leaks=1"}, "detect_leaks=1"),
+            ({"ASAN_OPTIONS": "halt_on_error=1 detect_leaks=1"}, {}, "halt_on_error=1 detect_leaks=1"),
+            ({"ASAN_OPTIONS": "detect_leaks=0"}, {"ASAN_OPTIONS": "detect_leaks=1"}, "detect_leaks=0"),
+        )
+        for platform in ("linux", "macos", "windows"):
+            for mode in ("Debug", "Release", "ASAN"):
+                for env, parent, expected in cases:
+                    with self.subTest(platform=platform, mode=mode, env=env, parent=parent):
+                        with patch.dict(os.environ, parent, clear=True):
+                            builder = object.__new__(Builder)
+                            builder.platform = PlatformInfo(os=platform, arch="x86_64")
+                            base_env = {"UNCHANGED": "value", **env}
+                            builder._env_for_build = lambda *_: dict(base_env)
+                            result = builder._env_for_repo_build(SimpleNamespace(name="oidn"), mode, Path("prefix"))
+                            wanted = (expected if platform != "windows" and mode == "ASAN"
+                                      else env.get("ASAN_OPTIONS", parent.get("ASAN_OPTIONS")))
+                            self.assertEqual(wanted, result.get("ASAN_OPTIONS", os.environ.get("ASAN_OPTIONS")))
+                            self.assertEqual("value", result["UNCHANGED"])
+                            self.assertEqual({"UNCHANGED": "value", **env}, base_env)
+                            self.assertEqual(parent.get("ASAN_OPTIONS"), os.environ.get("ASAN_OPTIONS"))
+                            other = builder._env_for_repo_build(SimpleNamespace(name="asan-probe"), mode, Path("prefix"))
+                            self.assertEqual(base_env, other)
+
+    def test_disabled_by_default_and_can_be_enabled(self):
         config = load_config(ROOT / "build.toml", load_user_config=False)
         self.assertFalse(config.global_cfg.build_oidn)
         repo = next(repo for repo in config.repos if repo.name == "oidn")
@@ -34,11 +63,6 @@ class OidnRecipeTests(unittest.TestCase):
             config.only = {"oidn"}
             self.assertEqual([r.name for r in builder._filter_repos()], ["oidn"])
             config.global_cfg.build_oidn = False
-        for name in ("build_mac.user.toml", "build_win.user.toml", "build_ub_ngpl.user.toml"):
-            path = ROOT / name
-            # These files are intentionally machine-local and may be absent in CI.
-            if path.is_file():
-                self.assertTrue(load_config(ROOT / "build.toml", user_config_path=path).global_cfg.build_oidn)
 
     def test_platform_defaults_and_prefix_linkage(self):
         defaults = load_repo_defaults(ROOT / "builder/recipes/defaults")["oidn"]
