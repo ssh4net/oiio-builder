@@ -1,0 +1,10 @@
+# Static Ptex exports a link dependency on libdeflate, also used by the Ptex viewers.
+find_package(libdeflate CONFIG REQUIRED)
+find_package(Ptex ${PTex_FIND_VERSION} CONFIG REQUIRED)
+if(TARGET Ptex::Ptex_static)
+  set(PTEX_LIBRARY Ptex::Ptex_static)
+else()
+  set(PTEX_LIBRARY Ptex::Ptex_dynamic)
+endif()
+get_target_property(PTEX_INCLUDE_DIR ${PTEX_LIBRARY} INTERFACE_INCLUDE_DIRECTORIES)
+set(PTEX_FOUND TRUE)

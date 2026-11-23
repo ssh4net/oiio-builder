@@ -1,0 +1,7 @@
+[cmake.cache]
+CMAKE_INSTALL_LIBDIR = "lib"
+NO_CUDA = true
+NO_TBB = true
+NO_CLEW = true
+# The reference docs used Doxygen 1.17.0. 1.18.0 crashes on these headers.
+NO_DOC = true

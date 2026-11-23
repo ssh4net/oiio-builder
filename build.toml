@@ -128,6 +128,7 @@ build_simdjson = false
 build_simdutf = false
 build_geogram = false
 build_geometry_central = false
+build_opensubdiv = false
 # Default Qt stack for OIIO iv + Designer:
 # qt6_modules = ["qtbase", "qttools", "qtsvg"]
 # Example expanded stack:
@@ -529,6 +530,17 @@ url = "https://github.com/nmwsharp/geometry-central.git"
 build_system = "cmake"
 optional = true
 deps = ["eigen"]
+
+[[repos]]
+name = "OpenSubdiv"
+dir = "OpenSubdiv"
+url = "https://github.com/PixarAnimationStudios/OpenSubdiv.git"
+# Source revision of the 3.7.0 MO/nongpl-static package.
+ref = "c81173fdcc211c060de16d7b0afb886afe0bd053"
+ref_type = "commit"
+build_system = "cmake"
+optional = true
+deps = ["glfw", "ptex", "zlib-ng"]
 
 [[repos]]
 name = "LBFGSpp"

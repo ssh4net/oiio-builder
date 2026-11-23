@@ -4,4 +4,5 @@ from .policy import gl_enabled
 
 
 def enabled(builder, _repo) -> bool:
-    return gl_enabled(builder) or bool(getattr(builder.config.global_cfg, "build_geogram", False))
+    cfg = builder.config.global_cfg
+    return gl_enabled(builder) or bool(cfg.build_geogram or cfg.build_opensubdiv)

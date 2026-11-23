@@ -25,6 +25,7 @@ Repositories referenced by `build_MOS_stack_until_OIIO.sh` plus builder-only add
 | rapidobj | rapidobj | https://github.com/guybrush77/rapidobj.git | Header-only CMake package; builder disables tests/tools/examples |
 | geogram | geogram | https://github.com/BrunoLevy/geogram.git | Optional core/graphics libraries; uses the GLFW recipe; license profiles disable TetGen/Triangle |
 | geometry-central | geometry-central | https://github.com/nmwsharp/geometry-central.git | Optional Eigen-based library; SuiteSparse and Eigen downloads disabled; installs CMake targets and public dependency headers |
+| OpenSubdiv | OpenSubdiv | https://github.com/PixarAnimationStudios/OpenSubdiv.git | Optional subdivision libraries, viewers, and tutorials. Pinned to the source used for the 3.7.0 MO build. |
 | rapidfuzz-cpp | rapidfuzz-cpp | https://github.com/rapidfuzz/rapidfuzz-cpp.git | Header-only CMake package; OpenMeta uses `rapidfuzz::rapidfuzz` for semantic metadata query matching |
 | nlohmann-json | json | https://github.com/nlohmann/json.git | Optional header-only JSON CMake package; disabled by default |
 | toml11 | toml11 | https://github.com/ToruNiina/toml11.git | Optional header-only TOML CMake package for local consumers |

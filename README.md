@@ -145,6 +145,7 @@ Key options:
 - `build_oidn`: build/install optional Intel Open Image Denoise 2.5.1; see [OIDN](#open-image-denoise-optional). Disabled in `build.toml`; enable it in a compatible machine-local user config.
 - `build_simdjson`, `build_simdutf`: build/install these optional packages independently of fastgltf (disabled by default).
 - `build_geogram`, `build_geometry_central`: build/install optional geometry libraries (disabled by default).
+- `build_opensubdiv` enables OpenSubdiv libraries, viewers, and tutorials. Defaults to false.
 - `build_libsodium`: build/install optional libsodium from its moving `stable` branch (disabled by default).
   Consumers use `find_package(sodium CONFIG REQUIRED)` and link `sodium::sodium`.
 - `windows.generator`: choose one of `msvc`, `ninja-msvc`, `msvc-clang-cl`, `ninja-clang-cl`.
@@ -587,8 +588,10 @@ preserved, and installed runtime defaults are unchanged. This resolves Python
 discovery failures caused by shutdown leak reports; it does not resolve the
 CUDA/compiler compatibility restriction above.
 
-The recipe maps `static_default` to `OIDN_STATIC_LIB` and applies a guarded,
-idempotent source patch for static CUDA. That path builds the CUDA backend in the
+The recipe maps `static_default` to `OIDN_STATIC_LIB`. During source preparation,
+`builder/recipes/oidn.py` applies the static CUDA changes directly to an
+upstream `v2.5.1` checkout. Repeated builds also accept an already patched
+checkout. That path builds the CUDA backend in the
 main CMake project, registers it directly, and exports static libraries and
 their dependencies. It uses `OIDN_DEVICE_CUDA_API=RuntimeStatic`, avoiding the
 Driver backend's private CUDA runtime replacement in applications that already
@@ -647,6 +650,30 @@ uv run build.py --user-config build_win.user.toml --build-types Debug,Release --
 Consumers can use `find_package(fastgltf CONFIG REQUIRED)` and link
 `fastgltf::fastgltf`; its installed config finds `simdjson::simdjson` and
 `simdutf::simdutf`. Both dependencies are also available to independent consumers.
+
+### OpenSubdiv
+
+Set `build_opensubdiv = true` under `[global]` to include OpenSubdiv. To build it on its own with its dependencies, run:
+
+```sh
+uv run build.py --user-config build_mac.user.toml --only OpenSubdiv --build-types Debug,Release
+```
+
+The recipe pins the revision used for the macOS `nongpl-static` 3.7.0 install.
+With `no_update = true`, the builder uses the current revision of an existing
+checkout. Pass `--update` to select the pin on a clean checkout.
+It builds the CPU library, available GPU backends, and upstream viewers and tutorials.
+The macOS reference build includes OpenMP, Metal, OpenGL, OpenCL, Ptex viewers,
+and the static framework. CUDA, TBB, and CLEW default to off.
+HTML documentation is opt-in (`NO_DOC = false` in the OpenSubdiv CMake cache
+overrides). The reference docs were generated with Doxygen 1.17.0.
+Set `OpenMP_ROOT` to your libomp installation if CMake needs help locating it
+when building or consuming the package.
+
+```cmake
+find_package(OpenSubdiv CONFIG REQUIRED)
+target_link_libraries(app PRIVATE OpenSubdiv::osdGPU_static OpenSubdiv::osdCPU_static)
+```
 
 ### Geogram and Geometry Central
 

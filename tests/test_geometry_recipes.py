@@ -36,10 +36,10 @@ class GeometryRecipeTests(unittest.TestCase):
         builder.license_profile = resolve_profile(config.global_cfg.profile)
         return builder._filter_repos()
 
-    def test_both_repositories_are_optional_and_disabled_by_default(self):
+    def test_geometry_repositories_are_optional_and_disabled_by_default(self):
         config = load_config(ROOT / "build.toml", load_user_config=False)
         repos = {repo.name: repo for repo in config.repos}
-        for name in ("geogram", "geometry-central"):
+        for name in ("geogram", "geometry-central", "OpenSubdiv"):
             self.assertTrue(repos[name].optional)
             self.assertEqual("cmake", repos[name].build_system)
             self.assertEqual(name, repos[name].dir)
@@ -47,6 +47,19 @@ class GeometryRecipeTests(unittest.TestCase):
             self.assertNotIn(name, {repo.name for repo in self._selected(config)})
         self.assertFalse(config.global_cfg.build_geogram)
         self.assertFalse(config.global_cfg.build_geometry_central)
+        self.assertFalse(config.global_cfg.build_opensubdiv)
+
+    def test_opensubdiv_selects_viewer_dependencies_without_enabling_other_stacks(self):
+        for ptex in (True, False):
+            with self.subTest(ptex=ptex):
+                config = self._config(build_opensubdiv=True, build_ptex=ptex,
+                                      build_gl_stack=False, build_imageio_stack=False)
+                config.global_cfg.profile = "nongpl-static"
+                config.only = {"OpenSubdiv"}
+                expected = {"OpenSubdiv", "glfw", "zlib-ng", "libdeflate"}
+                if ptex:
+                    expected.add("ptex")
+                self.assertEqual(expected, {repo.name for repo in self._selected(config)})
 
     def test_optional_libraries_enable_and_order_dependencies_even_with_groups_off(self):
         for platform in ("linux", "macos", "windows"):

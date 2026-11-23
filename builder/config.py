@@ -109,6 +109,7 @@ class GlobalConfig:
     build_simdutf: bool = False
     build_geogram: bool = False
     build_geometry_central: bool = False
+    build_opensubdiv: bool = False
     qt6_modules: list[str] = field(default_factory=lambda: list(_DEFAULT_QT6_MODULES))
     build_dng_sdk: bool = False
     openimageio_patch_png_include: bool = True
@@ -306,6 +307,7 @@ def load_config(
             "build_simdutf",
             "build_geogram",
             "build_geometry_central",
+            "build_opensubdiv",
             "qt6_modules",
             "build_dng_sdk",
             "openimageio_patch_png_include",
@@ -508,6 +510,7 @@ def load_config(
         build_simdutf=bool(global_data.get("build_simdutf", False)),
         build_geogram=bool(global_data.get("build_geogram", False)),
         build_geometry_central=bool(global_data.get("build_geometry_central", False)),
+        build_opensubdiv=bool(global_data.get("build_opensubdiv", False)),
         qt6_modules=qt6_modules,
         build_dng_sdk=bool(global_data.get("build_dng_sdk", False)),
         openimageio_patch_png_include=bool(global_data.get("openimageio_patch_png_include", True)),
