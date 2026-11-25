@@ -4107,6 +4107,9 @@ endif()
             if effective.cache or effective.args:
                 payload["cmake_cache_toml"] = effective.cache
                 payload["cmake_args_toml"] = effective.args
+        if repo.build_system == "autotools":
+            # Make dependency files can retain absolute header paths from this prefix.
+            payload["autotools_install_prefix"] = str(ctx.install_prefix)
         if (
             ctx.build_type == "ASAN"
             and self.platform.os in {"linux", "macos"}

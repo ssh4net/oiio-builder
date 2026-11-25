@@ -30,6 +30,18 @@ def _builder(platform: str = "linux", *, libcxx: bool = False) -> Builder:
 
 
 class NonCMakeAsanTests(unittest.TestCase):
+    def test_autotools_stamp_changes_when_install_prefix_moves(self):
+        builder = _builder()
+        repo = SimpleNamespace(name="libvpx", build_system="autotools", cmake_args=[])
+        ctx = SimpleNamespace(build_type="Debug", src_dir=Path("source"), install_prefix=Path("old-prefix"))
+        with patch("builder.core.git_head", return_value="source-head"):
+            old_payload = builder._stamp_payload(repo, ctx, {}, "cflags", "cxxflags")
+            ctx.install_prefix = Path("new-prefix")
+            new_payload = builder._stamp_payload(repo, ctx, {}, "cflags", "cxxflags")
+        legacy_payload = {key: value for key, value in old_payload.items() if key != "autotools_install_prefix"}
+        self.assertNotEqual(compute_stamp(legacy_payload), compute_stamp(old_payload))
+        self.assertNotEqual(compute_stamp(old_payload), compute_stamp(new_payload))
+
     def test_sanitizer_linkage_preserves_platform_and_abi_flags(self):
         for platform in ("linux", "macos", "windows"):
             for mode in ("Debug", "Release", "ASAN"):
@@ -58,7 +70,7 @@ class NonCMakeAsanTests(unittest.TestCase):
                     for system in ("autotools", "cpython", "ffmpeg", "openssl", "sqlite", "cmake"):
                         with self.subTest(platform=platform, mode=mode, system=system):
                             repo = SimpleNamespace(name="asan-probe", build_system=system, cmake_args=[])
-                            ctx = SimpleNamespace(build_type=mode, src_dir=Path("source"))
+                            ctx = SimpleNamespace(build_type=mode, src_dir=Path("source"), install_prefix=Path("prefix"))
                             payload = builder._stamp_payload(repo, ctx, {}, "cflags", "cxxflags")
                             tracked = (platform != "windows" and mode == "ASAN"
                                        and system in {"autotools", "cpython", "ffmpeg", "openssl"})
